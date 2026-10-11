@@ -1,0 +1,30 @@
+BEGIN;
+SELECT plan(24);
+
+SELECT has_table('public', 'schedule_template_breaks', 'planned breaks are linked to schedule days');
+SELECT has_column('public', 'schedule_templates', 'workday_type', 'shift classification is configurable');
+SELECT has_column('public', 'schedule_templates', 'entry_tolerance_minutes', 'entry tolerance is configurable');
+SELECT has_column('public', 'schedule_templates', 'effective_from', 'schedule versions have an effective start');
+SELECT has_column('public', 'schedule_templates', 'revision_of', 'schedule revisions retain their predecessor');
+SELECT has_column('public', 'break_rules', 'requires_qr', 'break QR requirement is configurable');
+SELECT ok((SELECT relrowsecurity FROM pg_class WHERE oid='public.schedule_template_breaks'::regclass), 'planned breaks require RLS');
+SELECT ok(EXISTS (SELECT 1 FROM pg_policy WHERE polrelid='public.schedule_template_breaks'::regclass AND polname='schedule_template_breaks_read' AND polcmd='r'), 'breaks have a tenant read policy');
+SELECT ok(EXISTS (SELECT 1 FROM pg_policy WHERE polrelid='public.schedule_template_breaks'::regclass AND polname='schedule_template_breaks_insert' AND polcmd='a'), 'break writes require the schedule permission');
+SELECT ok(EXISTS (SELECT 1 FROM pg_policy WHERE polrelid='public.schedule_template_breaks'::regclass AND polname='schedule_template_breaks_update' AND polcmd='w'), 'break updates require the schedule permission');
+SELECT ok(EXISTS (SELECT 1 FROM pg_policy WHERE polrelid='public.schedule_template_breaks'::regclass AND polname='schedule_template_breaks_delete' AND polcmd='d'), 'break deletion requires the schedule permission');
+SELECT ok(has_function_privilege('authenticated', 'public.assign_employee_schedule(uuid,uuid[],uuid,uuid,date,date)', 'EXECUTE'), 'authenticated admins can create assignments through the transaction');
+SELECT ok(has_function_privilege('authenticated', 'public.save_schedule_template(uuid,uuid,text,public.schedule_kind,text,smallint,date,date,jsonb,uuid)', 'EXECUTE'), 'authenticated admins can save versioned templates');
+SELECT ok(NOT (SELECT prosecdef FROM pg_proc WHERE oid='public.assign_employee_schedule(uuid,uuid[],uuid,uuid,date,date)'::regprocedure), 'assignment RPC uses caller privileges and RLS');
+SELECT ok(NOT (SELECT prosecdef FROM pg_proc WHERE oid='public.save_schedule_template(uuid,uuid,text,public.schedule_kind,text,smallint,date,date,jsonb,uuid)'::regprocedure), 'template RPC uses caller privileges and RLS');
+SELECT ok(position('schedule assignment overlaps an existing period' in pg_get_functiondef('private.guard_schedule_assignment_overlap()'::regprocedure)) > 0, 'assignment trigger rejects overlapping periods');
+SELECT ok(EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='public.schedule_assignments'::regclass AND tgname='schedule_assignments_no_overlap' AND NOT tgisinternal), 'assignment overlap trigger is installed');
+SELECT ok(EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='public.schedule_template_days'::regclass AND tgname='schedule_template_days_immutable_after_assignment' AND NOT tgisinternal), 'assigned schedule days cannot be edited in place');
+SELECT ok(position('pg_advisory_xact_lock' in pg_get_functiondef('private.guard_labor_rule_period_overlap()'::regprocedure)) > 0, 'labor-rule validity changes are serialized');
+SELECT ok(position('extract(isodow from local.local_day)' in pg_get_functiondef('private.record_attendance_event(uuid,text,text,public.attendance_event_type,uuid,uuid)'::regprocedure)) > 0, 'attendance snapshots use the local weekday schedule');
+SELECT is(((timestamp '2026-01-01 22:00' at time zone 'America/Mexico_City') + interval '8 hours'), (timestamp '2026-01-02 06:00' at time zone 'America/Mexico_City'), 'overnight schedule end resolves on the next local date');
+SELECT is((480 - 60)::integer, 420, 'a non-computable planned break is excluded from scheduled work');
+SELECT is((480 - 0)::integer, 480, 'a computable planned break remains part of scheduled work');
+SELECT ok(position('detected_overtime_minutes' in pg_get_viewdef('public.attendance_session_totals'::regclass)) > 0 AND to_regclass('public.overtime_authorizations') IS NOT NULL, 'detected and authorized overtime remain separate');
+
+SELECT * FROM finish();
+ROLLBACK;
