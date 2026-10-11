@@ -121,7 +121,9 @@ export async function createReportPdf(company: string, generatedAt: Date, filter
   }
   if (!rows.length) doc.fillColor("#64748b").fontSize(10).text("No hay jornadas en el rango seleccionado.", left, doc.y + 12);
   const pages = doc.bufferedPageRange();
-  for (let index = pages.start; index < pages.start + pages.count; index++) { doc.switchToPage(index); doc.font("Helvetica").fontSize(7).fillColor("#64748b").text(`QR-asistencia  ·  Página ${index + 1} de ${pages.count}`, 30, 574, { width: 730, align: "right" }); }
+  // Keep the footer inside the printable area; PDFKit auto-paginates text that
+  // starts at the bottom margin, which used to append a blank trailing page.
+  for (let index = pages.start; index < pages.start + pages.count; index++) { doc.switchToPage(index); doc.font("Helvetica").fontSize(7).fillColor("#64748b").text(`QR-asistencia  ·  Página ${index + 1} de ${pages.count}`, 30, 560, { width: 730, align: "right" }); }
   doc.end();
   return complete;
 }

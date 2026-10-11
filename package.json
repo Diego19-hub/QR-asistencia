@@ -7,7 +7,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "test:scanner": "node --test tests/scanner-context.test.mjs",
-    "test:reports": "node --experimental-strip-types --test tests/reports-exports.test.mjs",
+    "test:reports": "node --experimental-strip-types --test tests/reports-exports.test.mjs tests/reports-data.test.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },

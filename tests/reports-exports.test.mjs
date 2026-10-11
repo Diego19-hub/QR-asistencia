@@ -60,5 +60,6 @@ test("PDF export emits a complete valid PDF for populated and empty reports", as
     assert.ok(buffer.length > 1000);
     assert.equal(buffer.subarray(0, 8).toString("ascii"), "%PDF-1.3");
     assert.match(buffer.toString("latin1"), /%%EOF\s*$/);
+    assert.equal((buffer.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length, 1, "single-page reports should not append a blank page");
   }
 });

@@ -9,6 +9,7 @@ import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAx
 import { useAdminContext } from "@/components/admin/admin-context";
 import type { ReportAnalytics, ReportRow, ReportSummary } from "@/lib/reports/data";
 import { dateInTimeZone } from "@/lib/datetime";
+import { canExportReport, getExportFailureMessage, getReportView, reportFiltersMatch, type ReportRequestState } from "@/lib/reports/request-state";
 
 type Payload = {
   company: { id: string; name: string };
@@ -50,26 +51,28 @@ export function ReportsDashboard() {
   const [sort, setSort] = useState<"date" | "effective" | "employee">("date");
   const [ascending, setAscending] = useState(false);
   const [selected, setSelected] = useState<ReportRow | null>(null);
-  const [payload, setPayload] = useState<Payload | null>(null);
-  const [loadedKey, setLoadedKey] = useState("");
-  const [error, setError] = useState("");
+  const [requestState, setRequestState] = useState<ReportRequestState<Payload> | null>(null);
+  const [exportError, setExportError] = useState<{ key: string; message: string } | null>(null);
   const [exporting, setExporting] = useState(false);
 
   const params = new URLSearchParams({ companyId: company.companyId, from: applied.from, to: applied.to, status: applied.status, page: String(page), pageSize: "50" });
   if (applied.branchId) params.set("branchId", applied.branchId);
   if (applied.employeeId) params.set("employeeId", applied.employeeId);
   const requestKey = `/api/reports?${params}`;
-  const loading = loadedKey !== requestKey;
-  const data = loadedKey === requestKey ? payload : null;
+  const reportView = getReportView(requestState, requestKey);
+  const { data, loading } = reportView;
+  const error = reportView.error || (exportError?.key === requestKey ? exportError.message : "");
+  const filtersMatch = reportFiltersMatch(filters, applied);
+  const exportEnabled = canExportReport(requestState, requestKey, filtersMatch);
 
   useEffect(() => {
     const controller = new AbortController();
     void fetch(requestKey, { cache: "no-store", signal: controller.signal }).then(async (response) => {
       const body = await response.json() as Payload;
       if (!response.ok) throw new Error(body.error?.message ?? "No fue posible cargar el reporte.");
-      setPayload(body); setError(""); setLoadedKey(requestKey);
+      if (!controller.signal.aborted) setRequestState({ key: requestKey, status: "success", data: body });
     }).catch((reason: unknown) => {
-      if (!controller.signal.aborted) { setError(reason instanceof Error ? reason.message : "No fue posible cargar el reporte."); setLoadedKey(requestKey); }
+      if (!controller.signal.aborted) setRequestState({ key: requestKey, status: "error", message: reason instanceof Error ? reason.message : "No fue posible cargar el reporte." });
     });
     return () => controller.abort();
   }, [requestKey]);
@@ -116,17 +119,18 @@ export function ReportsDashboard() {
   }
 
   async function download(format: "xlsx" | "pdf") {
-    setExporting(true); setError("");
+    if (!canExportReport(requestState, requestKey, reportFiltersMatch(filters, applied))) return;
+    setExporting(true); setExportError(null);
     try {
       const exportParams = new URLSearchParams({ ...Object.fromEntries(params.entries()), all: "true", format });
       exportParams.delete("page"); exportParams.delete("pageSize");
       const response = await fetch(`/api/reports/export?${exportParams}`, { cache: "no-store" });
-      if (!response.ok) { const body = await response.json(); throw new Error(body.error?.message ?? "No fue posible generar el archivo."); }
+      if (!response.ok) throw new Error(getExportFailureMessage(await response.text(), response.status));
       const blob = await response.blob();
       const disposition = response.headers.get("content-disposition") ?? "";
       const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? `reporte.${format}`;
       const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = filename; link.click(); URL.revokeObjectURL(link.href);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "No fue posible generar el archivo."); }
+    } catch (reason) { setExportError({ key: requestKey, message: reason instanceof Error ? reason.message : "No fue posible generar el archivo." }); }
     finally { setExporting(false); }
   }
 
@@ -145,7 +149,7 @@ export function ReportsDashboard() {
   ];
 
   return <section className="space-y-6">
-    <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[.14em] text-blue-700">Análisis de jornada</p><h1 className="mt-2 text-2xl font-bold tracking-tight text-slate-950 sm:text-[30px]">Reportes</h1><p className="mt-1 text-sm text-slate-500">Tiempos por fecha laboral, con filtros por sucursal, empleado y estado.</p></div><div className="flex gap-2"><button type="button" disabled={exporting || !data} onClick={() => void download("xlsx")} className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm hover:border-blue-200 disabled:opacity-50"><FileSpreadsheet size={15} />{exporting ? "Generando…" : "Excel"}</button><button type="button" disabled={exporting || !data} onClick={() => void download("pdf")} className="inline-flex h-10 items-center gap-2 rounded-xl bg-[#14264a] px-3 text-xs font-semibold text-white shadow-sm hover:bg-blue-900 disabled:opacity-50"><FileText size={15} />PDF</button></div></header>
+    <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="text-xs font-semibold uppercase tracking-[.14em] text-blue-700">Análisis de jornada</p><h1 className="mt-2 text-2xl font-bold tracking-tight text-slate-950 sm:text-[30px]">Reportes</h1><p className="mt-1 text-sm text-slate-500">Tiempos por fecha laboral, con filtros por sucursal, empleado y estado.</p></div><div className="flex gap-2"><button type="button" disabled={exporting || !exportEnabled} onClick={() => void download("xlsx")} className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm hover:border-blue-200 disabled:opacity-50"><FileSpreadsheet size={15} />{exporting ? "Generando…" : "Excel"}</button><button type="button" disabled={exporting || !exportEnabled} onClick={() => void download("pdf")} className="inline-flex h-10 items-center gap-2 rounded-xl bg-[#14264a] px-3 text-xs font-semibold text-white shadow-sm hover:bg-blue-900 disabled:opacity-50"><FileText size={15} />PDF</button></div></header>
 
     <form onSubmit={submit} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
@@ -173,7 +177,7 @@ export function ReportsDashboard() {
     </div> : <div className="grid h-64 place-items-center rounded-2xl border border-slate-200 bg-white text-sm text-slate-500">{loading ? <span className="inline-flex items-center gap-2"><LoaderCircle className="animate-spin" size={17} />Calculando el reporte…</span> : ""}</div>}
 
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-2 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="text-sm font-bold text-slate-900">Detalle de jornadas</h2><p className="mt-1 text-xs text-slate-500">{data ? `${data.totalRows} jornadas · página ${page} de ${pageCount}` : "Carga el reporte para mostrar el detalle"}</p></div><span className="inline-flex items-center gap-2 text-xs text-slate-500">{loading ? <LoaderCircle size={14} className="animate-spin" /> : <CalendarDays size={14} />}{loading ? "Actualizando" : `${data?.totalRows ?? 0} registros filtrados`}</span></div>
+      <div className="flex flex-col gap-2 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="text-sm font-bold text-slate-900">Detalle de jornadas</h2><p className="mt-1 text-xs text-slate-500">{data ? `${data.totalRows} jornadas · página ${page} de ${pageCount}` : "Carga el reporte para mostrar el detalle"}</p><p className="mt-1 text-[10px] text-slate-400">El ordenamiento se aplica únicamente a la página actual.</p></div><span className="inline-flex items-center gap-2 text-xs text-slate-500">{loading ? <LoaderCircle size={14} className="animate-spin" /> : <CalendarDays size={14} />}{loading ? "Actualizando" : `${data?.totalRows ?? 0} registros filtrados`}</span></div>
       <div className="overflow-x-auto"><table className="w-full min-w-[1550px] text-left"><thead><tr className="bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500">{[["Empleado / fecha", "employee"], ["Sucursal / estado", "employee"], ["Programado", "date"], ["Entrada", "date"], ["Comida", "date"], ["Salida", "date"], ["Presencia", "date"], ["Descansos pagados / no pagados", "date"], ["Efectivo", "effective"], ["Retardo", "date"], ["Anticipada", "date"], ["Detectado", "date"], ["Autorizado", "date"], ["Incidencias", "date"]].map(([label, key], index) => <th key={`${label}-${index}`} className="px-3 py-3">{index === 0 ? <button onClick={() => toggleSort(key as typeof sort)} className="text-left">{label} ↕</button> : index === 8 ? <button onClick={() => toggleSort(key as typeof sort)} className="text-left">{label} ↕</button> : label}</th>)}</tr></thead>
         <tbody className="divide-y divide-slate-100">{sortedRows.map((row) => <tr key={row.sessionId} onClick={() => setSelected(selected?.sessionId === row.sessionId ? null : row)} className="cursor-pointer align-top text-xs hover:bg-slate-50/70"><td className="px-3 py-3"><p className="font-semibold text-slate-800">{row.employeeName}</p><p className="mt-1 text-[10px] text-slate-400">{row.employeeNumber} · {row.workDate}</p></td><td className="px-3 py-3"><p>{row.branchName}</p><span className={`mt-1 inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${row.incomplete ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-700"}`}>{row.incomplete ? (row.status === "open" ? "Abierta" : "Incompleta") : row.unscheduled ? "Sin horario" : statusLabel[row.status]}</span></td><td className="px-3 py-3">{row.scheduledMinutes === null ? "—" : <>{hhmm(row.scheduledStartAt, row.timezone)}–{hhmm(row.scheduledEndAt, row.timezone)}<p className="mt-1 text-[10px] text-slate-400">{duration(row.scheduledMinutes)}</p></>}</td><td className="px-3 py-3">{hhmm(row.clockIn, row.timezone)}</td><td className="px-3 py-3">{hhmm(row.mealStart, row.timezone)}–{hhmm(row.mealEnd, row.timezone)}</td><td className="px-3 py-3">{hhmm(row.clockOut, row.timezone)}</td><td className="px-3 py-3">{duration(row.presenceMinutes)}</td><td className="px-3 py-3"><p>{duration(row.paidBreakMinutes)} computables</p><p className="mt-1 text-slate-400">{duration(row.unpaidBreakMinutes)} no computables</p></td><td className="px-3 py-3 font-semibold">{duration(row.effectiveMinutes)}</td><td className="px-3 py-3">{duration(row.latenessMinutes)}</td><td className="px-3 py-3">{duration(row.earlyDepartureMinutes)}</td><td className="px-3 py-3">{duration(row.detectedOvertimeMinutes)}</td><td className="px-3 py-3">{duration(row.approvedOvertimeMinutes)}</td><td className="px-3 py-3">{row.incidents.length ? row.incidents.join(", ") : "—"}</td></tr>)}
         {!loading && data && !sortedRows.length ? <tr><td colSpan={14} className="px-5 py-14 text-center"><CalendarDays className="mx-auto text-slate-300" size={24} /><p className="mt-3 text-sm font-semibold text-slate-700">No hay jornadas en este periodo</p><p className="mt-1 text-xs text-slate-500">Cambia el rango o limpia los filtros.</p></td></tr> : null}</tbody></table></div>

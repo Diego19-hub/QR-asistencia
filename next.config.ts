@@ -7,6 +7,9 @@ const allowedTunnelHosts = tunnelHost ? [tunnelHost] : [];
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: allowedTunnelHosts,
+  // PDFKit resolves AFM font files relative to its own package directory.
+  // Keeping it external preserves that runtime path in the compiled route.
+  serverExternalPackages: ["pdfkit"],
   experimental: {
     serverActions: {
       allowedOrigins: allowedTunnelHosts,

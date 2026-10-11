@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { resolveAdminScope, type AdminScope } from "@/lib/admin/scope";
+import { fetchAllCursorPages, REPORT_PAGE_SIZE, type CursorPage } from "@/lib/reports/pagination";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const uuidSchema = z.string().uuid();
@@ -95,14 +96,21 @@ export async function loadReport(request: Request): Promise<ReportResult> {
   if (employeeId && !uuidSchema.safeParse(employeeId).success) return fail(400, "invalid_report_employee", "El empleado seleccionado no es válido.");
   const filters: ReportFilters = { from, to, branchId, employeeId, status: statusValue as ReportFilters["status"] };
 
-  const [{ data: branches, error: branchError }, { data: employees, error: employeeError }, periodRulesResult] = await Promise.all([
+  const [{ data: branches, error: branchError }, employeeRowsResult, periodRulesResult] = await Promise.all([
     scope.supabase.from("branches").select("id,name,timezone").eq("company_id", scope.company.companyId).order("name"),
-    scope.supabase.from("employees").select("id,employee_number,first_name,last_name,branch_id").eq("company_id", scope.company.companyId).order("last_name").order("first_name").limit(1000),
+    fetchAllCursorPages(async ({ afterId, pageSize, countOnly }) => {
+      const options = countOnly || afterId === null ? { count: "exact" as const, head: countOnly } : undefined;
+      let query = scope.supabase.from("employees").select("id,employee_number,first_name,last_name,branch_id", options)
+        .eq("company_id", scope.company.companyId);
+      if (countOnly) return query;
+      if (afterId) query = query.gt("id", afterId);
+      return query.order("id", { ascending: true }).range(0, pageSize - 1);
+    }),
     scope.supabase.from("company_pay_period_rules").select("biweekly_mode,anchor_date,interval_days").eq("company_id", scope.company.companyId).lte("effective_from", to).or(`effective_to.is.null,effective_to.gte.${to}`).order("effective_from", { ascending: false }).limit(1),
   ]);
-  if (branchError || employeeError || periodRulesResult.error) return fail(503, "report_options_failed", "No fue posible validar las sucursales, empleados y periodo de nómina.");
+  if (branchError || employeeRowsResult.error || periodRulesResult.error) return fail(503, "report_options_failed", "No fue posible validar las sucursales, empleados y periodo de nómina.");
   const branchRows = branches ?? [];
-  const employeeRows = employees ?? [];
+  const employeeRows = employeeRowsResult.data;
   const periodRuleRow = periodRulesResult.data?.[0];
   const payPeriodRule: PayPeriodRule = periodRuleRow ? { mode: periodRuleRow.biweekly_mode, anchorDate: periodRuleRow.anchor_date, intervalDays: periodRuleRow.interval_days } : null;
   if (branchId && !branchRows.some((item) => item.id === branchId)) return fail(403, "report_branch_forbidden", "La sucursal no pertenece a tu empresa.");
@@ -113,7 +121,7 @@ export async function loadReport(request: Request): Promise<ReportResult> {
     let query = scope.supabase.from("attendance_session_totals")
       .select("company_id,session_id,employee_id,branch_id,local_work_date,timezone,status,started_at,ended_at,scheduled_start_at,scheduled_end_at,scheduled_minutes,presence_minutes,all_break_minutes,non_work_break_minutes,effective_work_minutes,lateness_minutes,early_departure_minutes,detected_overtime_minutes,has_incomplete_breaks")
       .eq("company_id", scope.company.companyId).gte("local_work_date", from).lte("local_work_date", to)
-      .order("local_work_date", { ascending: false }).order("started_at", { ascending: false }).range(start, start + 999);
+      .order("local_work_date", { ascending: false }).order("started_at", { ascending: false }).order("session_id", { ascending: true }).range(start, start + 999);
     if (branchId) query = query.eq("branch_id", branchId);
     if (employeeId) query = query.eq("employee_id", employeeId);
     const { data, error } = await query;
@@ -232,9 +240,17 @@ export async function loadReport(request: Request): Promise<ReportResult> {
 async function fetchBatched(scope: AdminScope, table: "attendance_breaks" | "attendance_events" | "overtime_authorizations", columns: string, sessionIds: string[]) {
   const result: Record<string, unknown>[] = [];
   for (let start = 0; start < sessionIds.length; start += 250) {
-    const { data, error } = await scope.supabase.from(table).select(columns).eq("company_id", scope.company.companyId).in("session_id", sessionIds.slice(start, start + 250));
-    if (error) return { data: result, error };
-    result.push(...(data ?? []) as unknown as Record<string, unknown>[]);
+    const batchSessionIds = sessionIds.slice(start, start + 250);
+    const pageResult = await fetchAllCursorPages(async ({ afterId, pageSize, countOnly }): Promise<CursorPage<Record<string, unknown> & { id: string }>> => {
+      const options = countOnly || afterId === null ? { count: "exact" as const, head: countOnly } : undefined;
+      let query = scope.supabase.from(table).select(countOnly ? "id" : `${columns},id`, options)
+        .eq("company_id", scope.company.companyId).in("session_id", batchSessionIds);
+      if (countOnly) return await query as unknown as CursorPage<Record<string, unknown> & { id: string }>;
+      if (afterId) query = query.gt("id", afterId);
+      return await query.order("id", { ascending: true }).range(0, pageSize - 1) as unknown as CursorPage<Record<string, unknown> & { id: string }>;
+    }, REPORT_PAGE_SIZE);
+    if (pageResult.error) return { data: [], error: pageResult.error };
+    result.push(...pageResult.data as unknown as Record<string, unknown>[]);
   }
   return { data: result, error: null };
 }
