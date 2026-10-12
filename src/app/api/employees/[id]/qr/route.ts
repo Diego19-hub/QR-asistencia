@@ -2,20 +2,11 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { apiError, resolveAdminScope, scopeError } from "@/lib/admin/scope";
 import { employeeIdSchema } from "@/lib/employees/validation";
+import { credentialApiError } from "@/lib/employees/credential-api-error";
 
 export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ id: string }> };
-
-function databaseError(error: { code?: string; message?: string }) {
-  if (error.code === "42501") return apiError("credential_forbidden", "No tienes permiso para administrar las credenciales de este empleado.", 403);
-  if (error.code === "P0002") return apiError("employee_not_found", "No se encontró el empleado en esta empresa.", 404);
-  if (error.code === "23514") return apiError("employee_inactive", "Activa el expediente antes de emitir una credencial.", 409);
-  if (error.code === "23505") return apiError("qr_already_active", "El empleado ya tiene un QR activo. Usa Regenerar para sustituirlo.", 409);
-  if (error.code === "22023") return apiError("invalid_credential", "El valor de la credencial no cumple el formato requerido.", 422);
-  if (error.code === "P0001") return apiError("qr_rate_limited", "Se alcanzó el límite temporal de emisiones. Intenta nuevamente más tarde.", 429);
-  return apiError("credential_operation_failed", "No fue posible completar la operación de credenciales.", 503);
-}
 
 export async function GET(request: Request, { params }: RouteContext) {
   const result = await resolveAdminScope(request);
@@ -27,7 +18,7 @@ export async function GET(request: Request, { params }: RouteContext) {
     p_company_id: result.scope.company.companyId,
     p_employee_id: id,
   });
-  if (error) return databaseError(error);
+  if (error) return credentialApiError(error);
   return Response.json({ credential: data }, { headers: { "Cache-Control": "no-store" } });
 }
 
@@ -54,7 +45,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     p_token_hash_hex: tokenHash,
     p_replace: replace,
   });
-  if (error) return databaseError(error);
+  if (error) return credentialApiError(error);
   return Response.json({ credential: data, token: rawToken }, { headers: { "Cache-Control": "no-store, private" } });
 }
 
@@ -68,6 +59,6 @@ export async function DELETE(request: Request, { params }: RouteContext) {
     p_company_id: result.scope.company.companyId,
     p_employee_id: id,
   });
-  if (error) return databaseError(error);
+  if (error) return credentialApiError(error);
   return Response.json({ credential: data }, { headers: { "Cache-Control": "no-store" } });
 }
