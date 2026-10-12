@@ -4,13 +4,15 @@ Fecha de revisión: 2026-10-12
 
 Commit base revisado: `502db7dd253675230b76ff17a405760eb022e920`
 
+Commit de Etapa 10A: `efc1e1d9a4b61892acef01ab24538a271257daec`
+
 Supabase Testing: `llxyziffgtqnzlguxhyt` (`QR-asistencia-testing`, activo, Postgres 17.11)
 
 Producción: no consultada ni modificada.
 
 ## Decisión
 
-**NO-GO para iniciar el despliegue de Testing (Etapa 10B) hasta resolver dos bloqueos operativos:** (1) Docker no está accesible desde esta sesión, por lo que no se pudo volver a ejecutar el test local de concurrencia, y (2) GitHub no resolvió por DNS desde este entorno, impidiendo refrescar `origin/main`, consultar CI de forma independiente y publicar este informe. El historial de Git local está en la rama `main`, limpio, en el commit base indicado. La migración del lease aún no está aplicada en Testing.
+**GO para iniciar la Etapa 10B como despliegue controlado exclusivamente en Testing, con aprobación explícita antes de aplicar la migración o desplegar el frontend.** La rama `main` está publicada y CI pasó; la prueba local de concurrencia pasó 14/14. La migración `20261012050537` está pendiente en Testing, por lo que la API que consume el lease no se debe desplegar hasta validar el dry-run, obtener autorización específica y aplicar/verificar esa migración allí. Producción sigue fuera de alcance.
 
 La arquitectura sugerida para una instancia piloto es **un VPS de 4 GiB RAM, con Next.js en Node 22, Caddy como proxy TLS y una sola instancia de aplicación**. Reservar hasta 2 GiB para Node y conservar el lease de PostgreSQL con capacidad global igual a una exportación. Esta propuesta busca memoria y ciclo de respuesta previsibles; añade administración de sistema, actualizaciones y guardias operativas. No se contrató infraestructura.
 
@@ -150,4 +152,5 @@ No existe ruta de healthcheck ni logging estructurado/métricas para el endpoint
 - [x] GitHub Actions del commit base `502db7d`: run `38209586798`, job `verify` exitoso, incluyendo instalación, lint, typecheck, reportes, lease local, scanner y build. Esta ejecución es del commit base; no valida todavía las modificaciones de Etapa 10A.
 - [x] Prueba local de concurrencia `npm run test:reports:lease:local`: 14/14 comprobaciones aprobadas; incluye 13 checks pgTAP, carrera real de RPC entre empresas con JWT, burst HTTP 429, XLSX/PDF, limpieza completa y confirma que `codigo_QR` permaneció intacto. No se contactó ningún proyecto remoto.
 - [x] `git ls-remote origin refs/heads/main` confirmado mediante conectividad autorizada: `main` sigue en `502db7d`, idéntico al HEAD local antes del commit.
-- [ ] Commit/push y Actions de este cambio: pendientes; no se han hecho todavía.
+- [x] Publicado en `main` por fast-forward normal: commit `efc1e1d9a4b61892acef01ab24538a271257daec`; `git ls-remote` confirmó el mismo SHA.
+- [x] GitHub Actions run `38273543735`: job `verify` completó `success` (npm ci, lint, typecheck, reportes, credenciales, lease local, scanner y build).
