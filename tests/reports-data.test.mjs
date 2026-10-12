@@ -8,6 +8,7 @@ import { canExportReport, getExportFailureMessage, getReportView, reportFiltersM
 const dataSource = await readFile(new URL("../src/lib/reports/data.ts", import.meta.url), "utf8");
 const pagination = await readFile(new URL("../src/lib/reports/pagination.ts", import.meta.url), "utf8");
 const dashboard = await readFile(new URL("../src/components/reports/reports-dashboard.tsx", import.meta.url), "utf8");
+const exportRoute = await readFile(new URL("../src/app/api/reports/export/route.ts", import.meta.url), "utf8");
 
 const reportFilters = { from: "2026-10-01", to: "2026-10-31", branchId: "", employeeId: "", status: "all" };
 
@@ -89,4 +90,11 @@ test("export errors handle JSON and empty or malformed server responses", () => 
   assert.equal(getExportFailureMessage('{"error":{"message":"PDF unavailable"}}', 500), "PDF unavailable");
   assert.equal(getExportFailureMessage("", 500), "No fue posible generar el archivo (HTTP 500).");
   assert.equal(getExportFailureMessage("not-json", 503), "No fue posible generar el archivo (HTTP 503).");
+});
+
+test("large export requests fail with 413 before allocating the files", () => {
+  assert.match(exportRoute, /result.rows.length > 500/);
+  assert.match(exportRoute, /report_export_too_large.*status: 413/);
+  assert.ok(exportRoute.indexOf("report_export_too_large") < exportRoute.indexOf("await createReportWorkbook"));
+  assert.ok(exportRoute.indexOf("report_export_too_large") < exportRoute.indexOf("await createReportPdf"));
 });
