@@ -193,7 +193,7 @@ try {
   const appRoot = join(temp, "next-app");
   await mkdir(appRoot, { recursive: true });
   await cp(join(root, "src"), join(appRoot, "src"), { recursive: true });
-  for (const file of ["package.json", "next.config.ts", "postcss.config.mjs", "tsconfig.json", "next-env.d.ts"]) await cp(join(root, file), join(appRoot, file));
+  for (const file of ["package.json", "next.config.ts", "postcss.config.mjs", "tsconfig.json"]) await cp(join(root, file), join(appRoot, file));
   await symlink(join(root, "node_modules"), join(appRoot, "node_modules"), "dir");
   const nextEnv = {
     PATH: process.env.PATH,

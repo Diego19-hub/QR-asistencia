@@ -53,4 +53,4 @@ La migración es aditiva. Si la API nueva falla, el rollback inmediato compatibl
 
 ## Estado
 
-La implementación está validada en un stack local, incluidos RPC concurrentes reales con JWT y rutas HTTP locales. Se fortaleció el teardown para comprobar Auth/membresías y verificar la limpieza del stack incluso si falla una aserción. Los proyectos remotos siguen sin cambios. La migración debe desplegarse antes que la API; este informe y el resultado de CI remoto quedan pendientes de publicación/verificación en GitHub.
+La implementación está validada en un stack local, incluidos RPC concurrentes reales con JWT y rutas HTTP locales. Se fortaleció el teardown para comprobar Auth/membresías y verificar la limpieza del stack incluso si falla una aserción. La primera ejecución de CI encontró que el checkout limpio no contenía el `next-env.d.ts` local ignorado; el arnés ya no depende de ese archivo y la suite local volvió a pasar 14/14. El commit correctivo y su nueva ejecución de CI quedan pendientes. Los proyectos Supabase remotos siguen sin cambios. La migración debe desplegarse antes que la API.
