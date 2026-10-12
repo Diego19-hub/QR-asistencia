@@ -26,6 +26,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run test:reports
       - run: npm run test:credentials
+      - run: npm run test:deployment
       - run: npm run test:reports:lease:local
       - run: npm run test:scanner
       - run: npm run build

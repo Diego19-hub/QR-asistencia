@@ -1,0 +1,29 @@
+{
+	admin off
+}
+
+{$QR_ASISTENCIA_DOMAIN} {
+	encode zstd gzip
+	log {
+		output stdout
+		format filter {
+			request>uri regexp "\\?.*" "?REDACTED"
+			request>headers>Referer delete
+			request>headers>User-Agent delete
+			request>remote_ip ip_mask 16 32
+			request>client_ip ip_mask 16 32
+		}
+	}
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		Permissions-Policy "camera=(self), microphone=(), geolocation=()"
+		Strict-Transport-Security "max-age=86400"
+		-Server
+	}
+	reverse_proxy app:3000 {
+		flush_interval -1
+		stream_timeout 15m
+	}
+}

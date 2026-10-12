@@ -1,0 +1,16 @@
+.git
+.github
+.next
+.env*
+!.env.example
+node_modules
+npm-debug.log*
+coverage
+supabase/.temp
+supabase/.branches
+*.dump
+*.backup
+*.db
+*.sqlite*
+SECURITY-AUDIT*.md
+BACKUP-RESTORE*.md

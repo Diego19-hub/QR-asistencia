@@ -10,7 +10,7 @@ function apiError(code: string, message: string, status: number, headers: Header
   return Response.json({ error: { code, message } }, { status, headers: { "Cache-Control": "no-store", ...headers } });
 }
 
-export async function GET(request: Request) {
+async function handleExport(request: Request) {
   const url = new URL(request.url);
   const format = url.searchParams.get("format");
   if (format !== "xlsx" && format !== "pdf") return apiError("invalid_format", "Elige Excel o PDF.", 400);
@@ -75,5 +75,30 @@ export async function GET(request: Request) {
     return apiError("export_generation_failed", "No fue posible generar el reporte. Intenta nuevamente.", 500);
   } finally {
     if (!responseOwnsLease) await lease.release();
+  }
+}
+
+export async function GET(request: Request) {
+  const startedAt = performance.now();
+  const requestId = globalThis.crypto.randomUUID();
+  const requestedFormat = new URL(request.url).searchParams.get("format");
+  let status = 500;
+
+  try {
+    const response = await handleExport(request);
+    status = response.status;
+    return response;
+  } catch {
+    return apiError("export_generation_failed", "No fue posible generar el reporte. Intenta nuevamente.", 500);
+  } finally {
+    // Deliberately omit URLs, query filters, tenant/user IDs, cookies, and report data.
+    console.info(JSON.stringify({
+      event: "report_export_request",
+      requestId,
+      format: requestedFormat === "xlsx" || requestedFormat === "pdf" ? requestedFormat : "invalid",
+      status,
+      handlerDurationMs: Math.round(performance.now() - startedAt),
+      rssBytes: process.memoryUsage().rss,
+    }));
   }
 }

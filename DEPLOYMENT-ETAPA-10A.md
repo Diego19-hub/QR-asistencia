@@ -124,7 +124,7 @@ El dry-run solo informa lo que se aplicaría. Debe mostrar exclusivamente la mig
 
 ## Healthcheck, logs y observabilidad
 
-No existe ruta de healthcheck ni logging estructurado/métricas para el endpoint de exportación. Antes del despliegue público, añadir o configurar un `/api/healthz` que pruebe solo proceso y dependencias esenciales, sin revelar versión, hostname, URL o estado sensible; diferenciar liveness de readiness. Añadir eventos JSON con request ID, empresa en forma no identificable o hash limitado, formato, filas, tiempos de consulta/generación/stream, RSS y códigos de resultado; nunca registrar sesión, credenciales, token QR/PIN, owner token del lease ni payload exportado. Alertar en RPC 5xx, pérdida de lease, timeouts, RSS acercándose al límite y elevación de 429/413.
+La Etapa 10B agregó `/api/healthz` como liveness mínimo y un evento JSON acotado para exportaciones; aún no existe un proveedor de métricas/alertas ni un despliegue HTTPS probado. Ver `DEPLOYMENT-ETAPA-10B.md` para configuración y límites.
 
 ## Rollback, respaldo y recuperación
 
