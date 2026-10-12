@@ -7,7 +7,7 @@ Producción `jawdrhewabqajxnswhkn`: no consultada ni modificada.
 
 ## Decisión
 
-**GO para solicitar después un dry-run remoto de solo lectura; NO-GO para aplicar migraciones.** La simulación local aislada terminó con éxito y enumeró únicamente el lease como pendiente. El dry-run remoto aún no se ejecutó porque esta sesión no tiene credenciales CLI; no se modificó el historial, SQL o esquema remoto.
+**NO-GO para el dry-run remoto en esta ejecución; NO-GO para aplicar migraciones.** La comprobación CLI se detuvo antes de contactar la base por falta de sesión. La simulación local pasó; el dry-run remoto requiere que el usuario autentique la CLI localmente y vuelva a autorizar esa lectura. No se modificó historial, SQL ni esquema remoto.
 
 La estrategia aplicada mantuvo intactos los archivos históricos de `main` y simuló el historial en una copia temporal local; el dry-run local dejó pendiente solo `20261012050537_global_report_export_lease.sql`. El dry-run remoto aún requiere credenciales CLI seguras.
 
@@ -51,11 +51,11 @@ Consulta de solo lectura por el conector Supabase, después de verificar el ID d
 | — | `20261011211215` `enable_pgtap_test_extension` | solo Testing |
 | `20261012050537` `global_report_export_lease` | — | solo local; pendiente en Testing |
 
-Resumen: 20 nombres compartidos, 18 versiones diferentes; dos nombres/versiones coincidentes. La revisión previa de Etapa 10B registró que el SQL de las 20 migraciones compartidas coincide salvo espacios exteriores. La tabla de historial remoto no almacena el SQL, por lo que esa equivalencia procede de esa comparación previa; no se volvió a descargar SQL remoto ni se comparó cada byte en esta sesión.
+Resumen: 20 nombres compartidos, 18 versiones diferentes; dos nombres/versiones coincidentes. La comparación previa confirmó que el SQL de las 20 migraciones compartidas es equivalente ignorando únicamente espacios exteriores. El historial conserva las sentencias en `supabase_migrations.schema_migrations.statements`.
 
 ## PgTAP y cambios de esquema
 
-La migración registrada solo en Testing se llama `enable_pgtap_test_extension`. El catálogo de extensiones de Testing confirma `pgtap` 1.3.3 instalado en `extensions`. El código local no contiene un archivo versionado con ese nombre ni la definición SQL histórica. Para la simulación se usó una migración **sintética y solo temporal** (`CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions`) que reproduce el estado observado; no se presenta como SQL histórico recuperado y no se publicó. PgTAP es infraestructura de pruebas y no es un cambio funcional de la aplicación, pero sí debe representarse como registro existente en la simulación.
+La migración registrada solo en Testing se llama `enable_pgtap_test_extension`. El catálogo de extensiones de Testing confirma `pgtap` 1.3.3 instalado en `extensions`. El SQL histórico se recuperó mediante una consulta de solo lectura a `supabase_migrations.schema_migrations.statements` en Testing: `create extension if not exists pgtap with schema extensions;`. La copia temporal 10D incorpora esa sentencia exacta, sin aplicarla en remoto. PgTAP es infraestructura de pruebas y no es un cambio funcional de la aplicación, pero sí debe representarse como registro existente en la simulación.
 
 Las consultas de lectura confirmaron inventarios de tablas y funciones en `public` y `private`, RLS activado en las tablas `public` y en las tablas privadas de credenciales, autorización de dispositivos y rate limit. También aparecieron tablas privadas `bootstrap_requests` y `device_token_hashes` con RLS desactivado; pertenecen a un esquema privado, pero esta inspección parcial no equivale a comprobar todas las políticas, grants, exposición de API y definiciones de cada objeto.
 
@@ -69,36 +69,37 @@ En una copia temporal fuera del repositorio:
 
 1. Copiar `supabase/config.toml`, `supabase/migrations/` y lo necesario para la simulación. Asignar un `project_id` temporal único y puertos libres. Mantener esa copia separada de `codigo_QR`.
 2. Conservar el contenido byte por byte y mapear los 20 nombres comunes a las versiones listadas arriba. Validar que el mapeo sea uno a uno y que ningún timestamp choque.
-3. Incorporar el registro sintético de `20261011211215_enable_pgtap_test_extension` **solo a la simulación**. La SQL histórica no está en Git, así que primero recuperar su contenido exacto desde un artefacto autorizado o, si solo se valida el plan de migraciones, sembrar explícitamente el registro sintético en la base local ya restaurada. Nunca presentarlo como SQL histórico recuperado ni usar esta simulación para ocultar drift remoto.
+3. Incorporar `20261011211215_enable_pgtap_test_extension.sql` con la sentencia histórica recuperada. Ejecutarla únicamente en el stack local desechable, nunca en Testing para alinear el historial.
 4. Levantar una instancia Supabase local desechable con PostgreSQL 17. Aplicar en ella el conjunto ya alineado de 21 migraciones. Después copiar la migración del lease a la copia temporal y ejecutar `supabase db push --local --dry-run`.
 5. Exigir que la salida enumere únicamente `20261012050537_global_report_export_lease.sql`; además comprobar con `migration list --local` que las 21 versiones previas están registradas y que no se repite DDL histórico.
 6. Guardar la salida sanitizada y destruir únicamente el stack/volúmenes identificados por el `project_id` temporal.
 
-**Simulación local ejecutada.** Se creó un workdir y proyecto temporales fuera del repositorio, con puertos únicos. Se copiaron sin cambios los 20 SQL comunes y se renombraron solo dentro de la copia a los 20 timestamps de Testing. Se aplicaron en el stack local esos SQL más la entrada sintética pgTAP. Luego se añadió la migración de lease a la copia y se ejecutó `supabase db push --local --dry-run`. La salida se validó automáticamente: solo contenía `20261012050537_global_report_export_lease`; `migration list --local` contenía las 21 versiones previas y no volvió a listar timestamps originales de los SQL comunes. Duración total observada: aproximadamente 51 segundos. Resultado: **21 migraciones históricas simuladas, lease único pendiente, cero migraciones históricas pendientes/reaplicadas**. El script comprobó la parada y ausencia de recursos temporales, así como la invariancia del stack `codigo_QR`; el workdir se eliminó.
+**Simulación local ejecutada.** Se creó un workdir y proyecto temporales fuera del repositorio, con puertos únicos. Se copiaron sin cambios los 20 SQL comunes y se renombraron solo dentro de la copia a los 20 timestamps de Testing. Se aplicaron en el stack local esos SQL más la misma sentencia pgTAP que ahora se recuperó del historial remoto. Luego se añadió la migración de lease a la copia y se ejecutó `supabase db push --local --dry-run`. La salida se validó automáticamente: solo contenía `20261012050537_global_report_export_lease`; `migration list --local` contenía las 21 versiones previas y no volvió a listar timestamps originales de los SQL comunes. Duración total observada: aproximadamente 51 segundos. Resultado: **21 migraciones históricas simuladas, lease único pendiente, cero migraciones históricas pendientes/reaplicadas**. El script comprobó la parada y ausencia de recursos temporales, así como la invariancia del stack `codigo_QR`; el workdir se eliminó.
 
 La simulación demuestra el comportamiento del CLI con el mapa propuesto, no que el esquema vivo remoto carezca de drift fuera de las migraciones. Tampoco valida el SQL de lease en una base Testing. No usar `migration repair` para corregir metadata ni `db reset`, `db push` o `db pull` contra un proyecto remoto.
 
 ## Autenticación CLI y futuro dry-run remoto
 
-La CLI necesita una sesión de Management API y, según operación, conectividad/credenciales de base de datos. El login mediante `supabase login` se realiza localmente en navegador/terminal; no copiar un Personal Access Token al chat, shell history, repositorio o logs. Un PAT representa el alcance de la cuenta/organización que lo creó y no debe asumirse limitado a un proyecto; antes de usarlo, verificar la membresía/rol y aceptar que puede tener acceso más amplio que Testing. No se configuró ni verificó un token en esta ejecución.
+La CLI necesita una sesión de Management API y, según operación, conectividad/credenciales de base de datos. En esta ejecución `SUPABASE_ACCESS_TOKEN` estaba ausente; `supabase migration list --project-ref llxyziffgtqnzlguxhyt --workdir <copia-temporal>` terminó con `AccessTokenRequiredError`, antes de consultar la base. No se suministró ni imprimió ningún secreto. El usuario debe iniciar sesión localmente con `SUPABASE_TELEMETRY_DISABLED=1 ./node_modules/.bin/supabase login` (flujo de navegador/terminal); no copiar un Personal Access Token al chat, shell history, repositorio o logs. Un PAT representa el alcance de la cuenta/organización que lo creó y no debe asumirse limitado a un proyecto; comprobar rol y alcance antes de usarlo.
 
-Cuando la simulación local pase y exista autorización para un dry-run remoto:
+Después de completar `supabase login` y recibir autorización para la consulta remota:
 
-1. Autenticar localmente con `supabase login` y verificar por el canal seguro de Supabase que la sesión es la esperada.
+1. Autenticar localmente con `SUPABASE_TELEMETRY_DISABLED=1 ./node_modules/.bin/supabase login` y verificar por el canal seguro de Supabase que la sesión es la esperada.
 2. Confirmar el project ref con `supabase projects list` y el panel del proyecto; detenerse si no coincide literalmente con `llxyziffgtqnzlguxhyt`.
 3. En una copia temporal cuyo historial esté alineado, ejecutar `SUPABASE_TELEMETRY_DISABLED=1 supabase migration list --project-ref llxyziffgtqnzlguxhyt`.
 4. Solo si el resultado reproduce las 21 versiones esperadas, ejecutar `SUPABASE_TELEMETRY_DISABLED=1 supabase db push --project-ref llxyziffgtqnzlguxhyt --dry-run`.
 5. Si solicita credencial de DB, obtenerla y usarla solo por el prompt/gestor seguro local; no pasarla como argumento visible. Detenerse ante cualquier salida distinta de una única migración de lease.
 6. No ejecutar `db push` sin `--dry-run`. La autorización de despliegue de migración debe ser independiente.
 
-El paso 2 puede mostrar metadatos de otros proyectos de la cuenta; no consultar sus bases. No usar la CLI autenticada antes de confirmar el ref. El dry-run remoto no se ejecutó.
+El paso 2 puede mostrar metadatos de otros proyectos; evitarlo si se puede validar el ref en el panel de Testing. No consultar bases ajenas. En 10D el project ref se verificó por ID con Supabase: `QR-asistencia-testing`, `llxyziffgtqnzlguxhyt`, PostgreSQL 17.11. Sin embargo, el dry-run remoto no se ejecutó porque faltó sesión CLI.
 
 ## Validaciones y cierre
 
 - Ejecutado: `git status`, inspección de HEAD/remoto, `git diff --check` inicial, ayuda de CLI 2.120.0, consultas remotas de solo lectura al proyecto Testing, verificación pgTAP y estado de CI del commit base.
-- Ejecutado: simulación local de reconciliación; 21 entradas previas y únicamente lease pendiente en dry-run local. Limpieza aislada confirmada.
-- No ejecutado: dry-run remoto, migración, pruebas de app, lint/typecheck/build (solo se agrega documentación; no hubo cambios de código).
+- Ejecutado en 10D: CLI 2.120.0 y `--help` de login, migration list y db push; proyecto Testing verificado por ID; consulta de `statements` confirmó el SQL pgTAP exacto. La copia temporal incluyó 22 archivos SQL (20 históricos comunes byte idénticos, pgTAP recuperado y lease); frente a las 21 entradas remotas, la única diferencia local fue el lease. Los 20 SQL comunes quedaron byte idénticos a los originales locales; el archivo pgTAP contiene la sentencia exacta recuperada del historial remoto. Copia temporal eliminada.
+- La simulación CLI local previa terminó con el lease como única pendiente; usó la misma sentencia pgTAP que ahora quedó confirmada por el historial remoto.
+- No ejecutado: CLI migration list remoto por error de autenticación, dry-run remoto, migración, pruebas de app, lint/typecheck/build (cambio solo documental).
 - No hubo escrituras remotas ni acceso a Producción.
-- La documentación se publicó mediante push normal, sin force, en el commit `69098ddedac2eefbe2702d91662f62bb3f53f9ec`. El resultado de GitHub Actions para este commit se consultará después del push.
+- Etapa 10C fue publicada en `f289621ca5f3848c3e4a3f433927f11bbc212dcd`; esta actualización 10D está pendiente de commit/push y CI.
 
-**GO/NO-GO del dry-run remoto:** **GO condicionado para solicitarlo**: la simulación local pasó y el proyecto Testing fue confirmado. Antes de ejecutarlo falta establecer una sesión CLI segura y verificar el alcance del usuario; detenerse si el CLI muestra cualquier ref distinto de Testing o cualquier migración adicional. Esto no autoriza `db push` sin `--dry-run` ni aplicar el lease; esa acción requiere autorización separada.
+**GO/NO-GO del dry-run remoto:** **NO-GO hasta autenticar la CLI localmente**. Tras `supabase login`, verificar Testing por ID/ref, leer historial y ejecutar únicamente `supabase db push --dry-run` con el `--workdir` temporal alineado. Detenerse ante cualquier ref o migración adicional, error de autenticación o prompt inesperado. La aplicación del lease requiere autorización independiente.
