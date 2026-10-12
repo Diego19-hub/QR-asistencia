@@ -9,7 +9,7 @@ Producción `jawdrhewabqajxnswhkn`: no consultada ni modificada.
 
 **GO para solicitar después un dry-run remoto de solo lectura; NO-GO para aplicar migraciones.** La simulación local aislada terminó con éxito y enumeró únicamente el lease como pendiente. El dry-run remoto aún no se ejecutó porque esta sesión no tiene credenciales CLI; no se modificó el historial, SQL o esquema remoto.
 
-La estrategia propuesta mantiene intactos los archivos históricos de `main`, simula el historial remoto en una copia temporal local y deja pendiente solo `20261012050537_global_report_export_lease.sql`. Debe probarse localmente antes de siquiera solicitar autorización para ejecutar un dry-run remoto.
+La estrategia aplicada mantuvo intactos los archivos históricos de `main` y simuló el historial en una copia temporal local; el dry-run local dejó pendiente solo `20261012050537_global_report_export_lease.sql`. El dry-run remoto aún requiere credenciales CLI seguras.
 
 ## Estado de Git, CI y herramientas
 
