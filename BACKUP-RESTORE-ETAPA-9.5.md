@@ -1,5 +1,7 @@
 # QR-asistencia — Etapa 9.5: ensayo de backup y restore
 
+> La continuación compatible con Supabase local/PostgreSQL 17.11 está documentada en [BACKUP-RESTORE-ETAPA-9.5B.md](BACKUP-RESTORE-ETAPA-9.5B.md). Ese ejercicio no sustituye un restore autorizado de un backup remoto.
+
 Fecha: 11 de octubre de 2026
 Base de código: `9305ed70d1efeb6167f105753205b0c24e7e66a8`
 Alcance: PostgreSQL local, datos exclusivamente sintéticos

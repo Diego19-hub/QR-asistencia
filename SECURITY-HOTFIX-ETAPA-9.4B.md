@@ -130,3 +130,5 @@ Una vez generado y verificado el respaldo, reservar **45–60 minutos** para int
 ## Ensayo de respaldo y restauración — Etapa 9.5
 
 El ensayo local y sus límites están documentados en [BACKUP-RESTORE-ETAPA-9.5.md](BACKUP-RESTORE-ETAPA-9.5.md). Se ejecutó con datos sintéticos en PostgreSQL local aislado; no se consultó ninguno de los proyectos Supabase. El dump y los clústeres temporales se eliminaron al finalizar la comprobación. El resultado no convierte en GO el despliegue productivo: la restauración de un backup Supabase y la cobertura de Auth/Storage/configuración siguen pendientes.
+
+La extensión con Supabase local y PostgreSQL 17.11 se encuentra en [BACKUP-RESTORE-ETAPA-9.5B.md](BACKUP-RESTORE-ETAPA-9.5B.md): 28 comprobaciones aprobadas con datos sintéticos, sin proyectos remotos. Confirma el restore lógico y los controles documentados, pero no prueba el servicio Auth reconectado ni constituye un restore de producción; los bloqueos de lanzamiento siguen vigentes.
