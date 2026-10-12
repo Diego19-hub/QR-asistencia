@@ -1,5 +1,7 @@
 # QR-asistencia — Etapa 9.5B: restore compatible con Supabase
 
+> La comprobación posterior de GoTrue/PostgREST contra una base restaurada está en [BACKUP-RESTORE-ETAPA-9.5C.md](BACKUP-RESTORE-ETAPA-9.5C.md). Ese ensayo autenticó las identidades sintéticas originales en un segundo stack local y documenta una falla del chequeo automático de limpieza.
+
 Fecha: 11 de octubre de 2026
 Base de código: `d04c570e655cf6def50cc9a32f91596c75911da7`
 Alcance: instancia local aislada de Supabase y datos exclusivamente sintéticos
