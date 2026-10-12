@@ -99,6 +99,6 @@ El paso 2 puede mostrar metadatos de otros proyectos de la cuenta; no consultar 
 - Ejecutado: simulación local de reconciliación; 21 entradas previas y únicamente lease pendiente en dry-run local. Limpieza aislada confirmada.
 - No ejecutado: dry-run remoto, migración, pruebas de app, lint/typecheck/build (solo se agrega documentación; no hubo cambios de código).
 - No hubo escrituras remotas ni acceso a Producción.
-- El envío de cambios por Git tampoco pudo comprobarse desde el shell: `github.com` no resolvió. Por tanto no se creó commit ni se publicó documentación.
+- La documentación se publicó mediante push normal, sin force, en el commit `69098ddedac2eefbe2702d91662f62bb3f53f9ec`. El resultado de GitHub Actions para este commit se consultará después del push.
 
 **GO/NO-GO del dry-run remoto:** **GO condicionado para solicitarlo**: la simulación local pasó y el proyecto Testing fue confirmado. Antes de ejecutarlo falta establecer una sesión CLI segura y verificar el alcance del usuario; detenerse si el CLI muestra cualquier ref distinto de Testing o cualquier migración adicional. Esto no autoriza `db push` sin `--dry-run` ni aplicar el lease; esa acción requiere autorización separada.
