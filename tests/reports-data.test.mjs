@@ -94,7 +94,7 @@ test("export errors handle JSON and empty or malformed server responses", () => 
 
 test("large export requests fail with 413 before allocating the files", () => {
   assert.match(exportRoute, /result.rows.length > 500/);
-  assert.match(exportRoute, /report_export_too_large.*status: 413/);
+  assert.match(exportRoute, /apiError\("report_export_too_large"[\s\S]*?, 413/);
   assert.ok(exportRoute.indexOf("report_export_too_large") < exportRoute.indexOf("await createReportWorkbook"));
   assert.ok(exportRoute.indexOf("report_export_too_large") < exportRoute.indexOf("await createReportPdf"));
 });
