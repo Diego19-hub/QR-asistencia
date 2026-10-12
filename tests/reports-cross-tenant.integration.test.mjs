@@ -12,7 +12,9 @@ const required = [
   "QR_TEST_SUPERVISOR_EMAIL", "QR_TEST_SUPERVISOR_PASSWORD", "QR_TEST_FROM", "QR_TEST_TO",
   "QR_TEST_SENTINEL_A", "QR_TEST_SENTINEL_B",
 ];
+const strict = env.QR_SECURITY_STRICT === "1";
 const missing = required.filter((key) => !env[key]);
+if (strict && missing.length) throw new Error(`strict report integration configuration missing: ${missing.join(", ")}`);
 
 function assertTestProjectTarget() {
   assert.equal(new URL(env.QR_TEST_SUPABASE_URL).hostname, "llxyziffgtqnzlguxhyt.supabase.co", "integration tests must use QR-asistencia-testing");
@@ -36,7 +38,7 @@ async function requestReport(path, cookie) {
   return fetch(new URL(path, env.QR_TEST_APP_URL), { headers: { cookie, accept: "application/json" }, redirect: "manual" });
 }
 
-test("authenticated report and export routes stay within each company's RLS scope", { skip: missing.length ? `configure isolated test environment (${missing.join(", ")})` : false }, async () => {
+test("authenticated report and export routes stay within each company's RLS scope", { skip: strict ? false : missing.length ? `configure isolated test environment (${missing.join(", ")})` : false }, async () => {
   assertTestProjectTarget();
   assert.notEqual(env.QR_TEST_COMPANY_A_ID, env.QR_TEST_COMPANY_B_ID);
   const [adminACookie, adminBCookie, supervisorCookie] = await Promise.all([
@@ -110,7 +112,7 @@ test("authenticated report and export routes stay within each company's RLS scop
   assert.ok(Number(limited.retryAfter) > 0, "429 includes a positive Retry-After value");
 });
 
-test("report JSON and export routes reject unauthenticated requests", { skip: !env.QR_TEST_APP_URL ? "set QR_TEST_APP_URL to a local test server" : false }, async () => {
+test("report JSON and export routes reject unauthenticated requests", { skip: strict ? false : !env.QR_TEST_APP_URL ? "set QR_TEST_APP_URL to a local test server" : false }, async () => {
   assert.ok(["localhost", "127.0.0.1"].includes(new URL(env.QR_TEST_APP_URL).hostname), "unauthenticated tests must use a local app server");
   const query = "companyId=00000000-0000-4000-8000-000000000001&from=2026-10-01&to=2026-10-07";
   for (const path of [`/api/reports?${query}`, `/api/reports/export?${query}&format=xlsx`, `/api/reports/export?${query}&format=pdf`]) {

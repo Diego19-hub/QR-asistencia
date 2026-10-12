@@ -1,0 +1,69 @@
+import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
+const project='llxyziffgtqnzlguxhyt';
+const base='https://'+project+'.supabase.co';
+const env=process.env;
+const required=['QR_TEST_PROJECT_ID','QR_TEST_SUPABASE_URL','QR_TEST_SUPABASE_PUBLISHABLE_KEY','QR_TEST_FIXTURE_MANIFEST',...['ADMIN_A','ADMIN_B','SUPERVISOR_A','NO_MEMBERSHIP'].flatMap(r=>['QR_TEST_'+r+'_EMAIL','QR_TEST_'+r+'_PASSWORD'])];
+const missing=required.filter(k=>!env[k]);if(missing.length)throw new Error('strict security test configuration missing: '+missing.join(', '));
+if(env.QR_TEST_PROJECT_ID!==project||new URL(env.QR_TEST_SUPABASE_URL).hostname!==project+'.supabase.co')throw new Error('strict security tests are restricted to QR-asistencia-testing');
+const roles=['ADMIN_A','ADMIN_B','SUPERVISOR_A','NO_MEMBERSHIP'];const publishable=env.QR_TEST_SUPABASE_PUBLISHABLE_KEY;const manifestPath=path.resolve(env.QR_TEST_FIXTURE_MANIFEST);if(manifestPath.startsWith(process.cwd()+path.sep))throw new Error('fixture manifest must be outside the repository');
+const manifest=JSON.parse(fs.readFileSync(manifestPath,'utf8'));if(manifest.project_id!==project)throw new Error('fixture manifest project mismatch');
+const f=manifest.fixtures;for(const k of ['company_a_id','company_b_id','branch_a1_id','branch_a2_id','branch_b1_id','membership_owner_a_id','membership_admin_b_id','membership_supervisor_a_id','employee_a1_id','employee_a2_id','employee_b1_id'])if(!f[k])throw new Error(`missing fixture ${k}`);
+const auth={};
+async function parse(res){let body;try{body=await res.json()}catch{body={}}return {status:res.status,body};}
+async function login(role){const r=await fetch(`${base}/auth/v1/token?grant_type=password`,{method:'POST',headers:{apikey:publishable,'content-type':'application/json'},body:JSON.stringify({email:env[`QR_TEST_${role}_EMAIL`],password:env[`QR_TEST_${role}_PASSWORD`]})});const x=await parse(r);if(x.status!==200||!x.body.access_token||!x.body.user?.id)throw new Error(`auth failed ${role}`);return {token:x.body.access_token,userId:x.body.user.id};}
+for(const r of roles){auth[r]=await login(r);const expected=manifest.auth_users.find(u=>u.role===r.toLowerCase());if(!expected||expected.user_id!==auth[r].userId)throw new Error(`JWT identity mismatch ${r}`);}
+const results=[];
+async function rpc(label,role,name,args,expect){const token=role?auth[role].token:null;let res;try{res=await fetch(`${base}/rest/v1/rpc/${name}`,{method:'POST',headers:{apikey:publishable, ...(token?{authorization:`Bearer ${token}`} :{}),'content-type':'application/json'},body:JSON.stringify(args)});}catch{results.push({label,pass:false,observed:'network_error'});return null;}const x=await parse(res);const errCode=x.body?.code??null;const isError=!res.ok;let pass;if(expect.kind==='ok')pass=!isError&&(!expect.check||expect.check(x.body));else if(expect.kind==='denied')pass=isError&&(expect.codes?.includes(errCode)||expect.statuses?.includes(res.status));else pass=false;results.push({label,pass,status:res.status,code:errCode,observed:isError?'denied':'allowed'});return {status:res.status,body:x.body,ok:!isError,code:errCode};}
+const denied={kind:'denied',codes:['42501','P0002','23514'],statuses:[401,403,404]};
+async function privateTableDenied(label,role,table){const token=role?auth[role].token:null;const res=await fetch(base+'/rest/v1/'+table+'?select=*',{headers:{apikey:publishable,'accept-profile':'private',...(token?{authorization:'Bearer '+token}:{})}});let body={};try{body=await res.json()}catch{}const pass=!res.ok;results.push({label,pass,status:res.status,code:body?.code??null,observed:pass?'denied':'allowed'});return {status:res.status,ok:res.ok};}
+
+await rpc('adminA own employee status','ADMIN_A','get_employee_credential_status',{p_company_id:f.company_a_id,p_employee_id:f.employee_a1_id},{kind:'ok'});
+await rpc('adminB own employee status','ADMIN_B','get_employee_credential_status',{p_company_id:f.company_b_id,p_employee_id:f.employee_b1_id},{kind:'ok'});const bBaseline=await rpc('adminB baseline B credential state','ADMIN_B','get_employee_credential_status',{p_company_id:f.company_b_id,p_employee_id:f.employee_b1_id},{kind:'ok'});if(!bBaseline?.ok)throw new Error('strict baseline missing');const baseline={qrStatus:bBaseline.body.qrStatus,pinConfigured:bBaseline.body.pinConfigured,employeeActive:bBaseline.body.employeeActive};
+await rpc('adminA reads B status','ADMIN_A','get_employee_credential_status',{p_company_id:f.company_b_id,p_employee_id:f.employee_b1_id},denied);
+await rpc('adminB reads A status','ADMIN_B','get_employee_credential_status',{p_company_id:f.company_a_id,p_employee_id:f.employee_a1_id},denied);
+await rpc('unmember reads A status','NO_MEMBERSHIP','get_employee_credential_status',{p_company_id:f.company_a_id,p_employee_id:f.employee_a1_id},denied);
+await rpc('unmember reads B status','NO_MEMBERSHIP','get_employee_credential_status',{p_company_id:f.company_b_id,p_employee_id:f.employee_b1_id},denied);
+await rpc('supervisor cannot use admin credential RPC','SUPERVISOR_A','get_employee_credential_status',{p_company_id:f.company_a_id,p_employee_id:f.employee_a1_id},denied);
+await privateTableDenied('anonymous cannot read private device hashes',null,'device_token_hashes');
+await privateTableDenied('adminA cannot read private device hashes','ADMIN_A','device_token_hashes');
+await privateTableDenied('adminB cannot read private device hashes','ADMIN_B','device_token_hashes');
+await privateTableDenied('supervisor cannot read private device hashes','SUPERVISOR_A','device_token_hashes');
+await privateTableDenied('unmember cannot read private device hashes','NO_MEMBERSHIP','device_token_hashes');
+await privateTableDenied('anonymous cannot read private bootstrap requests',null,'bootstrap_requests');
+await privateTableDenied('authenticated user cannot read private bootstrap requests','ADMIN_A','bootstrap_requests');
+await rpc('anonymous scanner context denied',null,'get_supervisor_scanner_context',{p_company_id:f.company_a_id,p_device_token:null},{kind:'denied',statuses:[401,403,404],codes:['42501']});
+await rpc('supervisor context A exposes only assigned A1','SUPERVISOR_A','get_supervisor_scanner_context',{p_company_id:f.company_a_id,p_device_token:null},{kind:'ok',check:b=>b?.authorized===false&&Array.isArray(b?.branches)&&b.branches.length===1&&b.branches[0].id===f.branch_a1_id});
+await rpc('supervisor context B denied','SUPERVISOR_A','get_supervisor_scanner_context',{p_company_id:f.company_b_id,p_device_token:null},denied);
+const challenge=crypto.randomBytes(32).toString('base64url');const qrA1=crypto.randomBytes(32).toString('base64url'),qrA2=crypto.randomBytes(32).toString('base64url'),qrB1=crypto.randomBytes(32).toString('base64url');const pinA1=String(100000+crypto.randomInt(900000)),pinA2=String(100000+crypto.randomInt(900000)),pinB1=String(100000+crypto.randomInt(900000));
+async function call(...args){return rpc(...args)}
+const reqA1=await call('supervisor requests device A1','SUPERVISOR_A','request_supervisor_device',{p_company_id:f.company_a_id,p_branch_id:f.branch_a1_id,p_label:'security-test-device',p_challenge:challenge},{kind:'ok'});
+await call('supervisor requests unassigned A2 denied','SUPERVISOR_A','request_supervisor_device',{p_company_id:f.company_a_id,p_branch_id:f.branch_a2_id,p_label:'security-test-device',p_challenge:crypto.randomBytes(32).toString('base64url')},denied);
+await call('supervisor requests B1 denied','SUPERVISOR_A','request_supervisor_device',{p_company_id:f.company_b_id,p_branch_id:f.branch_b1_id,p_label:'security-test-device',p_challenge:crypto.randomBytes(32).toString('base64url')},denied);
+const requestId=reqA1?.body?.requestId;if(!requestId)throw new Error('missing authorized device request fixture');f.device_request_a_id=requestId;
+await call('adminA cross-company device review denied','ADMIN_A','review_supervisor_device_request',{p_company_id:f.company_b_id,p_request_id:requestId,p_approve:true},denied);
+const review=await call('adminA approves device A1','ADMIN_A','review_supervisor_device_request',{p_company_id:f.company_a_id,p_request_id:requestId,p_approve:true},{kind:'ok'});f.authorized_device_a_id=review?.body?.deviceId;
+const redeemed=await call('supervisor redeems device A1','SUPERVISOR_A','redeem_supervisor_device',{p_company_id:f.company_a_id,p_challenge:challenge},{kind:'ok',check:b=>b?.status==='authorized'});
+if(redeemed?.body?.status!=='authorized')throw new Error('device redemption not confirmed');
+const hash=t=>crypto.createHash('sha256').update(t).digest('hex');
+await call('adminA issues QR A1','ADMIN_A','issue_employee_qr_token',{p_company_id:f.company_a_id,p_employee_id:f.employee_a1_id,p_token_hash_hex:hash(qrA1),p_replace:true},{kind:'ok'});
+await call('adminA issues QR A2','ADMIN_A','issue_employee_qr_token',{p_company_id:f.company_a_id,p_employee_id:f.employee_a2_id,p_token_hash_hex:hash(qrA2),p_replace:true},{kind:'ok'});
+await call('adminB attempts QR issue on A using B tenant denied','ADMIN_B','issue_employee_qr_token',{p_company_id:f.company_b_id,p_employee_id:f.employee_a1_id,p_token_hash_hex:hash(qrA1),p_replace:true},denied);
+await call('adminA attempts QR issue on B employee denied','ADMIN_A','issue_employee_qr_token',{p_company_id:f.company_a_id,p_employee_id:f.employee_b1_id,p_token_hash_hex:hash(qrB1),p_replace:true},denied);
+
+await call('adminA sets A1 PIN','ADMIN_A','set_employee_pin',{p_company_id:f.company_a_id,p_employee_id:f.employee_a1_id,p_pin:pinA1},{kind:'ok'});
+await call('adminA sets A2 PIN','ADMIN_A','set_employee_pin',{p_company_id:f.company_a_id,p_employee_id:f.employee_a2_id,p_pin:pinA2},{kind:'ok'});
+await call('adminA attempts set PIN on B employee denied','ADMIN_A','set_employee_pin',{p_company_id:f.company_a_id,p_employee_id:f.employee_b1_id,p_pin:pinB1},denied);
+await call('denied cross-tenant writes leave B credential state unchanged','ADMIN_B','get_employee_credential_status',{p_company_id:f.company_b_id,p_employee_id:f.employee_b1_id},{kind:'ok',check:b=>b?.qrStatus===baseline.qrStatus&&b?.pinConfigured===baseline.pinConfigured&&b?.employeeActive===baseline.employeeActive});
+await call('adminB issues QR B1','ADMIN_B','issue_employee_qr_token',{p_company_id:f.company_b_id,p_employee_id:f.employee_b1_id,p_token_hash_hex:hash(qrB1),p_replace:true},{kind:'ok'});
+await call('adminB sets B1 PIN','ADMIN_B','set_employee_pin',{p_company_id:f.company_b_id,p_employee_id:f.employee_b1_id,p_pin:pinB1},{kind:'ok'});
+const assignedScan=await call('supervisor scans assigned A1 employee','SUPERVISOR_A','scan_employee_attendance',{p_company_id:f.company_a_id,p_employee_qr_token:qrA1,p_pin:pinA1,p_device_token:challenge},{kind:'ok',check:b=>b?.employeeId===f.employee_a1_id});if(assignedScan?.body?.sessionId){await call('close prior synthetic A1 session before transition test','SUPERVISOR_A','confirm_employee_attendance',{p_company_id:f.company_a_id,p_employee_qr_token:qrA1,p_pin:pinA1,p_device_token:challenge,p_event:'clock_out',p_idempotency_key:crypto.randomUUID(),p_break_rule_id:null},{kind:'ok'});}
+const a2scan=await call('supervisor A1 scans unassigned A2 employee denied','SUPERVISOR_A','scan_employee_attendance',{p_company_id:f.company_a_id,p_employee_qr_token:qrA2,p_pin:pinA2,p_device_token:challenge},denied);
+await call('supervisor A1 scans B employee denied','SUPERVISOR_A','scan_employee_attendance',{p_company_id:f.company_a_id,p_employee_qr_token:qrB1,p_pin:pinB1,p_device_token:challenge},denied);
+await call('supervisor A1 cannot read assigned A2 QR status admin RPC','SUPERVISOR_A','get_employee_credential_status',{p_company_id:f.company_a_id,p_employee_id:f.employee_a2_id},denied);
+const idempotency=crypto.randomUUID();await call('supervisor confirms A1 clock-in','SUPERVISOR_A','confirm_employee_attendance',{p_company_id:f.company_a_id,p_employee_qr_token:qrA1,p_pin:pinA1,p_device_token:challenge,p_event:'clock_in',p_idempotency_key:idempotency,p_break_rule_id:null},{kind:'ok',check:b=>b?.employeeId===f.employee_a1_id&&b?.duplicate===false});
+await call('supervisor confirms duplicate idempotent request','SUPERVISOR_A','confirm_employee_attendance',{p_company_id:f.company_a_id,p_employee_qr_token:qrA1,p_pin:pinA1,p_device_token:challenge,p_event:'clock_in',p_idempotency_key:idempotency,p_break_rule_id:null},{kind:'ok',check:b=>b?.duplicate===true});
+await call('supervisor starts assigned employee break','SUPERVISOR_A','confirm_employee_attendance',{p_company_id:f.company_a_id,p_employee_qr_token:qrA1,p_pin:pinA1,p_device_token:challenge,p_event:'break_start',p_idempotency_key:crypto.randomUUID(),p_break_rule_id:f.break_rule_a_id},{kind:'ok'});
+await call('supervisor ends assigned employee break','SUPERVISOR_A','confirm_employee_attendance',{p_company_id:f.company_a_id,p_employee_qr_token:qrA1,p_pin:pinA1,p_device_token:challenge,p_event:'break_end',p_idempotency_key:crypto.randomUUID(),p_break_rule_id:null},{kind:'ok'});
+await call('supervisor clocks out assigned employee','SUPERVISOR_A','confirm_employee_attendance',{p_company_id:f.company_a_id,p_employee_qr_token:qrA1,p_pin:pinA1,p_device_token:challenge,p_event:'clock_out',p_idempotency_key:crypto.randomUUID(),p_break_rule_id:null},{kind:'ok'});
+const direct=await call('legacy public event RPC must require protected flow','SUPERVISOR_A','record_attendance_event',{p_company_id:f.company_a_id,p_employee_qr_token:qrA1,p_device_token:challenge,p_event:'clock_in',p_idempotency_key:crypto.randomUUID(),p_break_rule_id:null},denied);
+const passed=results.filter(r=>r.pass).length,failed=results.length-passed;process.stdout.write(JSON.stringify({project,auth_sessions:roles.length,total:results.length,passed,failed,skipped:0,results,observations:{a2_scan_allowed:a2scan?.ok??false,legacy_event_rpc_allowed:direct?.ok??false}})+'\n');if(failed)process.exitCode=1;

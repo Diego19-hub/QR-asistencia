@@ -10,7 +10,8 @@
     "test:reports": "node --experimental-strip-types --test tests/reports-exports.test.mjs tests/reports-data.test.mjs",
     "test:reports:integration": "node --test tests/reports-cross-tenant.integration.test.mjs",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:security:jwt": "node tests/security-jwt-matrix.integration.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",
