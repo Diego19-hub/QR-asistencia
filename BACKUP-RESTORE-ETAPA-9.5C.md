@@ -85,3 +85,66 @@ Un restore lógico local no demuestra disponibilidad de backups administrados, P
 Se verificó la eliminación de los contenedores, volúmenes y archivos temporales de `qr95c_source` y `qr95c_restore`. Las fixtures del origen se borraron por ID antes de detenerlo. En el destino, la comprobación por API de borrado de cuentas falló por el error de bookkeeping descrito; el teardown del stack y volumen eliminó definitivamente esas cuentas y todos los datos sintéticos. El stack `codigo_QR` siguió activo. No hubo consultas, escrituras ni despliegues remotos.
 
 **Decisión:** GO para la prueba técnica de que un GoTrue/PostgREST nuevos pueden usar una base restaurada y autenticar las identidades originales con JWT reales. **NO-GO para dar por completamente verde el cierre automatizado** hasta corregir el registro de IDs en el cleanup del arnés y repetir esa aserción; la falla no invalida las verificaciones de recuperación/Auth, pero debe conservarse en el historial de pruebas.
+
+---
+
+## Addendum — Etapa 9.5D: restore de Auth y limpieza individual
+
+Fecha: 11 de octubre de 2026
+Commit de referencia solicitado: `603a823624855079791726fda9acf13c448edf19`
+Alcance: repetición local y sintética; no se contactaron Supabase Testing ni producción.
+
+### Resultado final
+
+**55/55 PASS, 0 FAIL, 0 SKIP.** El ensayo terminó en 66,284 ms. Se generaron cuatro identidades sintéticas en el origen, se autenticaron antes del respaldo, se respaldaron sus filas Auth y hashes de contraseña, y se restauró la base completa en una base PostgreSQL nueva creada desde `template0`. Se reiniciaron GoTrue, PostgREST y Kong del stack destino contra la base restaurada. Las cuatro identidades originales iniciaron sesión allí sin signup, conservaron exactamente sus UUID, recibieron JWT nuevos y pasaron `/auth/v1/user`.
+
+El arnés identificó cada usuario restaurado por UUID y correo `.invalid`, comprobó esa identidad mediante Auth Admin, lo eliminó individualmente y confirmó tanto la respuesta 404 posterior como cero filas Auth con ese UUID/correo. También limpió las fixtures SQL antes de eliminar las cuentas. El teardown independiente eliminó los dos stacks, volúmenes, redes y directorio temporal. Se comparó el conjunto de contenedores de `codigo_QR` antes y después: permaneció idéntico.
+
+### Arnés reutilizable
+
+Se conserva en [`tests/integration/supabase_restore_auth_local.py`](tests/integration/supabase_restore_auth_local.py). Solo usa la CLI instalada en el repositorio y Docker local. Crea directorios temporales con modo `700`, genera contraseñas distintas en memoria, guarda el dump con modo `600` y no imprime contraseñas, tokens, claves ni hashes. El script elimina del entorno heredado credenciales y endpoints Supabase, exige loopback para las URLs, usa configuraciones locales con IDs `qr95d_source` y `qr95d_restore`, rechaza recursos previos con ese prefijo y solo llama `start`, `status` y `stop` sobre `--workdir` temporales. No ejecuta `link`, `db push`, ni comandos remotos.
+
+Comando:
+
+```sh
+python3 tests/integration/supabase_restore_auth_local.py
+```
+
+Requisitos: Docker Desktop local en ejecución, Python 3 y dependencias del repositorio instaladas (incluida la Supabase CLI local). El arnés busca puertos libres y exige que el stack preexistente `codigo_QR` esté presente para poder comprobar que no cambia. Si falla una condición, termina con exit code distinto de cero; cualquier aserción fallida o incompleta impide el resultado verde. El cleanup individual y el teardown final son comprobaciones estrictas.
+
+### Cobertura ejecutada
+
+| Comprobación | Resultado |
+|---|---:|
+| Auth origen: cuatro usuarios, login por contraseña y JWT/identidad | 12 PASS |
+| PostgreSQL 17.11, 20 migraciones, RLS por empresa y sucursal | 8 PASS |
+| Archivo de backup válido y cleanup Auth/fixtures del origen | 2 PASS |
+| GoTrue destino, UUID/restauración, migraciones críticas, login/JWT sin signup | 13 PASS |
+| RLS destino: lecturas propias, aislamiento entre empresas y usuario sin membresía | 7 PASS |
+| Escáner: lectura A1 positiva; A2/B1 denegadas; entrada/salida; RPC heredado denegado | 6 PASS |
+| Estado de credencial, cuotas, RLS/ACL privilegiados | 5 PASS |
+| Tiempo registrado y eliminación individual de las cuatro cuentas Auth destino | 2 PASS |
+| **Total** | **55 PASS / 0 FAIL / 0 SKIP** |
+
+Las respuestas de las llamadas no autorizadas al escáner A2 y B1 fueron HTTP 403; ambas fueron esperadas. El supervisor pudo operar en A1. Los dos administradores consultaron solo su empresa; las consultas cruzadas y el supervisor sin asignación a A2/B1 no devolvieron datos de otras ramas. El usuario sin membresía no vio jornadas ni pudo consumir cuota. La función heredada `record_attendance_event` fue rechazada y no tiene `EXECUTE` para `anon` ni `authenticated`.
+
+### Backup, restore y limpieza
+
+| Medición | Resultado final |
+|---|---:|
+| Tiempo completo de suite | 66,284 ms |
+| `pg_dump -Fc` | 192 ms |
+| `pg_restore` desde base `template0` | 391 ms |
+| Tamaño del dump sintético | 698,220 bytes |
+| SHA-256 temporal | `26e6338bb0a1e34d0cc5ce429e4f72f8494d59c6a736450012a8a21aa39b3bbd` |
+| Cleanup individual de usuarios destino | 4/4 verificados por Auth Admin y consulta directa de Auth |
+| Recursos temporales después del teardown | 0 contenedores, 0 volúmenes, 0 redes y 0 directorios |
+| Stack previo `codigo_QR` | 12 contenedores sin cambios |
+
+El dump se mantuvo fuera del repositorio y se eliminó al finalizar. Los datos Auth fueron recuperados desde el backup; no se crearon cuentas en el destino. Las migraciones `20261011232050` y `20261012030630` se encontraron en el historial restaurado. La restauración lógica no cubre por sí sola configuración externa, proveedores/secretos de Auth, Storage, claves de firma ni configuración de hosting; el ensayo sigue siendo sintético local y no demuestra RTO/RPO de producción.
+
+### Iteraciones fallidas conservadas
+
+Las primeras repeticiones de esta etapa no se cuentan como aprobadas: una fixture intentó crear un dispositivo sin su perfil FK de supervisor; un bloque fijo de puertos estaba ocupado; quedaron sesiones de conexión abiertas al recrear `postgres`; el trigger de auditoría produjo filas sintéticas que impedían borrar la empresa; se corrigió el escape SQL al verificar correos Auth; y las dos denegaciones de sucursal devolvían 403 en lugar del 401 demasiado estricto de la aserción. Cada problema se corrigió en el arnés, no en migraciones ni en servicios remotos. Las ejecuciones incompletas registraron omitidas y salieron con error. Solo el pase final 55/55 anterior se considera aprobado.
+
+La falla original de 9.5C (54/55; bookkeeping de IDs Auth restaurados) permanece arriba sin reescritura. Esta repetición corrigió ese defecto: los cuatro UUID restaurados se registraron explícitamente y se borraron individualmente. **GO para el ensayo sintético local de restauración de Auth y limpieza automatizada.** Esto no equivale a aprobar una recuperación de producción ni a autorizar despliegues.
