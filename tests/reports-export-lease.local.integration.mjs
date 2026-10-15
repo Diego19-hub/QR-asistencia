@@ -163,10 +163,13 @@ try {
   assert.equal((await raceOwner.client.rpc("release_report_export_lease", { p_company_id: raceOwner.companyId, p_owner_token: raceWinner.token })).data, true);
   pass("real PostgREST JWT race across two companies grants one global lease; release reopens it");
 
-  const burst = await Promise.all(Array.from({ length: 12 }, (_, i) => acquire(i % 2 ? adminA : adminB, i % 2 ? adminA.companyId : adminB.companyId)));
+  const burst = await Promise.all(Array.from({ length: 12 }, async (_, i) => {
+    const owner = i % 2 ? adminA : adminB;
+    return { owner, ...(await acquire(owner, owner.companyId)) };
+  }));
   assert.equal(burst.filter((x) => !x.error && x.row?.acquired === true).length, 1);
   assert.equal(burst.filter((x) => !x.error && x.row?.acquired === false).length, 11);
-  const burstWinner = burst.find((x) => x.row?.acquired); const burstOwner = burstWinner.token === burst[1].token ? adminA : adminB;
+  const burstWinner = burst.find((x) => x.row?.acquired); const burstOwner = burstWinner.owner;
   assert.equal((await burstOwner.client.rpc("release_report_export_lease", { p_company_id: burstOwner.companyId, p_owner_token: burstWinner.token })).data, true);
   pass("real 12-request cross-company RPC burst yields one holder and eleven rejections");
 
