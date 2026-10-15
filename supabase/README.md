@@ -26,6 +26,21 @@ Omite `--legal-name` o `--rfc` si no aplican. El script genera un `request_id` a
 
 La ejecución imprime únicamente el ref, UUIDs de referencia, rol y estado. Si falla antes de la RPC, no crea la empresa. Si la RPC confirma el resultado pero falla la comprobación de membresía, conserva el archivo de estado y revisa Supabase antes de intentar cualquier operación manual.
 
+## Bootstrap separado para QR-asistencia-testing
+
+`scripts/bootstrap-first-company-testing.mjs` es un procedimiento independiente y fijado en código al proyecto `llxyziffgtqnzlguxhyt`. No cambia ni reemplaza la protección del script anterior, que continúa fijado a Producción. El script de Testing solo acepta un UUID Auth, usa el nombre `DiegosCompany`, envía razón social y RFC como `NULL`, comprueba el usuario mediante Auth Admin y llama a la misma RPC `public.bootstrap_first_company`. La RPC mantiene la comprobación administrativa, transacción y bloqueo de inicialización. La clave `service_role` solo se lee desde el entorno del proceso.
+
+Antes de correrlo, confirma en el Dashboard de **QR-asistencia-testing** el UUID del usuario creado y que Auth permita iniciar sesión (correo confirmado, si la configuración lo requiere). Desde la raíz del repositorio, ejecuta en `zsh`:
+
+```zsh
+env -u SUPABASE_SERVICE_ROLE_KEY node --env-file="$HOME/.config/qr-asistencia-testing/admin.env" \
+  scripts/bootstrap-first-company-testing.mjs --auth-user-id "UUID_AUTH_TESTING"
+```
+
+El archivo `admin.env` debe contener solo la clave de servicio de Testing, con permisos `600`; el directorio padre debe tener permisos `700`. El script no carga `.env.local` ni permite configurar URL/proyecto en el proceso. Conserva su clave de idempotencia bajo `.supabase-bootstrap/testing-first-company.json` (ignorado por Git) para reintentos exactos. Si el bootstrap ya está marcado completo, solo ejecuta consultas de verificación. La función remota rechaza cualquier inicialización previa con otra clave o datos. La verificación final exige una sola empresa, una sola membresía para el usuario y que sea `owner` activa.
+
+Después, inicia sesión en `/login` con esa cuenta y verifica `/api/me` y `/admin`. El script confirma la membresía en base de datos; el acceso de navegador requiere una sesión autenticada válida. Nunca copies la clave ni la contraseña en el repositorio, en logs o en el chat.
+
 ## Comprobación después del bootstrap
 
 El script confirma la fila activa `owner` consultando `company_memberships` con la clave administrativa. Después, inicia sesión desde `/login` como el usuario creado y comprueba `GET /api/me` (sesión normal; no requiere ni usa clave privilegiada). Debe devolver una membresía cuyo `role` sea `owner` y `companyName` sea el nombre de la empresa. Finalmente, visita `/admin`: debe cargar para ese usuario. Una sesión sin membresía será redirigida a `/login?error=no-company`.
@@ -39,3 +54,5 @@ Un supervisor autorizado puede enviar una fila a `attendance_adjustments`. Un us
 ## Pruebas pgTAP
 
 Ejecuta `npx supabase start` y luego `npx supabase test db --local`. Las pruebas solo deben apuntar a la base local desechable; no insertes fixtures en producción.
+
+El flujo de correo de invitación y magic link está descrito en [`INVITATION-FLOW-TESTING.md`](../INVITATION-FLOW-TESTING.md), incluidos los templates alojados de Testing y el procedimiento para sesiones expuestas.

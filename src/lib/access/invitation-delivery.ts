@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { getAuthRedirectUrl, getEmailTokenConfirmationUrl } from "@/lib/access/auth-redirect";
 
 function escapeHtml(value: string) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
@@ -9,7 +10,8 @@ function escapeHtml(value: string) {
 /**
  * New identities use Supabase Auth's invite and configured Auth SMTP. Existing
  * identities get a one-time Auth magic link via the configured mail delivery
- * provider; no link or credential is returned to the caller or written to logs.
+ * provider. Only Auth's hashed token is used, and it is consumed by the SSR
+ * confirm route; access/refresh tokens never enter a redirect URL or a log.
  */
 export async function inviteOrNotifyExisting(
   admin: SupabaseClient,
@@ -28,10 +30,13 @@ export async function inviteOrNotifyExisting(
   if (!mailerKey || !from) return { sent: false as const, mode: "existing-account" as const };
 
   const generated = await admin.auth.admin.generateLink({ type: "magiclink", email, options: { redirectTo } });
-  const actionLink = generated.data.properties?.action_link;
-  if (generated.error || !actionLink) return { sent: false as const, mode: "failed" as const };
+  const tokenHash = generated.data.properties?.hashed_token;
+  if (generated.error || !tokenHash) return { sent: false as const, mode: "failed" as const };
+  const confirmationLink = getEmailTokenConfirmationUrl("magiclink", tokenHash);
+  const canonicalConfirmUrl = getAuthRedirectUrl("confirm")?.toString();
+  if (!confirmationLink || !canonicalConfirmUrl || redirectTo !== canonicalConfirmUrl) return { sent: false as const, mode: "failed" as const };
   const safeCompany = escapeHtml(companyName);
-  const safeLink = escapeHtml(actionLink);
+  const safeLink = escapeHtml(confirmationLink);
   try {
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -40,7 +45,7 @@ export async function inviteOrNotifyExisting(
         from,
         to: [email],
         subject: `Invitación para acceder a ${companyName}`,
-        text: `Te invitaron a ${companyName} en Asistencia QR. Abre este enlace seguro para iniciar sesión y aceptar: ${actionLink}`,
+        text: `Te invitaron a ${companyName} en Asistencia QR. Abre este enlace seguro para iniciar sesión y aceptar: ${confirmationLink}`,
         html: `<p>Te invitaron a <strong>${safeCompany}</strong> en Asistencia QR.</p><p><a href="${safeLink}">Iniciar sesión y aceptar la invitación</a></p><p>Si no esperabas este mensaje, puedes ignorarlo.</p>`,
       }),
     });

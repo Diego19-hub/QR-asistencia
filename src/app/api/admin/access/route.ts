@@ -29,7 +29,7 @@ export async function POST(request: Request) {
   if (!parsed.success) return Response.json({ error: { code: "invalid_invitation", message: "Revisa el correo, rol y expediente seleccionado." } }, { status: 422, headers: { "Cache-Control": "no-store" } });
 
   const admin = createAuthAdminClient();
-  const redirectTo = getAuthRedirectUrl("/auth/callback?next=%2Finvitacion");
+  const redirectTo = getAuthRedirectUrl("confirm");
   if (!admin || !redirectTo) return apiError("auth_invite_not_configured", "Falta configurar el backend de invitaciones y la URL pública segura. No se creó la invitación.", 503);
 
   const { data: invitationId, error: invitationError } = await scope.supabase.rpc("create_company_user_invitation", {

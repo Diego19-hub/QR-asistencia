@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
+import { getAuthRedirectUrl as getCanonicalAuthRedirectUrl, type AuthRedirectTarget } from "@/lib/access/auth-redirect";
 
 /** The service-role credential is intentionally only read by Node server code. */
 export function createAuthAdminClient() {
@@ -12,15 +13,6 @@ export function createAuthAdminClient() {
   });
 }
 
-export function getAuthRedirectUrl(path: string) {
-  const base = process.env.APP_BASE_URL;
-  if (!base) return null;
-  try {
-    const url = new URL(base);
-    if (process.env.NODE_ENV === "production" && url.protocol !== "https:") return null;
-    if (url.username || url.password || url.search || url.hash) return null;
-    return new URL(path, url).toString();
-  } catch {
-    return null;
-  }
+export function getAuthRedirectUrl(target: AuthRedirectTarget) {
+  return getCanonicalAuthRedirectUrl(target)?.toString() ?? null;
 }

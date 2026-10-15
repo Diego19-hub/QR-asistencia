@@ -54,6 +54,20 @@ test("local Auth disables public sign-up while keeping email login available for
   assert.match(config, /\[auth\.email\][\s\S]*?enable_signup = true/);
 });
 
+test("Testing first-company bootstrap is hard-pinned and keeps the Production guard intact", async () => {
+  const testingBootstrap = await readFile(new URL("../scripts/bootstrap-first-company-testing.mjs", import.meta.url), "utf8");
+  const productionBootstrap = await readFile(new URL("../scripts/bootstrap-first-company.mjs", import.meta.url), "utf8");
+  assert.match(testingBootstrap, /PROJECT_REF = 'llxyziffgtqnzlguxhyt'/);
+  assert.match(testingBootstrap, /const COMPANY_NAME = 'DiegosCompany'/);
+  assert.match(testingBootstrap, /https:\/\/\$\{PROJECT_REF\}\.supabase\.co/);
+  assert.match(testingBootstrap, /auth\.admin\.getUserById/);
+  assert.match(testingBootstrap, /bootstrap_first_company/);
+  assert.match(testingBootstrap, /\.supabase-bootstrap\/testing-first-company\.json/);
+  assert.doesNotMatch(testingBootstrap, /jawdrhewabqajxnswhkn|NEXT_PUBLIC_|process\.env\.SUPABASE_URL/);
+  assert.match(productionBootstrap, /EXPECTED_PROJECT_REF = 'jawdrhewabqajxnswhkn'/);
+  assert.match(productionBootstrap, /bootstrap_first_company/);
+});
+
 test("Caddy preserves export streaming and grants camera only to this origin", async () => {
   const caddyfile = await readFile(new URL("../Caddyfile.testing", import.meta.url), "utf8");
   assert.match(caddyfile, /flush_interval -1/);

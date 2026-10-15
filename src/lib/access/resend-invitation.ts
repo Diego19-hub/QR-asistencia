@@ -14,7 +14,7 @@ export async function resendCompanyInvitation(request: Request, invitationId: st
   const permissionError = permissionCheckError(await checkAdminCompanyPermission(scope, "company.manage"), "No tienes permiso para reenviar invitaciones.");
   if (permissionError) return permissionError;
   const admin = createAuthAdminClient();
-  const redirectTo = getAuthRedirectUrl("/auth/callback?next=%2Finvitacion");
+  const redirectTo = getAuthRedirectUrl("confirm");
   if (!admin || !redirectTo) return apiError("auth_invite_not_configured", "Falta configurar el backend de invitaciones y la URL pública segura.", 503);
   const { data, error } = await scope.supabase.rpc("get_company_user_invitation_for_delivery", {
     p_company_id: scope.company.companyId, p_invitation_id: invitationId,
