@@ -1,11 +1,23 @@
 import { z } from "zod";
 
-import { apiError, resolveAdminScope, scopeError } from "@/lib/admin/scope";
+import { apiError, checkAdminCompanyPermission, permissionCheckError, resolveAdminScope, scopeError } from "@/lib/admin/scope";
 import { branchSchema } from "@/lib/schedules/validation";
+
+export async function GET(request: Request) {
+  const result = await resolveAdminScope(request);
+  if (!result.ok) return scopeError(result);
+  const { data, error } = await result.scope.supabase.from("branches")
+    .select("id,name,timezone,active,created_at")
+    .eq("company_id", result.scope.company.companyId).order("name");
+  if (error) return apiError("branches_lookup_failed", "No fue posible cargar las sucursales.", 503);
+  return Response.json({ items: data ?? [] }, { headers: { "Cache-Control": "no-store" } });
+}
 
 export async function POST(request: Request) {
   const result = await resolveAdminScope(request);
   if (!result.ok) return scopeError(result);
+  const permissionError = permissionCheckError(await checkAdminCompanyPermission(result.scope, "company.manage"), "Tu membresía no tiene permiso para administrar sucursales.");
+  if (permissionError) return permissionError;
   let payload: unknown;
   try { payload = await request.json(); } catch { return apiError("invalid_json", "El cuerpo de la solicitud no es JSON válido.", 400); }
   const parsed = branchSchema.safeParse(payload);
@@ -28,6 +40,8 @@ export async function POST(request: Request) {
 export async function PATCH(request: Request) {
   const result = await resolveAdminScope(request);
   if (!result.ok) return scopeError(result);
+  const permissionError = permissionCheckError(await checkAdminCompanyPermission(result.scope, "company.manage"), "Tu membresía no tiene permiso para administrar sucursales.");
+  if (permissionError) return permissionError;
   let payload: unknown;
   try { payload = await request.json(); } catch { return apiError("invalid_json", "El cuerpo de la solicitud no es JSON válido.", 400); }
   const parsed = z.object({ id: z.string().uuid(), active: z.boolean() }).strict().safeParse(payload);

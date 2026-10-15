@@ -10,6 +10,7 @@ import {
 import type { ReactNode } from "react";
 
 import { signOut } from "@/app/(auth)/login/actions";
+import { setAdminMembership } from "@/app/(admin)/admin/actions";
 import { AdminContextProvider, type CompanyOption } from "@/components/admin/admin-context";
 
 const navigation = [
@@ -80,7 +81,7 @@ export function AdminShell({
           <div className="flex items-center gap-3">
             <label className="flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-600">
               <Building2 size={15} className="text-blue-700" />
-              <select aria-label="Empresa activa" value={companyId} onChange={(event) => setCompanyId(event.target.value)} className="max-w-44 cursor-pointer appearance-none bg-transparent pr-1 text-xs font-semibold text-slate-800 outline-none">
+              <select aria-label="Empresa activa" value={companyId} onChange={async (event) => { const selected = companies.find((item) => item.companyId === event.target.value); if (selected && await setAdminMembership(selected.membershipId)) setCompanyId(selected.companyId); }} className="max-w-44 cursor-pointer appearance-none bg-transparent pr-1 text-xs font-semibold text-slate-800 outline-none">
                 {companies.map((item) => <option key={item.companyId} value={item.companyId}>{item.companyName}</option>)}
               </select><ChevronDown size={13} className="text-slate-400" />
             </label>

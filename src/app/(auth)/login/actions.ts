@@ -3,6 +3,8 @@
 import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
+import { destinationForRole, selectInitialMembership, type MembershipRole } from "@/lib/access/user-management";
+import { clearActiveMembershipCookie, setActiveMembershipCookie } from "@/lib/access/active-membership-cookie";
 
 export async function signIn(formData: FormData) {
   const email = formData.get("email");
@@ -31,16 +33,31 @@ export async function signIn(formData: FormData) {
     if (!error && data.user) {
       const { data: memberships, error: membershipError } = await supabase
         .from("company_memberships")
-        .select("role")
+        .select("id,company_id,role")
         .eq("user_id", data.user.id)
         .eq("active", true);
 
       if (membershipError) destination = "/login?error=service";
-      else if (!memberships?.length) destination = "/login?error=no-company";
-      else if (memberships.some(({ role }) => role === "owner" || role === "admin")) destination = "/admin";
-      else if (memberships.some(({ role }) => role === "supervisor")) destination = "/scanner";
-      else if (memberships.some(({ role }) => role === "employee")) destination = "/mi-qr";
-      else destination = "/login?error=no-company";
+      else {
+        const { data: pending, error: invitationError } = await supabase.rpc("list_my_pending_company_invitations");
+        const invitationFunctionMissing = invitationError?.code === "PGRST202" || invitationError?.code === "42883";
+        if (invitationError && !invitationFunctionMissing) destination = "/login?error=service";
+        else if (Array.isArray(pending) && pending.length) destination = "/invitacion";
+        else {
+          const choices = (memberships ?? []).map((membership) => ({
+            companyId: membership.company_id,
+            role: membership.role as MembershipRole,
+            membershipId: membership.id,
+          }));
+          const selected = selectInitialMembership(choices);
+          if (selected.kind === "none") destination = "/login?error=no-company";
+          else if (selected.kind === "choose") destination = "/seleccionar-empresa";
+          else {
+            await setActiveMembershipCookie(selected.membership.membershipId ?? "");
+            destination = destinationForRole(selected.membership.role);
+          }
+        }
+      }
     }
   } catch {
     redirect("/login?error=service");
@@ -70,6 +87,8 @@ export async function signOut() {
   if (failed) {
     redirect("/admin?error=signout");
   }
+
+  await clearActiveMembershipCookie();
 
   redirect("/login");
 }

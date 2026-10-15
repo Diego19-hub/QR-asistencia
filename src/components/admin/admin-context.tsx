@@ -2,7 +2,7 @@
 
 import { createContext, useContext, type ReactNode } from "react";
 
-export type CompanyOption = { companyId: string; companyName: string; role: "owner" | "admin" };
+export type CompanyOption = { membershipId: string; companyId: string; companyName: string; role: "owner" | "admin" };
 type AdminContextValue = { company: CompanyOption; companies: CompanyOption[]; setCompanyId: (companyId: string) => void };
 
 const AdminContext = createContext<AdminContextValue | null>(null);

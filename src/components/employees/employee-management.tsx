@@ -9,7 +9,7 @@ import { formatInTimeZone } from "@/lib/datetime";
 
 type Branch = { id: string; name: string; timezone: string };
 type Employee = {
-  id: string; employee_number: string; first_name: string; last_name: string; email: string | null;
+  id: string; employee_number: string; first_name: string; last_name: string; email: string | null; auth_user_id: string | null;
   branch_id: string | null; active: boolean; hired_on: string | null; terminated_on: string | null;
   created_at: string; updated_at: string; branch: Branch | null;
   currentSchedule: { name: string; startLocal: string | null; endLocal: string | null } | null;

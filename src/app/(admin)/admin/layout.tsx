@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 
 import { AdminShell } from "@/components/admin/admin-shell";
 import type { CompanyOption } from "@/components/admin/admin-context";
@@ -15,14 +16,20 @@ export default async function AdminLayout({ children }: { children: ReactNode })
 
   const { data: memberships, error: membershipError } = await supabase
     .from("company_memberships")
-    .select("company_id, role")
+    .select("id,company_id,role")
     .eq("user_id", user.id)
-    .eq("active", true)
-    .in("role", ["owner", "admin"]);
+    .eq("active", true);
   if (membershipError) redirect("/login?error=service");
-  if (!memberships?.length) redirect("/login?error=no-company");
+  const adminMemberships = (memberships ?? []).filter((membership) => membership.role === "owner" || membership.role === "admin");
+  if (!adminMemberships.length) redirect("/login?error=no-company");
 
-  const companyIds = [...new Set(memberships.map(({ company_id }) => company_id))];
+  const selectedId = (await cookies()).get("qr_active_membership_id")?.value;
+  const selectedMembership = selectedId ? adminMemberships.find((membership) => membership.id === selectedId) : null;
+  const soleMembership = memberships?.length === 1 && adminMemberships.length === 1 ? adminMemberships[0] : null;
+  const activeAdminMembership = selectedMembership ?? soleMembership;
+  if (!activeAdminMembership) redirect("/seleccionar-empresa");
+
+  const companyIds = [...new Set(adminMemberships.map(({ company_id }) => company_id))];
   const { data: companyRows, error: companiesError } = await supabase
     .from("companies")
     .select("id, name")
@@ -30,11 +37,13 @@ export default async function AdminLayout({ children }: { children: ReactNode })
   if (companiesError || !companyRows?.length) redirect("/login?error=service");
 
   const companyNames = new Map(companyRows.map(({ id, name }) => [id, name]));
-  const companies: CompanyOption[] = memberships.flatMap((membership) => {
+  const companies: CompanyOption[] = adminMemberships.flatMap((membership) => {
     const companyName = companyNames.get(membership.company_id);
-    return companyName ? [{ companyId: membership.company_id, companyName, role: membership.role as CompanyOption["role"] }] : [];
+    return companyName ? [{ membershipId: membership.id, companyId: membership.company_id, companyName, role: membership.role as CompanyOption["role"] }] : [];
   });
   if (!companies.length) redirect("/login?error=no-company");
 
-  return <AdminShell userName={user.email ?? "Administrador"} companies={companies} initialCompany={companies[0]}>{children}</AdminShell>;
+  const initialCompany = companies.find((company) => company.companyId === activeAdminMembership.company_id);
+  if (!initialCompany) redirect("/seleccionar-empresa");
+  return <AdminShell userName={user.email ?? "Administrador"} companies={companies} initialCompany={initialCompany}>{children}</AdminShell>;
 }

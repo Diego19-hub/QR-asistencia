@@ -9,6 +9,7 @@ const errorMessages: Record<string, string> = {
   credentials: "No se pudo iniciar sesión. Revisa tus datos e inténtalo de nuevo.",
   service: "No fue posible conectar con el servicio de autenticación. Inténtalo más tarde.",
   "no-company": "Tu cuenta aún no está asignada a una empresa. Contacta al administrador.",
+  invite: "No fue posible validar el enlace de invitación. Solicita que lo reenvíen.",
 };
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {

@@ -1,7 +1,7 @@
 import type { AdminScope } from "@/lib/admin/scope";
 import { dateInTimeZone } from "@/lib/datetime";
 
-export const EMPLOYEE_COLUMNS = "id,employee_number,first_name,last_name,email,branch_id,active,hired_on,terminated_on,created_at,updated_at";
+export const EMPLOYEE_COLUMNS = "id,employee_number,first_name,last_name,email,auth_user_id,branch_id,active,hired_on,terminated_on,created_at,updated_at";
 export type EmployeeRow = Record<string, unknown> & { id: string; branch_id: string | null };
 
 export async function employeeDetails(scope: AdminScope, employee: EmployeeRow) {

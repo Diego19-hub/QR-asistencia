@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { BrowserQRCodeReader, type IScannerControls } from "@zxing/browser";
 import { Camera, CameraOff, CheckCircle2, CircleAlert, Clock3, LoaderCircle, RotateCcw, ShieldCheck, Smartphone } from "lucide-react";
+import Link from "next/link";
 import { isCurrentContextRequest } from "@/lib/http/request-origin";
 
 type Branch = { id: string; name: string; timezone: string };
@@ -177,7 +178,7 @@ export function MobileScanner() {
   const selected = preview?.allowedActions.find((action) => action.type === selectedAction);
 
   return <div className="mx-auto max-w-2xl space-y-5">
-    <header className="flex items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-[.14em] text-blue-700">Registro de jornada</p><h1 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">Escáner del supervisor</h1><p className="mt-1 text-sm text-slate-500">Escanea la credencial y confirma el movimiento con el PIN del empleado.</p></div><div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-blue-50 text-blue-700"><ShieldCheck size={21} /></div></header>
+    <header className="flex items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-[.14em] text-blue-700">Registro de jornada</p><h1 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">Escáner del supervisor</h1><p className="mt-1 text-sm text-slate-500">Escanea la credencial y confirma el movimiento con el PIN del empleado.</p><Link href="/seleccionar-empresa" className="mt-2 inline-block text-xs font-semibold text-blue-700 hover:text-blue-900">Cambiar empresa o rol</Link></div><div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-blue-50 text-blue-700"><ShieldCheck size={21} /></div></header>
     {contexts.length > 1 ? <label className="block text-xs font-medium text-slate-600">Empresa<select value={companyId} onChange={(event) => setCompanyId(event.target.value)} className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"><option value="">Selecciona empresa</option>{contexts.map((item) => <option key={item.companyId} value={item.companyId}>{item.companyName}</option>)}</select></label> : null}
     {error ? <div role="alert" className="flex gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"><CircleAlert className="shrink-0" size={17} />{error}</div> : null}
     {!contexts.length && contextLoadState === "loading" ? <p role="status" className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-600">Cargando la asignación de supervisor…</p> : null}

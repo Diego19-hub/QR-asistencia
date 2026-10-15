@@ -1,5 +1,6 @@
 import type { User } from "@supabase/supabase-js";
 
+import { classifyCompanyPermissionCheck, type CompanyPermissionCheck } from "@/lib/access/user-management";
 import { createClient } from "@/lib/supabase/server";
 
 const ADMIN_ROLES = new Set(["owner", "admin"]);
@@ -97,4 +98,26 @@ export function apiError(code: string, message: string, status: number) {
     { error: { code, message } },
     { status, headers: { "Cache-Control": "no-store" } },
   );
+}
+
+/** Evaluates the effective permission using the active membership and its override. */
+export async function checkAdminCompanyPermission(
+  scope: AdminScope,
+  permission: string,
+): Promise<CompanyPermissionCheck> {
+  const { data, error } = await scope.supabase.rpc("current_user_has_company_permission", {
+    p_company_id: scope.company.companyId,
+    p_permission: permission,
+  });
+  return classifyCompanyPermissionCheck(data, error);
+}
+
+export function permissionCheckError(check: CompanyPermissionCheck, message: string) {
+  return check.allowed
+    ? null
+    : apiError(
+        check.reason === "unavailable" ? "permission_check_unavailable" : "company_manage_required",
+        check.reason === "unavailable" ? "No fue posible validar los permisos. Verifica que las migraciones locales requeridas estén aplicadas." : message,
+        check.reason === "unavailable" ? 503 : 403,
+      );
 }

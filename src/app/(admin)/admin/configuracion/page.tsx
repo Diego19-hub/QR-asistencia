@@ -1,5 +1,5 @@
-import { ModulePlaceholder } from "@/components/dashboard/module-placeholder";
+import { CompanySettings } from "@/components/admin/company-settings";
 
 export default function SettingsPage() {
-  return <ModulePlaceholder title="Configuración" />;
+  return <CompanySettings />;
 }

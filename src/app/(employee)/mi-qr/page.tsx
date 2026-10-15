@@ -1,5 +1,5 @@
-import { ModulePlaceholder } from "@/components/dashboard/module-placeholder";
+import { EmployeePortal } from "@/components/employee/employee-portal";
 
 export default function EmployeeQrPage() {
-  return <ModulePlaceholder title="Mi QR" />;
+  return <EmployeePortal />;
 }

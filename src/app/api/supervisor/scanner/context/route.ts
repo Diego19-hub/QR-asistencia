@@ -14,16 +14,24 @@ async function scannerContext(request: Request, redeemChallenge: boolean) {
   const { data: auth, error: authError } = await supabase.auth.getUser();
   if (authError || !auth.user) return Response.json({ error: { code: "auth_required", message: "Inicia sesión para continuar." } }, { status: 401 });
 
-  const { data: memberships, error } = await supabase.from("company_memberships").select("company_id")
+  const { data: memberships, error } = await supabase.from("company_memberships").select("id,company_id")
     .eq("user_id", auth.user.id).eq("role", "supervisor").eq("active", true);
   if (error) return Response.json({ error: { code: "membership_lookup_failed", message: "No fue posible validar la membresía del supervisor." } }, { status: 503 });
 
-  const requestedCompany = new URL(request.url).searchParams.get("companyId");
-  const companyIds = [...new Set((memberships ?? []).map((membership) => membership.company_id))]
-    .filter((id) => !requestedCompany || requestedCompany === id);
-  if (requestedCompany && !companyIds.includes(requestedCompany)) return Response.json({ error: { code: "supervisor_forbidden", message: "No tienes acceso de supervisor a esta empresa." } }, { status: 403 });
-
   const store = await cookies();
+  const selectedId = store.get("qr_active_membership_id")?.value;
+  const selectedMembership = selectedId ? (memberships ?? []).find((membership) => membership.id === selectedId) : null;
+  const allMemberships = await supabase.from("company_memberships").select("id,role")
+    .eq("user_id", auth.user.id).eq("active", true);
+  if (allMemberships.error) return Response.json({ error: { code: "membership_lookup_failed", message: "No fue posible validar la membresía del supervisor." } }, { status: 503 });
+  const soleSupervisor = allMemberships.data?.length === 1 && memberships?.length === 1 ? memberships[0] : null;
+  const activeSupervisor = selectedMembership ?? soleSupervisor;
+  if (!activeSupervisor && (allMemberships.data ?? []).length > 1) return Response.json({ error: { code: "company_selection_required", message: "Selecciona una empresa y el rol de supervisor antes de abrir el escáner." } }, { status: 409 });
+  if (!activeSupervisor) return Response.json({ error: { code: "supervisor_forbidden", message: "La membresía seleccionada no tiene acceso de supervisor." } }, { status: 403 });
+  const requestedCompany = new URL(request.url).searchParams.get("companyId");
+  const companyIds = [activeSupervisor.company_id];
+  if (requestedCompany && requestedCompany !== activeSupervisor.company_id) return Response.json({ error: { code: "supervisor_forbidden", message: "No tienes acceso de supervisor a esta empresa seleccionada." } }, { status: 403 });
+
   const contexts: Record<string, unknown>[] = [];
   for (const companyId of companyIds) {
     const challengeName = `qr_enroll_${companyId}`;
