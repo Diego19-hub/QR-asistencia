@@ -20,6 +20,34 @@ test("Testing container uses Node 22, low-privilege runtime, and PDFKit AFM vali
   assert.doesNotMatch(dockerfile, /SERVICE_ROLE|service_role/i);
 });
 
+test("GHCR workflow publishes only an AMD64 image after enforcing the Testing project ref", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/publish-ghcr-testing.yml", import.meta.url), "utf8");
+  assert.match(workflow, /packages:\s*write/);
+  assert.match(workflow, /contents:\s*read/);
+  assert.match(workflow, /vars\.NEXT_PUBLIC_SUPABASE_URL != ''/);
+  assert.match(workflow, /vars\.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY != ''/);
+  assert.match(workflow, /https:\/\/llxyziffgtqnzlguxhyt\.supabase\.co/);
+  assert.match(workflow, /platforms:\s*linux\/amd64/);
+  assert.match(workflow, /tags:\s*\$\{\{ env\.REGISTRY \}\}\/\$\{\{ env\.IMAGE_NAME \}\}:\$\{\{ github\.sha \}\}/);
+  assert.match(workflow, /steps\.image\.outputs\.digest/);
+  assert.match(workflow, /NEXT_PUBLIC_SUPABASE_URL=\$\{\{ env\.NEXT_PUBLIC_SUPABASE_URL \}\}/);
+  assert.match(workflow, /NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=\$\{\{ env\.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY \}\}/);
+  assert.doesNotMatch(workflow, /SUPABASE_SERVICE_ROLE_KEY|RESEND_API_KEY|DATABASE_URL/i);
+  const buildArgs = workflow.split("build-args:")[1]?.split("\n\n      - name:")[0];
+  assert.ok(buildArgs);
+  assert.doesNotMatch(buildArgs, /PASSWORD|SERVICE_ROLE|RESEND|DATABASE_URL/i);
+});
+
+test("Dokploy guide documents private GHCR, immutable references, and single-instance port 3000", async () => {
+  const guide = await readFile(new URL("../DOKPLOY-GHCR-TESTING.md", import.meta.url), "utf8");
+  assert.match(guide, /GHCR.*privad/i);
+  assert.match(guide, /read:packages/);
+  assert.match(guide, /sha256:/);
+  assert.match(guide, /una sola instancia/);
+  assert.match(guide, /3000/);
+  assert.match(guide, /llxyziffgtqnzlguxhyt/);
+});
+
 test("local Auth disables public sign-up while keeping email login available for invited users", async () => {
   const config = await readFile(new URL("../supabase/config.toml", import.meta.url), "utf8");
   assert.match(config, /\[auth\][\s\S]*?enable_signup = false/);
