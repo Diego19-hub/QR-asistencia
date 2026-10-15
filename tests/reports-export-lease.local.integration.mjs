@@ -76,7 +76,7 @@ async function makeUser(label, role, companyName) {
   if (membershipResult.error) throw new Error(`membership fixture creation failed for ${label}`);
   const client = createClient(apiUrl, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
   const login = await client.auth.signInWithPassword({ email, password });
-  if (login.error || !login.data.session) throw new Error(`real local Auth login failed for ${label}`);
+  if (login.error || !login.data.session) throw new Error(`real local Auth login failed for ${label} (status=${login.error?.status ?? "none"}, code=${login.error?.code ?? "none"})`);
   const identity = await client.auth.getUser();
   if (identity.error || identity.data.user?.id !== userId) throw new Error(`local JWT identity mismatch for ${label}`);
   const jar = new Map();

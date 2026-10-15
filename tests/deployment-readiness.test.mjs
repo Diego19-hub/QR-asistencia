@@ -20,6 +20,12 @@ test("Testing container uses Node 22, low-privilege runtime, and PDFKit AFM vali
   assert.doesNotMatch(dockerfile, /SERVICE_ROLE|service_role/i);
 });
 
+test("local Auth disables public sign-up while keeping email login available for invited users", async () => {
+  const config = await readFile(new URL("../supabase/config.toml", import.meta.url), "utf8");
+  assert.match(config, /\[auth\][\s\S]*?enable_signup = false/);
+  assert.match(config, /\[auth\.email\][\s\S]*?enable_signup = true/);
+});
+
 test("Caddy preserves export streaming and grants camera only to this origin", async () => {
   const caddyfile = await readFile(new URL("../Caddyfile.testing", import.meta.url), "utf8");
   assert.match(caddyfile, /flush_interval -1/);
