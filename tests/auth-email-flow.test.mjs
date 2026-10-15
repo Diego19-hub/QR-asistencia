@@ -3,7 +3,27 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const redirect = await import("../src/lib/access/auth-redirect.ts");
+const invitationPassword = await import("../src/lib/access/invitation-password.ts");
 const appUrl = "https://asistencia-test.duob.tech";
+
+test("Invitation passwords accept 6 to 128 characters and require matching values", async () => {
+  const [page, actions, localAuthConfig] = await Promise.all([
+    readFile(new URL("../src/app/(auth)/invitacion/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/app/(auth)/invitacion/actions.ts", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/config.toml", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /Contraseña de al menos 6 caracteres/);
+  assert.equal((page.match(/minLength=\{6\}/g) ?? []).length, 2);
+  assert.doesNotMatch(page, /minLength=\{12\}|al menos 12 caracteres/);
+  assert.match(actions, /isValidInvitationPassword\(password, confirmation\)/);
+  assert.match(localAuthConfig, /^minimum_password_length\s*=\s*6$/m);
+  assert.equal(invitationPassword.isValidInvitationPassword("123456", "123456"), true);
+  assert.equal(invitationPassword.isValidInvitationPassword("12345", "12345"), false);
+  assert.equal(invitationPassword.isValidInvitationPassword("a".repeat(128), "a".repeat(128)), true);
+  assert.equal(invitationPassword.isValidInvitationPassword("a".repeat(129), "a".repeat(129)), false);
+  assert.equal(invitationPassword.isValidInvitationPassword("123456", "654321"), false);
+  assert.equal(invitationPassword.isValidInvitationPassword(null, null), false);
+});
 
 test("Auth redirects use APP_BASE_URL and a closed set of paths", () => {
   assert.equal(redirect.getAuthRedirectUrl("confirm", appUrl, "production").href, `${appUrl}/auth/confirm`);

@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { destinationForRole, type MembershipRole } from "@/lib/access/user-management";
 import { setActiveMembershipCookie } from "@/lib/access/active-membership-cookie";
+import { isValidInvitationPassword } from "@/lib/access/invitation-password";
 
 export async function acceptInvitation(formData: FormData) {
   const invitationId = formData.get("invitationId");
@@ -29,7 +30,7 @@ export async function acceptInvitation(formData: FormData) {
 export async function setInvitationPassword(formData: FormData) {
   const password = formData.get("password");
   const confirmation = formData.get("confirmation");
-  if (typeof password !== "string" || typeof confirmation !== "string" || password.length < 12 || password.length > 128 || password !== confirmation) {
+  if (!isValidInvitationPassword(password, confirmation)) {
     redirect("/invitacion?error=password");
   }
   const supabase = await createClient();

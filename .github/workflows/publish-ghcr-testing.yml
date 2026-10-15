@@ -1,9 +1,9 @@
 name: Publish Testing image to GHCR
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 permissions:
   contents: read
@@ -16,7 +16,9 @@ jobs:
   publish:
     if: >-
       github.repository == 'Diego19-hub/QR-asistencia' &&
-      github.ref == 'refs/heads/main' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push' &&
       vars.NEXT_PUBLIC_SUPABASE_URL != '' &&
       vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY != ''
     runs-on: ubuntu-latest
@@ -46,6 +48,8 @@ jobs:
 
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -65,10 +69,10 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.workflow_run.head_sha }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
           build-args: |
             NEXT_PUBLIC_SUPABASE_URL=${{ env.NEXT_PUBLIC_SUPABASE_URL }}
             NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
@@ -79,7 +83,7 @@ jobs:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
         run: |
           set -euo pipefail
-          image="${REGISTRY}/${IMAGE_NAME}:${GITHUB_SHA}"
+          image="${REGISTRY}/${IMAGE_NAME}:${{ github.event.workflow_run.head_sha }}"
           {
             echo "## GHCR Testing image"
             echo "- Platform: \`linux/amd64\`"

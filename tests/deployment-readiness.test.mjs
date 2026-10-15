@@ -26,9 +26,13 @@ test("GHCR workflow publishes only an AMD64 image after enforcing the Testing pr
   assert.match(workflow, /contents:\s*read/);
   assert.match(workflow, /vars\.NEXT_PUBLIC_SUPABASE_URL != ''/);
   assert.match(workflow, /vars\.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY != ''/);
+  assert.match(workflow, /workflow_run:[\s\S]*workflows:\s*\[CI\]/);
+  assert.match(workflow, /workflow_run\.conclusion == 'success'/);
+  assert.match(workflow, /workflow_run\.head_sha/);
+  assert.doesNotMatch(workflow, /^  push:/m);
   assert.match(workflow, /https:\/\/llxyziffgtqnzlguxhyt\.supabase\.co/);
   assert.match(workflow, /platforms:\s*linux\/amd64/);
-  assert.match(workflow, /tags:\s*\$\{\{ env\.REGISTRY \}\}\/\$\{\{ env\.IMAGE_NAME \}\}:\$\{\{ github\.sha \}\}/);
+  assert.match(workflow, /tags:\s*\$\{\{ env\.REGISTRY \}\}\/\$\{\{ env\.IMAGE_NAME \}\}:\$\{\{ github\.event\.workflow_run\.head_sha \}\}/);
   assert.match(workflow, /steps\.image\.outputs\.digest/);
   assert.match(workflow, /NEXT_PUBLIC_SUPABASE_URL=\$\{\{ env\.NEXT_PUBLIC_SUPABASE_URL \}\}/);
   assert.match(workflow, /NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=\$\{\{ env\.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY \}\}/);

@@ -36,9 +36,9 @@ export default async function InvitationPage({ searchParams }: { searchParams: P
       {query.password === "updated" ? <p role="status" className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">Contraseña configurada. Ya puedes aceptar la invitación.</p> : null}
       {needsPasswordSetup ? <form action={setInvitationPassword} className="mt-6 space-y-3 rounded-xl border border-blue-100 bg-blue-50 p-4">
         <h2 className="text-sm font-semibold text-blue-950">Configura tu contraseña</h2>
-        <p className="text-xs leading-5 text-blue-900">Elige una contraseña de al menos 12 caracteres. Nunca se envía al administrador.</p>
-        <label className="block text-xs font-semibold text-slate-700">Nueva contraseña<input name="password" type="password" minLength={12} maxLength={128} autoComplete="new-password" required className="mt-1 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" /></label>
-        <label className="block text-xs font-semibold text-slate-700">Confirma la contraseña<input name="confirmation" type="password" minLength={12} maxLength={128} autoComplete="new-password" required className="mt-1 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" /></label>
+        <p className="text-xs leading-5 text-blue-900">Contraseña de al menos 6 caracteres. Nunca se envía al administrador.</p>
+        <label className="block text-xs font-semibold text-slate-700">Nueva contraseña<input name="password" type="password" minLength={6} maxLength={128} autoComplete="new-password" required className="mt-1 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" /></label>
+        <label className="block text-xs font-semibold text-slate-700">Confirma la contraseña<input name="confirmation" type="password" minLength={6} maxLength={128} autoComplete="new-password" required className="mt-1 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" /></label>
         <button className="h-10 rounded-lg bg-blue-700 px-4 text-sm font-semibold text-white">Guardar contraseña</button>
       </form> : null}
       <div className="mt-6 space-y-3">{invitations.map((invitation) => <form key={invitation.id} action={acceptInvitation} className="rounded-xl border border-slate-200 p-4">
