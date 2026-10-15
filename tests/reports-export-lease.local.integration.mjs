@@ -32,7 +32,19 @@ function cliRun(args, timeout = 900_000) {
   const env = { ...process.env, SUPABASE_TELEMETRY_DISABLED: "1", CI: "1" };
   for (const key of ["SUPABASE_ACCESS_TOKEN", "SUPABASE_DB_PASSWORD", "SUPABASE_PROJECT_REF", "SUPABASE_PROJECT_ID", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"]) delete env[key];
   try { return execFileSync(cli, [...args, "--workdir", join(temp, "project")], { cwd: root, env, encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] }); }
-  catch { throw new Error(`local Supabase CLI command failed: ${args.slice(0, 2).join(" ")} (output suppressed)`); }
+  catch (error) {
+    // Preserve enough local CLI output to diagnose CI failures without leaking credentials.
+    let diagnostic = `${error?.stderr ?? ""}\n${error?.stdout ?? ""}`;
+    diagnostic = diagnostic
+      .replace(/https?:\/\/[^\s)]+/g, "[url]")
+      .replace(/postgres(?:ql)?:\/\/[^\s)]+/gi, "[database-url]")
+      .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[jwt]")
+      .replace(/sb_(?:publishable|secret)_[A-Za-z0-9_-]+/gi, "[supabase-key]")
+      .replace(/(?:SUPABASE_SERVICE_ROLE_KEY|NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY|ANON_KEY|SERVICE_ROLE_KEY)\s*=\s*[^\s,]+/gi, "[credential-assignment]")
+      .replace(/(?:service_role|anon|publishable)[=: ]+[A-Za-z0-9_.-]{24,}/gi, "[credential]")
+      .split(/\r?\n/).filter(Boolean).slice(-10).join(" | ").slice(0, 1200);
+    throw new Error(`local Supabase CLI command failed: ${args.slice(0, 2).join(" ")}${diagnostic ? `: ${diagnostic}` : " (no diagnostic output)"}`);
+  }
 }
 async function freePort(start) {
   for (let base = start; base < start + 500; base += 10) {
@@ -130,6 +142,7 @@ try {
   await mkdir(join(workdir, "supabase", "migrations"), { recursive: true });
   await cp(join(root, "supabase/migrations"), join(workdir, "supabase/migrations"), { recursive: true });
   await cp(join(root, "supabase/tests"), join(workdir, "supabase/tests"), { recursive: true });
+  await cp(join(root, "supabase/templates"), join(workdir, "supabase/templates"), { recursive: true });
   let config = await readFile(join(root, "supabase/config.toml"), "utf8");
   const base = await freePort(55_000 + Math.floor(Math.random() * 1_500));
   config = config.replace('project_id = "codigo_QR"', `project_id = "${projectId}"`)
