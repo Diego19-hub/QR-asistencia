@@ -19,17 +19,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24.21.0
           cache: npm
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm run test:reports
-      - run: npm run test:credentials
-      - run: npm run test:deployment
-      - run: npm run test:auth-flow
+      - run: npm run test
       - run: npm run test:reports:lease:local
-      - run: npm run test:scanner
       - run: npm run build
         env:
           NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co

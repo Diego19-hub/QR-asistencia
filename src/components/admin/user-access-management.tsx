@@ -1,17 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { RefreshCw, Send, UserPlus, UserRound, Shield, CircleAlert, Link2, X } from "lucide-react";
-import Link from "next/link";
+import { RefreshCw, Send, UserPlus, UserRound, Shield, CircleAlert, X } from "lucide-react";
 
 import { useAdminContext } from "@/components/admin/admin-context";
 
 type Role = "owner" | "admin" | "supervisor" | "employee";
 type AccessUser = { membershipId: string; userId: string; email: string | null; role: Role; active: boolean; emailConfirmed: boolean; branches: string[]; employeeId: string | null; employeeName: string | null };
 type Invitation = { id: string; email: string; role: Exclude<Role, "owner">; employeeId: string | null; status: "pending" | "accepted" | "revoked" | "expired"; expiresAt: string };
-type Branch = { id: string; name: string };
 type Employee = { id: string; name: string; email: string | null; employeeNumber: string };
-type State = { users: AccessUser[]; invitations: Invitation[]; branches: Branch[]; unlinkedEmployees: Employee[] };
+type State = { users: AccessUser[]; invitations: Invitation[]; unlinkedEmployees: Employee[] };
 type ErrorBody = { error?: { message?: string } };
 
 const card = "rounded-2xl border border-slate-200/80 bg-white shadow-[0_2px_12px_rgba(24,39,75,.035)]";
@@ -26,7 +24,7 @@ function matchingEmployees(email: string | null, employees: Employee[]) {
 
 export function UserAccessManagement() {
   const { company } = useAdminContext();
-  const [data, setData] = useState<State>({ users: [], invitations: [], branches: [], unlinkedEmployees: [] });
+  const [data, setData] = useState<State>({ users: [], invitations: [], unlinkedEmployees: [] });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -41,8 +39,8 @@ export function UserAccessManagement() {
       const response = await fetch(`/api/admin/access?companyId=${encodeURIComponent(company.companyId)}`, { cache: "no-store" });
       const body = await response.json() as State & ErrorBody;
       if (!response.ok) throw new Error(body.error?.message ?? "No fue posible cargar los accesos.");
-      setData({ users: body.users ?? [], invitations: body.invitations ?? [], branches: body.branches ?? [], unlinkedEmployees: body.unlinkedEmployees ?? [] });
-    } catch (reason) { setData({ users: [], invitations: [], branches: [], unlinkedEmployees: [] }); setError(reason instanceof Error ? reason.message : "No fue posible cargar los accesos."); }
+      setData({ users: body.users ?? [], invitations: body.invitations ?? [], unlinkedEmployees: body.unlinkedEmployees ?? [] });
+    } catch (reason) { setData({ users: [], invitations: [], unlinkedEmployees: [] }); setError(reason instanceof Error ? reason.message : "No fue posible cargar los accesos."); }
     finally { setLoading(false); }
   }, [company.companyId]);
 
@@ -88,19 +86,7 @@ export function UserAccessManagement() {
     finally { setBusy(""); }
   }
 
-  async function assignBranch(member: AccessUser, branch: Branch, assigned: boolean) {
-    const key = `${member.membershipId}:${branch.id}`; setBusy(key); setError(""); setNotice("");
-    try {
-      const response = await fetch(`/api/supervisors?companyId=${encodeURIComponent(company.companyId)}`, {
-        method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ membershipId: member.membershipId, branchId: branch.id, assigned }),
-      });
-      const result = await response.json() as ErrorBody;
-      if (!response.ok) throw new Error(result.error?.message ?? "No fue posible cambiar la sucursal asignada.");
-      await load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "No fue posible cambiar la sucursal."); }
-    finally { setBusy(""); }
-  }
+
 
   const activeRole = company.role;
   return <section id="usuarios-accesos" className={`${card} overflow-hidden`}>
@@ -121,7 +107,6 @@ export function UserAccessManagement() {
     <div className="grid gap-6 p-5 sm:p-6 xl:grid-cols-[minmax(0,1fr)_minmax(320px,.8fr)]">
       <MembershipList
         users={data.users}
-        branches={data.branches}
         employees={data.unlinkedEmployees}
         loading={loading}
         busy={busy}
@@ -135,7 +120,6 @@ export function UserAccessManagement() {
           }
         }}
         onLink={(member, employeeId) => void mutate({ action: "link-employee", membershipId: member.membershipId, employeeId }, member.membershipId)}
-        onBranchChange={(member, branch, assigned) => void assignBranch(member, branch, assigned)}
       />
       <div>
         <div className="flex items-center gap-2"><UserPlus size={17} className="text-blue-700" /><h3 className="text-sm font-semibold text-slate-900">Invitar por correo</h3></div>
@@ -156,11 +140,6 @@ export function UserAccessManagement() {
           onResend={(invitation) => void resend(invitation)}
           onRevoke={(invitation) => void mutate({ action: "revoke-invitation", invitationId: invitation.id }, invitation.id)}
         />
-        <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50 p-4">
-          <p className="text-xs font-semibold text-blue-900">Acceso de supervisores</p>
-          <p className="mt-1 text-xs leading-5 text-blue-800">La asignación de dispositivos, solicitudes de autorización y bitácora de supervisor se administran en el módulo conectado.</p>
-          <Link href="/admin/supervisores" className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-blue-800"><Link2 size={13} />Supervisores y dispositivos</Link>
-        </div>
       </div>
     </div>
   </section>;
@@ -168,7 +147,6 @@ export function UserAccessManagement() {
 
 type MembershipListProps = {
   users: AccessUser[];
-  branches: Branch[];
   employees: Employee[];
   loading: boolean;
   busy: string;
@@ -178,7 +156,6 @@ type MembershipListProps = {
   onRoleChange: (member: AccessUser, role: Exclude<Role, "owner">) => void;
   onDeactivate: (member: AccessUser) => void;
   onLink: (member: AccessUser, employeeId: string) => void;
-  onBranchChange: (member: AccessUser, branch: Branch, assigned: boolean) => void;
 };
 
 function MembershipList(props: MembershipListProps) {
@@ -198,7 +175,7 @@ function MembershipList(props: MembershipListProps) {
 
 type MembershipCardProps = Omit<MembershipListProps, "users" | "loading"> & { member: AccessUser };
 
-function MembershipCard({ member, branches, employees, busy, activeRole, linkTargets, onLinkTargetChange, onRoleChange, onDeactivate, onLink, onBranchChange }: MembershipCardProps) {
+function MembershipCard({ member, employees, busy, activeRole, linkTargets, onLinkTargetChange, onRoleChange, onDeactivate, onLink }: MembershipCardProps) {
   const canManageAdmin = activeRole === "owner";
   const matching = matchingEmployees(member.email, employees);
   const canChangeMembership = member.active && member.role !== "owner" && (member.role !== "admin" || canManageAdmin);
@@ -224,9 +201,6 @@ function MembershipCard({ member, branches, employees, busy, activeRole, linkTar
       </div>
       {member.active && member.role === "employee" && !member.employeeId ? (
         <EmployeeLinkControl member={member} employees={matching} busy={busy} selected={linkTargets[member.membershipId] ?? ""} onSelect={(id) => onLinkTargetChange(member.membershipId, id)} onLink={onLink} />
-      ) : null}
-      {member.role === "supervisor" && member.active ? (
-        <SupervisorBranches member={member} branches={branches} busy={busy} onChange={onBranchChange} />
       ) : null}
     </article>
   );
@@ -265,23 +239,6 @@ function EmployeeLinkControl({ member, employees, busy, selected, onSelect, onLi
           <button type="button" disabled={Boolean(busy) || !selected} onClick={() => onLink(member, selected)} className="h-9 rounded-lg border border-blue-200 px-3 text-xs font-semibold text-blue-800 disabled:opacity-40">Vincular expediente</button>
         </>
       ) : <p className="text-xs text-slate-500">No hay expediente activo con un correo coincidente para vincular.</p>}
-    </div>
-  );
-}
-
-function SupervisorBranches({ member, branches, busy, onChange }: { member: AccessUser; branches: Branch[]; busy: string; onChange: MembershipListProps["onBranchChange"] }) {
-  return (
-    <div className="mt-4 border-t border-slate-100 pt-3">
-      <p className="mb-2 text-[11px] font-semibold text-slate-600">Sucursales autorizadas</p>
-      <div className="flex flex-wrap gap-x-4 gap-y-2">
-        {branches.map((branch) => (
-          <label key={branch.id} className="inline-flex items-center gap-2 text-xs text-slate-700">
-            <input type="checkbox" checked={member.branches.includes(branch.id)} disabled={Boolean(busy)} onChange={(event) => onChange(member, branch, event.target.checked)} className="size-4 rounded border-slate-300 text-blue-700" />
-            {branch.name}
-          </label>
-        ))}
-        {!branches.length ? <span className="text-xs text-slate-500">Crea primero una sucursal activa.</span> : null}
-      </div>
     </div>
   );
 }

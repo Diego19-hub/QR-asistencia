@@ -11,9 +11,9 @@ test("healthz returns only a cache-disabled liveness status", async () => {
   assert.deepEqual(await response.json(), { status: "ok" });
 });
 
-test("Testing container uses Node 22, low-privilege runtime, and PDFKit AFM validation", async () => {
+test("Testing container uses pinned Node 24, low-privilege runtime, and PDFKit AFM validation", async () => {
   const dockerfile = await readFile(new URL("../Dockerfile", import.meta.url), "utf8");
-  assert.match(dockerfile, /FROM node:22-bookworm-slim AS runtime/);
+  assert.match(dockerfile, /FROM node:24\.21\.0-bookworm-slim@sha256:[a-f0-9]{64} AS runtime/);
   assert.match(dockerfile, /USER node/);
   assert.match(dockerfile, /Helvetica\.afm/);
   assert.match(dockerfile, /\/api\/healthz/);

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { apiError, resolveAdminScope, scopeError } from "@/lib/admin/scope";
 import { dateForRange, dateInTimeZone } from "@/lib/datetime";
+import { getAttendanceStatus, hasAttendanceIncident } from "@/lib/attendance/presentation";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const idSchema = z.string().uuid();
@@ -20,36 +21,43 @@ export async function GET(request: Request) {
   const to = params.get("to") ?? defaultTo;
   const from = params.get("from") ?? dateForRange(new Date(`${to}T12:00:00Z`), -29);
   const branchId = params.get("branchId");
+  const employeeId = params.get("employeeId");
+  const status = params.get("status") ?? "all";
   if (!dateSchema.safeParse(from).success || !dateSchema.safeParse(to).success || from > to) {
     return apiError("invalid_attendance_range", "Selecciona un rango de fechas válido.", 400);
   }
   if (branchId && (!idSchema.safeParse(branchId).success || !(branches ?? []).some((branch) => branch.id === branchId && branch.active))) {
     return apiError("attendance_branch_forbidden", "La sucursal no pertenece a esta empresa o está inactiva.", 403);
   }
+  if (employeeId && !idSchema.safeParse(employeeId).success) return apiError("invalid_attendance_employee", "El empleado seleccionado no es válido.", 400);
+  if (!["all", "open", "closed", "incomplete", "unscheduled", "incidents"].includes(status)) return apiError("invalid_attendance_status", "El estado seleccionado no es válido.", 400);
 
   let sessionQuery = scope.supabase.from("attendance_sessions")
     .select("id,employee_id,branch_id,local_work_date,timezone,status,started_at,ended_at,scheduled_start_at,scheduled_end_at,assignment_id")
     .eq("company_id", scope.company.companyId).gte("local_work_date", from).lte("local_work_date", to)
     .order("local_work_date", { ascending: false }).order("started_at", { ascending: false }).limit(500);
   if (branchId) sessionQuery = sessionQuery.eq("branch_id", branchId);
+  if (employeeId) sessionQuery = sessionQuery.eq("employee_id", employeeId);
+  if (status === "open" || status === "closed") sessionQuery = sessionQuery.eq("status", status);
   const { data: sessions, error: sessionsError } = await sessionQuery;
   if (sessionsError) return apiError("attendance_sessions_failed", "No fue posible consultar las jornadas.", 503);
   const sessionIds = (sessions ?? []).map((item) => item.id);
   const employeeIds = [...new Set((sessions ?? []).map((item) => item.employee_id))];
-  const [{ data: totals, error: totalsError }, { data: employees, error: employeesError }, { data: breaks, error: breaksError }] = await Promise.all([
+  const [{ data: totals, error: totalsError }, { data: employees, error: employeesError }, { data: breaks, error: breaksError }, employeeOptionsResult] = await Promise.all([
     sessionIds.length ? scope.supabase.from("attendance_session_totals").select("session_id,employee_id,local_work_date,timezone,scheduled_minutes,presence_minutes,all_break_minutes,non_work_break_minutes,effective_work_minutes,schedule_delta_minutes,lateness_minutes,early_departure_minutes,detected_overtime_minutes").eq("company_id", scope.company.companyId).in("session_id", sessionIds) : Promise.resolve({ data: [], error: null }),
     employeeIds.length ? scope.supabase.from("employees").select("id,employee_number,first_name,last_name").eq("company_id", scope.company.companyId).in("id", employeeIds) : Promise.resolve({ data: [], error: null }),
     sessionIds.length ? scope.supabase.from("attendance_breaks").select("session_id,is_incomplete").eq("company_id", scope.company.companyId).in("session_id", sessionIds).eq("is_incomplete", true) : Promise.resolve({ data: [], error: null }),
+    scope.supabase.from("employees").select("id,employee_number,first_name,last_name,branch_id").eq("company_id", scope.company.companyId).eq("active", true).order("first_name").limit(1000),
   ]);
   if (totalsError) return apiError("attendance_totals_failed", "No fue posible consultar los cálculos de asistencia.", 503);
-  if (employeesError || breaksError) return apiError("attendance_details_failed", "No fue posible cargar el detalle de las jornadas.", 503);
+  if (employeesError || breaksError || employeeOptionsResult.error) return apiError("attendance_details_failed", "No fue posible cargar el detalle de las jornadas.", 503);
 
   const sessionById = new Map((sessions ?? []).map((item) => [item.id, item]));
   const employeeById = new Map((employees ?? []).map((item) => [item.id, item]));
   const incompleteSessionIds = new Set((breaks ?? []).map((item) => item.session_id));
   const visibleTotals = totals ?? [];
   const branchById = new Map((branches ?? []).map((branch) => [branch.id, branch]));
-  const items = visibleTotals.flatMap((total) => {
+  const mappedItems = visibleTotals.flatMap((total) => {
     const session = sessionById.get(total.session_id);
     const employee = employeeById.get(total.employee_id);
     if (!session || !employee) return [];
@@ -66,18 +74,27 @@ export async function GET(request: Request) {
       scheduledEndAt: session.scheduled_end_at,
       assignmentId: session.assignment_id,
       hasIncompleteBreaks: incomplete,
-      classification: session.status === "open" ? "open" : incomplete ? "incomplete" : total.scheduled_minutes === null ? "unscheduled" : "closed",
+      classification: getAttendanceStatus({ status: session.status, incompleteBreaks: incomplete, scheduledMinutes: total.scheduled_minutes }),
       employee: { id: employee.id, employeeNumber: employee.employee_number, name: `${employee.first_name} ${employee.last_name}` },
       branchTimezone: branch?.timezone ?? total.timezone,
     }];
   });
+  const items = mappedItems.filter((item) => {
+    if (status === "incomplete") return item.classification === "incomplete";
+    if (status === "unscheduled") return item.classification === "unscheduled";
+    if (status === "incidents") return hasAttendanceIncident({ incompleteBreaks: item.hasIncompleteBreaks, scheduledMinutes: item.scheduled_minutes, latenessMinutes: item.lateness_minutes, earlyDepartureMinutes: item.early_departure_minutes });
+    return true;
+  });
 
-  return Response.json({ from, to, branches: (branches ?? []).filter((branch) => branch.active), truncated: (sessions ?? []).length === 500, items,
+  return Response.json({ from, to, branches: (branches ?? []).filter((branch) => branch.active), employees: (employeeOptionsResult.data ?? []).map((item) => ({ id: item.id, employeeNumber: item.employee_number, name: `${item.first_name} ${item.last_name}`, branchId: item.branch_id })), truncated: (sessions ?? []).length === 500, items,
     summary: {
       sessions: items.length,
+      employees: new Set(items.map((item) => item.employee.id)).size,
       open: items.filter((item) => item.classification === "open").length,
+      closed: items.filter((item) => item.status === "closed").length,
       incomplete: items.filter((item) => item.hasIncompleteBreaks).length,
       unscheduled: items.filter((item) => item.classification === "unscheduled").length,
+      incidents: items.filter((item) => hasAttendanceIncident({ incompleteBreaks: item.hasIncompleteBreaks, scheduledMinutes: item.scheduled_minutes, latenessMinutes: item.lateness_minutes, earlyDepartureMinutes: item.early_departure_minutes })).length,
       presenceMinutes: items.reduce((sum, item) => sum + item.presence_minutes, 0),
       effectiveMinutes: items.reduce((sum, item) => sum + item.effective_work_minutes, 0),
     },

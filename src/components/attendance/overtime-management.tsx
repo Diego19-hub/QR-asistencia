@@ -27,13 +27,14 @@ export function OvertimeManagement() {
   const { company } = useAdminContext();
   const [to, setTo] = useState(today());
   const [from, setFrom] = useState(earlier(today(), 29));
-  const [payload, setPayload] = useState<Payload | null>(null);
-  const [loadedUrl, setLoadedUrl] = useState("");
-  const [error, setError] = useState("");
+  const [request, setRequest] = useState<{ key: string; status: "loading" } | { key: string; status: "success"; data: Payload } | { key: string; status: "error"; message: string } | null>(null);
+  const [retry, setRetry] = useState(0);
   const params = new URLSearchParams({ companyId: company.companyId, from, to });
   const requestUrl = `/api/schedules/overtime?${params}`;
-  const loading = loadedUrl !== requestUrl;
-  const data = loadedUrl === requestUrl ? payload : null;
+  const currentRequest = request?.key === requestUrl ? request : null;
+  const loading = !currentRequest || currentRequest.status === "loading";
+  const data = currentRequest?.status === "success" ? currentRequest.data : null;
+  const error = currentRequest?.status === "error" ? currentRequest.message : "";
 
   useEffect(() => {
     const controller = new AbortController();
@@ -41,11 +42,11 @@ export function OvertimeManagement() {
       .then(async (response) => {
         const body = await response.json() as Payload;
         if (!response.ok) throw new Error(body.error?.message ?? "No fue posible cargar los excedentes detectados.");
-        setPayload(body); setError(""); setLoadedUrl(requestUrl);
+        setRequest({ key: requestUrl, status: "success", data: body });
       })
-      .catch((reason: unknown) => { if (!controller.signal.aborted) { setError(reason instanceof Error ? reason.message : "No fue posible cargar los excedentes detectados."); setLoadedUrl(requestUrl); } });
+      .catch((reason: unknown) => { if (!controller.signal.aborted) setRequest({ key: requestUrl, status: "error", message: reason instanceof Error ? reason.message : "No fue posible cargar los excedentes detectados." }); });
     return () => controller.abort();
-  }, [requestUrl]);
+  }, [requestUrl, retry]);
 
   const summary = data?.summary;
   return <section className="space-y-6">
@@ -59,8 +60,10 @@ export function OvertimeManagement() {
 
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-end sm:justify-between sm:p-5"><div className="flex flex-wrap items-end gap-3"><label className="text-xs font-semibold text-slate-600">Desde<input aria-label="Fecha desde" type="date" value={from} max={to} onChange={(event) => setFrom(event.target.value)} className={`${inputClass} mt-1 block`} /></label><label className="text-xs font-semibold text-slate-600">Hasta<input aria-label="Fecha hasta" type="date" value={to} min={from} onChange={(event) => setTo(event.target.value)} className={`${inputClass} mt-1 block`} /></label></div><span className="inline-flex items-center gap-2 text-xs text-slate-500">{loading ? <LoaderCircle size={15} className="animate-spin" /> : <RefreshCw size={14} />}{loading ? "Actualizando…" : `${data?.items.length ?? 0} jornadas`}</span></div>
-      {error ? <p role="alert" className="m-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{error}</p> : null}
-      <div className="overflow-x-auto"><table className="w-full min-w-[1350px] text-left"><thead><tr className="bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500">{["Empleado · fecha", "Sucursal · estado", "Jornada", "Efectivo / programado", "Excedente detectado", "Solicitado", "Pendiente", "Autorizado", "Reconocido", "Solicitudes"].map((label) => <th key={label} className="px-4 py-3">{label}</th>)}</tr></thead>
+      {error ? <div role="alert" className="m-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800"><span>{error}</span><button type="button" onClick={() => { setRequest({ key: requestUrl, status: "loading" }); setRetry((value) => value + 1); }} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-rose-200 bg-white px-3 text-xs font-semibold"><RefreshCw size={14} />Reintentar</button></div> : null}
+      {!loading && !error && !data?.items.length ? <div className="px-5 py-14 text-center lg:hidden"><CircleDollarSign className="mx-auto text-slate-300" size={25} /><p className="mt-3 text-sm font-semibold text-slate-700">No hay excedentes en este rango</p><p className="mt-1 text-xs text-slate-500">El excedente requiere un turno programado. Las autorizaciones se consultan por separado.</p></div> : null}
+      <div className="space-y-3 p-3 lg:hidden">{(data?.items ?? []).map((item) => <article key={item.session_id} className="rounded-xl border border-slate-200 p-4"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="truncate text-sm font-semibold text-slate-900">{item.employee?.name ?? "Empleado"}</h3><p className="mt-1 text-xs text-slate-500">{item.employee?.employeeNumber ?? "—"} · {item.local_work_date}</p></div><span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${item.hasIncompleteBreaks ? "bg-amber-50 text-amber-800" : item.status === "open" ? "bg-blue-50 text-blue-700" : "bg-emerald-50 text-emerald-700"}`}>{item.hasIncompleteBreaks ? "Incompleta" : item.status === "open" ? "En curso" : "Cerrada"}</span></div><p className="mt-1 text-xs text-slate-500">{item.branch?.name ?? "Sucursal"} · {item.scheduled_minutes === null ? "Sin horario programado" : `Programado: ${duration(item.scheduled_minutes)}`}</p><div className="mt-3 grid grid-cols-2 gap-2">{[{ label: "Excedente detectado", value: duration(item.detectedMinutes), tone: "text-amber-800" }, { label: "Autorizado", value: duration(item.approvedMinutes), tone: "text-emerald-700" }, { label: "Pendiente", value: duration(item.pendingMinutes), tone: "text-amber-800" }, { label: "Tiempo efectivo", value: duration(item.effective_work_minutes), tone: "text-slate-800" }].map((metric) => <div key={metric.label} className="rounded-lg bg-slate-50 p-3"><p className="text-[10px] text-slate-500">{metric.label}</p><p className={`mt-1 text-xs font-semibold ${metric.tone}`}>{metric.value}</p></div>)}</div><details className="mt-3"><summary className="cursor-pointer text-xs font-semibold text-blue-800">Solicitudes ({item.authorizations.length})</summary><div className="mt-2 space-y-2">{item.authorizations.length ? item.authorizations.map((auth) => <div key={auth.id} className="rounded-lg border border-slate-100 p-3 text-xs"><span className="font-semibold text-slate-700">{authStatus[auth.status] ?? auth.status}</span><p className="mt-1 text-slate-500">{auth.reason} · {duration(auth.minutes)}</p></div>) : <p className="text-xs text-slate-500">Sin solicitudes registradas.</p>}</div></details></article>)}</div>
+      <div className="hidden overflow-x-auto lg:block"><table className="w-full min-w-[1100px] text-left"><thead><tr className="bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500">{["Empleado · fecha", "Sucursal · estado", "Jornada", "Efectivo / programado", "Excedente detectado", "Solicitado", "Pendiente", "Autorizado", "Reconocido", "Solicitudes"].map((label) => <th key={label} className="px-4 py-3">{label}</th>)}</tr></thead>
         <tbody className="divide-y divide-slate-100">{(data?.items ?? []).map((item) => <tr key={item.session_id} className="align-top text-xs hover:bg-slate-50/70"><td className="px-4 py-4"><p className="font-semibold text-slate-800">{item.employee?.name ?? "Empleado"}</p><p className="mt-1 text-[11px] text-slate-500">{item.employee?.employeeNumber ?? "—"} · {new Date(`${item.local_work_date}T12:00:00Z`).toLocaleDateString("es-MX", { dateStyle: "medium", timeZone: item.timezone ?? "UTC" })}</p></td>
           <td className="px-4 py-4"><p>{item.branch?.name ?? "Sucursal"}</p><p className={`mt-1 text-[10px] ${item.hasIncompleteBreaks ? "font-semibold text-amber-800" : "text-slate-500"}`}>{item.hasIncompleteBreaks ? "Incompleta" : item.status === "open" ? "En curso" : "Cerrada"}</p></td>
           <td className="px-4 py-4"><p>{item.scheduled_minutes === null ? "Sin horario programado" : `${item.scheduled_minutes} min`}</p><p className="mt-1 text-[10px] text-slate-500">{item.ruleName ?? "Sin regla laboral"}{item.overtimeSettings?.thresholdMinutes ? ` · umbral ${item.overtimeSettings.thresholdMinutes} min` : ""}</p></td>

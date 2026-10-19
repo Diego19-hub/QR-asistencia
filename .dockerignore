@@ -2,7 +2,6 @@
 .github
 .next
 .env*
-!.env.example
 node_modules
 npm-debug.log*
 coverage
@@ -14,3 +13,27 @@ supabase/.branches
 *.sqlite*
 SECURITY-AUDIT*.md
 BACKUP-RESTORE*.md
+
+# QA files stay in the repository and run in CI before image publication.
+# Keep supabase/migrations in the build context for the separate DB pipeline.
+/tests/
+/supabase/tests/
+**/__tests__/
+**/fixtures/
+**/test-fixtures/
+**/test-data/
+**/testdata/
+**/synthetic/
+**/*.test.*
+**/*.spec.*
+**/*.integration.*
+**/*.fixture.*
+
+# Local test/build artifacts and temporary files.
+playwright-report
+test-results
+.turbo
+tmp
+temp
+*.log
+.DS_Store

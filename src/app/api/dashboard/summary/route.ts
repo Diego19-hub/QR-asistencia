@@ -26,8 +26,14 @@ export async function GET(request: Request) {
   if (branchesError) return apiError("branches_lookup_failed", "No fue posible cargar las sucursales.", 503);
   if (branchId && !companyBranches?.some((branch) => branch.id === branchId && branch.active)) return apiError("branch_forbidden", "La sucursal no pertenece a esta empresa o ya está inactiva.", 403);
   const activeBranches = (companyBranches ?? []).filter((branch) => branch.active);
-
   const now = new Date();
+  const referenceBranch = (branchId
+    ? activeBranches.find((branch) => branch.id === branchId)
+    : activeBranches[0]);
+  const operatingDate = referenceBranch
+    ? dateInTimeZone(now, referenceBranch.timezone)
+    : dateInTimeZone(now, "UTC");
+
   const localDates = (companyBranches ?? []).map((branch) => dateInTimeZone(now, branch.timezone));
   const rangeStart = localDates.length ? localDates.map((date) => dateForRange(new Date(`${date}T12:00:00Z`), -1)).sort()[0] : dateForRange(now, -1);
   const rangeEnd = localDates.length ? localDates.map((date) => dateForRange(new Date(`${date}T12:00:00Z`), 1)).sort().at(-1)! : dateForRange(now, 1);
@@ -111,6 +117,8 @@ export async function GET(request: Request) {
 
   return Response.json({
     company: { id: scope.company.companyId, name: scope.company.companyName },
+    operatingDate,
+    dateReference: referenceBranch?.timezone ?? "UTC",
     branches: activeBranches,
     filters: { branchId },
     stats: {

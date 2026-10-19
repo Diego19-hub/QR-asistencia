@@ -51,7 +51,7 @@ export type ReportSummary = {
   employees: number; sessions: number; presenceMinutes: number; effectiveMinutes: number;
   paidBreakMinutes: number; unpaidBreakMinutes: number; latenessMinutes: number;
   earlyDepartureMinutes: number; detectedOvertimeMinutes: number; approvedOvertimeMinutes: number;
-  incomplete: number; open: number;
+  incomplete: number; open: number; incidents: number;
 };
 
 export type ReportAnalytics = {
@@ -213,6 +213,7 @@ export async function loadReport(request: Request): Promise<ReportResult> {
     latenessMinutes: sum(mapped, (item) => item.latenessMinutes ?? 0), earlyDepartureMinutes: sum(mapped, (item) => item.earlyDepartureMinutes ?? 0),
     detectedOvertimeMinutes: sum(mapped, (item) => item.detectedOvertimeMinutes ?? 0), approvedOvertimeMinutes: sum(mapped, (item) => item.approvedOvertimeMinutes),
     incomplete: mapped.filter((item) => item.incomplete).length, open: mapped.filter((item) => item.status === "open").length,
+    incidents: mapped.filter((item) => item.incidents.length > 0).length,
   };
   const dayMap = new Map<string, { effectiveMinutes: number; scheduledMinutes: number }>();
   const branchMap = new Map<string, { name: string; effectiveMinutes: number; scheduledMinutes: number }>();
@@ -269,7 +270,7 @@ function sum(items: ReportRow[], value: (item: ReportRow) => number) {
 }
 
 function emptySummary(): ReportSummary {
-  return { employees: 0, sessions: 0, presenceMinutes: 0, effectiveMinutes: 0, paidBreakMinutes: 0, unpaidBreakMinutes: 0, latenessMinutes: 0, earlyDepartureMinutes: 0, detectedOvertimeMinutes: 0, approvedOvertimeMinutes: 0, incomplete: 0, open: 0 };
+  return { employees: 0, sessions: 0, presenceMinutes: 0, effectiveMinutes: 0, paidBreakMinutes: 0, unpaidBreakMinutes: 0, latenessMinutes: 0, earlyDepartureMinutes: 0, detectedOvertimeMinutes: 0, approvedOvertimeMinutes: 0, incomplete: 0, open: 0, incidents: 0 };
 }
 
 export function reportResponseError(result: Extract<ReportResult, { ok: false }>) {

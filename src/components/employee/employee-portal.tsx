@@ -21,12 +21,12 @@ type PortalPayload = {
 };
 
 type Tab = "resumen" | "horario" | "asistencias" | "horas-extra" | "credencial";
-const tabs: Array<{ id: Tab; label: string; icon: typeof UserRound }> = [
-  { id: "resumen", label: "Inicio", icon: UserRound },
-  { id: "horario", label: "Mi horario", icon: CalendarDays },
-  { id: "asistencias", label: "Asistencias", icon: Clock3 },
-  { id: "horas-extra", label: "Horas extra", icon: WalletCards },
-  { id: "credencial", label: "Credencial", icon: ShieldCheck },
+const tabs: Array<{ id: Tab; label: string; mobileLabel: string; icon: typeof UserRound }> = [
+  { id: "resumen", label: "Inicio", mobileLabel: "Inicio", icon: UserRound },
+  { id: "horario", label: "Mi horario", mobileLabel: "Horario", icon: CalendarDays },
+  { id: "asistencias", label: "Asistencias", mobileLabel: "Registros", icon: Clock3 },
+  { id: "horas-extra", label: "Horas extra", mobileLabel: "Extra", icon: WalletCards },
+  { id: "credencial", label: "Credencial", mobileLabel: "Mi QR", icon: ShieldCheck },
 ];
 const weekdayNames = ["", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 const eventNames: Record<string, string> = { clock_in: "Entrada", break_start: "Inicio de descanso", break_end: "Regreso de descanso", clock_out: "Salida" };
@@ -103,7 +103,7 @@ export function EmployeePortal() {
         </div>
       </> : null}
     </div>
-    <nav aria-label="Navegación móvil" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-slate-200 bg-white/95 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">{tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" onClick={() => setTab(id)} aria-current={tab === id ? "page" : undefined} className={`flex min-h-16 flex-col items-center justify-center gap-1 text-[9px] font-semibold ${tab === id ? "text-blue-700" : "text-slate-500"}`}><Icon size={18} />{label}</button>)}</nav>
+    <nav aria-label="Navegación móvil" className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-slate-200 bg-white/95 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">{tabs.map(({ id, label, mobileLabel, icon: Icon }) => <button key={id} type="button" onClick={() => setTab(id)} aria-label={label} title={label} aria-current={tab === id ? "page" : undefined} className={`flex min-w-0 min-h-16 flex-col items-center justify-center gap-1 whitespace-nowrap text-[9px] font-semibold leading-none ${tab === id ? "text-blue-700" : "text-slate-500"}`}><Icon size={18} /><span>{mobileLabel}</span></button>)}</nav>
   </div>;
 }
 

@@ -140,21 +140,59 @@ export function EmployeeCredentials({ employee }: Props) {
     const timer = window.setTimeout(() => { void refresh(controller.signal).catch((reason: unknown) => {
       if (!controller.signal.aborted) {
         setError(reason instanceof Error ? reason.message : "No se pudo cargar el estado de credenciales.");
+        setCredential(null);
+        setQrDataUrl("");
+        setCredentialCardUrl("");
         setLoadedKey(`${company.companyId}:${employee.id}`);
       }
     }); }, 0);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [company.companyId, employee.id, refresh]);
 
+  useEffect(() => {
+    if (!qrDataUrl) return;
+    const dialog = document.getElementById(`qr-dialog-${employee.id}`);
+    const buttons = () => dialog?.querySelectorAll<HTMLElement>("button:not([disabled])") ?? [];
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    buttons()[0]?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setQrDataUrl("");
+        setCredentialCardUrl("");
+      }
+      if (event.key !== "Tab") return;
+      const focusable = buttons();
+      if (!focusable.length) return;
+      if (event.shiftKey && document.activeElement === focusable[0]) {
+        event.preventDefault();
+        focusable[focusable.length - 1].focus();
+      } else if (!event.shiftKey && document.activeElement === focusable[focusable.length - 1]) {
+        event.preventDefault();
+        focusable[0].focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      previousFocus?.focus();
+    };
+  }, [employee.id, qrDataUrl]);
+
   async function issue(replace: boolean) {
+    if (busy || loading) return;
     if (replace && !window.confirm(`¿Regenerar el QR de ${employee.first_name} ${employee.last_name}? El código anterior dejará de funcionar inmediatamente.`)) return;
     setBusy(true); setError(""); setNotice("");
+    let issued = false;
     try {
       const response = await fetch(`/api/employees/${employee.id}/qr${query}`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ replace }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error?.message ?? "No se pudo emitir el QR.");
+      issued = true;
+      setCredential(payload.credential as Credential);
+      setLoadedKey(`${company.companyId}:${employee.id}`);
       const image = await QRCode.toDataURL(payload.token as string, { errorCorrectionLevel: "H", width: 512, margin: 4, color: { dark: "#14264a", light: "#ffffff" } });
       const card = await makeCredentialCard(image, employee, company.companyName);
       setCredential(payload.credential as Credential);
@@ -162,11 +200,12 @@ export function EmployeeCredentials({ employee }: Props) {
       setCredentialCardUrl(card.toDataURL("image/png"));
       setNotice(replace ? "QR regenerado. El anterior ya fue revocado." : "QR emitido correctamente.");
       setLoadedKey(`${company.companyId}:${employee.id}`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo emitir el QR."); }
+    } catch (reason) { setError(issued ? "El QR se emitió, pero no se pudo preparar la credencial. Regénéralo para mostrar un código nuevo." : reason instanceof Error ? reason.message : "No se pudo emitir el QR."); }
     finally { setBusy(false); }
   }
 
   async function revoke() {
+    if (busy || loading) return;
     if (!window.confirm(`¿Revocar definitivamente el QR de ${employee.first_name} ${employee.last_name}?`)) return;
     setBusy(true); setError(""); setNotice("");
     try {
@@ -181,6 +220,7 @@ export function EmployeeCredentials({ employee }: Props) {
 
   async function savePin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy || loading) return;
     const form = event.currentTarget;
     const pin = String(new FormData(form).get("pin") ?? "");
     if (!/^\d{6,12}$/.test(pin)) { setError("El PIN debe tener de 6 a 12 dígitos."); return; }
@@ -228,13 +268,13 @@ export function EmployeeCredentials({ employee }: Props) {
   }
 
   return <section className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm sm:p-7">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl bg-blue-50 text-blue-700"><QrCode size={17} /></span><div><h2 className="text-sm font-bold text-slate-900">Credencial QR</h2><p className="mt-1 text-xs text-slate-500">Credencial personal para identificación en asistencia.</p></div></div><span className={`rounded-full px-3 py-1 text-[11px] font-semibold ${credential?.qrStatus === "active" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{loading ? "Consultando…" : credential?.qrStatus === "active" ? "Activo" : credential?.qrStatus === "revoked" ? "Revocado" : "Sin emitir"}</span></div>
+    <div className="flex flex-wrap items-start justify-between gap-3"><div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl bg-blue-50 text-blue-700"><QrCode size={17} /></span><div><h2 className="text-sm font-bold text-slate-900">Credencial QR</h2><p className="mt-1 text-sm text-slate-600">Credencial personal para identificar al empleado en cada registro.</p></div></div><span className={`rounded-full px-3 py-1 text-xs font-semibold ${loading ? "bg-slate-100 text-slate-600" : error && !credential ? "bg-rose-50 text-rose-700" : credential?.qrStatus === "active" ? "bg-emerald-50 text-emerald-700" : credential?.qrStatus === "revoked" ? "bg-rose-50 text-rose-700" : "bg-slate-100 text-slate-600"}`}>{loading ? "Consultando…" : error && !credential ? "No disponible" : credential?.qrStatus === "active" ? "Activa" : credential?.qrStatus === "revoked" ? "Revocada" : "Sin emitir"}</span></div>
     {error ? <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-800">{error}</p> : null}
     {notice ? <p role="status" className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-800">{notice}</p> : null}
     <div className="mt-5 grid gap-5 md:grid-cols-2">
-      <div className="rounded-xl border border-slate-100 bg-slate-50 p-4"><p className="text-xs font-semibold text-slate-800">Código QR</p><p className="mt-1 text-xs leading-relaxed text-slate-500">El valor completo solo se muestra en pantalla al emitirlo. Si se pierde, regenera el código anterior dejará de funcionar.</p><div className="mt-4 flex flex-wrap gap-2"><button disabled={busy || loading || !credential?.employeeActive} onClick={() => void issue(credential?.qrStatus === "active")} className="inline-flex h-10 items-center gap-2 rounded-xl bg-[#14264a] px-3 text-xs font-semibold text-white disabled:opacity-50">{busy ? <LoaderCircle size={14} className="animate-spin" /> : credential?.qrStatus === "active" ? <RefreshCw size={14} /> : <QrCode size={14} />}{credential?.qrStatus === "active" ? "Regenerar" : "Generar QR"}</button>{credential?.qrStatus === "active" ? <button disabled={busy} onClick={() => void revoke()} className="inline-flex h-10 items-center gap-2 rounded-xl border border-rose-200 px-3 text-xs font-semibold text-rose-700 disabled:opacity-50"><Trash2 size={14} />Revocar</button> : null}</div>{credential?.issuedAt ? <p className="mt-3 text-[11px] text-slate-400">Emitido {new Date(credential.issuedAt).toLocaleString("es-MX", { dateStyle: "medium", timeStyle: "short" })}</p> : null}</div>
-      <div className="rounded-xl border border-slate-100 p-4"><div className="flex items-center gap-2"><KeyRound size={15} className="text-indigo-600" /><p className="text-xs font-semibold text-slate-800">PIN de seguridad opcional</p></div><p className="mt-1 text-xs leading-relaxed text-slate-500">Solo se almacena un hash. La verificación con límite de intentos queda preparada para el flujo de escaneo de una etapa posterior.</p><form onSubmit={(event) => void savePin(event)} className="mt-3 flex flex-col gap-2 sm:flex-row"><label className="sr-only" htmlFor={`employee-pin-${employee.id}`}>PIN numérico de 6 a 12 dígitos</label><input id={`employee-pin-${employee.id}`} name="pin" type="password" inputMode="numeric" pattern="[0-9]{6,12}" minLength={6} maxLength={12} autoComplete="new-password" required placeholder="6 a 12 dígitos" className="h-10 min-w-0 flex-1 rounded-xl border border-slate-200 px-3 text-xs outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100" /><button disabled={busy || loading || !credential?.employeeActive} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 text-xs font-semibold text-slate-700 disabled:opacity-50">{busy ? <LoaderCircle size={14} className="animate-spin" /> : <BadgeCheck size={14} />}{credential?.pinConfigured ? "Restablecer PIN" : "Guardar PIN"}</button></form>{credential?.pinConfigured ? <p className="mt-2 flex items-center gap-1 text-[11px] text-emerald-700"><ShieldAlert size={13} />PIN configurado; no se puede recuperar.</p> : null}</div>
+      <div className="rounded-xl border border-slate-100 bg-slate-50 p-4"><p className="text-sm font-semibold text-slate-900">Código QR</p><p className="mt-1 text-sm leading-relaxed text-slate-600">Al emitirlo, el QR completo se muestra una sola vez. Si se pierde, genera otro: el anterior quedará revocado.</p><div className="mt-4 flex flex-wrap gap-2"><button type="button" disabled={busy || loading || !credential?.employeeActive} onClick={() => void issue(credential?.qrStatus === "active")} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#14264a] px-3 text-xs font-semibold text-white hover:bg-blue-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50">{busy ? <LoaderCircle size={14} className="animate-spin" /> : credential?.qrStatus === "active" ? <RefreshCw size={14} /> : <QrCode size={14} />}{credential?.qrStatus === "active" ? "Regenerar" : "Generar QR"}</button>{credential?.qrStatus === "active" ? <button type="button" disabled={busy} onClick={() => void revoke()} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-rose-200 px-3 text-xs font-semibold text-rose-700 hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 disabled:opacity-50"><Trash2 size={14} />Revocar</button> : null}</div>{credential?.issuedAt ? <p className="mt-3 text-xs text-slate-500">Emitida {new Date(credential.issuedAt).toLocaleString("es-MX", { dateStyle: "medium", timeStyle: "short" })}</p> : null}</div>
+      <div className="rounded-xl border border-slate-100 p-4"><div className="flex items-center gap-2"><KeyRound size={16} className="text-indigo-600" /><h3 className="text-sm font-semibold text-slate-900">PIN requerido para registrar asistencia</h3></div><p className="mt-1.5 text-sm leading-relaxed text-slate-600">En cada escaneo se valida el QR junto con un PIN de 6 a 12 dígitos. El servidor guarda únicamente su hash. Tras 5 intentos incorrectos, el PIN se bloquea durante 15 minutos.</p><form onSubmit={(event) => void savePin(event)} className="mt-4 flex flex-col gap-2 sm:flex-row"><label className="sr-only" htmlFor={`employee-pin-${employee.id}`}>PIN nuevo, de 6 a 12 dígitos</label><input id={`employee-pin-${employee.id}`} name="pin" type="password" inputMode="numeric" pattern="[0-9]{6,12}" minLength={6} maxLength={12} autoComplete="new-password" required aria-describedby={`employee-pin-help-${employee.id}`} placeholder="Nuevo PIN (6–12 dígitos)" className="h-11 min-w-0 flex-1 rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100" /><button type="submit" disabled={busy || loading || !credential?.employeeActive} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50">{busy ? <LoaderCircle size={14} className="animate-spin" /> : <BadgeCheck size={14} />}{credential?.pinConfigured ? "Restablecer PIN" : "Configurar PIN"}</button></form><p id={`employee-pin-help-${employee.id}`} className="mt-2 text-xs text-slate-500">Al restablecerlo, el anterior deja de servir. El PIN no se puede consultar ni recuperar.</p>{credential?.pinConfigured ? <p className="mt-2 flex items-center gap-1.5 text-xs font-medium text-emerald-700"><ShieldAlert size={14} />PIN configurado</p> : null}</div>
     </div>
-    {qrDataUrl ? <div role="dialog" aria-modal="true" aria-labelledby={`qr-dialog-title-${employee.id}`} className="fixed inset-0 z-[80] grid place-items-center overflow-y-auto bg-slate-950/55 p-4"><div className="my-auto w-full max-w-2xl rounded-2xl bg-white p-5 shadow-2xl sm:p-7"><div className="flex items-start justify-between gap-3"><div><h3 id={`qr-dialog-title-${employee.id}`} className="text-base font-bold text-slate-900">Credencial lista para entregar</h3><p className="mt-1 text-xs text-slate-500">Descárgala o imprímela ahora. El QR completo no se podrá recuperar después.</p></div><button aria-label="Cerrar" onClick={closeQr} className="grid size-9 shrink-0 place-items-center rounded-lg text-slate-500 hover:bg-slate-100"><X size={17} /></button></div><div className="mt-5 overflow-hidden rounded-xl border border-slate-200 bg-slate-50"><NextImage src={credentialCardUrl} alt={`Credencial QR de ${employee.first_name} ${employee.last_name}`} width={1200} height={760} className="h-auto w-full" unoptimized /></div><div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-3"><button onClick={downloadPng} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 text-xs font-semibold text-slate-700"><Download size={15} />Descargar PNG</button><button onClick={() => void downloadPdf()} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 text-xs font-semibold text-slate-700"><Download size={15} />Descargar PDF</button><button onClick={printCredential} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-[#14264a] px-3 text-xs font-semibold text-white"><Printer size={15} />Imprimir</button></div><p className="mt-4 flex items-start gap-2 rounded-xl bg-amber-50 p-3 text-xs leading-relaxed text-amber-900"><ShieldAlert size={16} className="mt-0.5 shrink-0" /><span><strong>Guarda el archivo de forma segura.</strong> Al cerrar esta ventana, el QR en claro se elimina de la memoria de la página. Si pierdes la credencial, tendrás que regenerarla y entregar la nueva.</span></p><div className="mt-4 flex justify-end"><button onClick={closeQr} className="inline-flex h-10 items-center rounded-xl border border-slate-200 px-4 text-xs font-semibold text-slate-700">Cerrar</button></div></div></div> : null}
+    {qrDataUrl ? <div id={`qr-dialog-${employee.id}`} role="dialog" aria-modal="true" aria-labelledby={`qr-dialog-title-${employee.id}`} className="fixed inset-0 z-[80] grid place-items-center overflow-y-auto bg-slate-950/55 p-4"><div className="my-auto w-full max-w-2xl rounded-2xl bg-white p-5 shadow-2xl sm:p-7"><div className="flex items-start justify-between gap-3"><div><h3 id={`qr-dialog-title-${employee.id}`} className="text-base font-bold text-slate-900">Credencial lista para entregar</h3><p className="mt-1 text-sm text-slate-600">Descárgala o imprímela ahora. El QR completo no se podrá recuperar después.</p></div><button type="button" aria-label="Cerrar credencial" onClick={closeQr} className="grid size-10 shrink-0 place-items-center rounded-lg text-slate-600 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><X size={17} /></button></div><div className="mt-5 overflow-hidden rounded-xl border border-slate-200 bg-slate-50"><NextImage src={credentialCardUrl} alt={`Credencial QR de ${employee.first_name} ${employee.last_name}`} width={1200} height={760} className="h-auto w-full" unoptimized /></div><div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-3"><button type="button" onClick={downloadPng} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><Download size={15} />Descargar PNG</button><button type="button" onClick={() => void downloadPdf()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><Download size={15} />Descargar PDF</button><button type="button" onClick={printCredential} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#14264a] px-3 text-xs font-semibold text-white hover:bg-blue-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><Printer size={15} />Imprimir</button></div><p className="mt-4 flex items-start gap-2 rounded-xl bg-amber-50 p-3 text-sm leading-relaxed text-amber-950"><ShieldAlert size={16} className="mt-0.5 shrink-0" /><span><strong>Guarda el archivo de forma segura.</strong> Al cerrar esta ventana, el QR en claro se elimina de la memoria de la página. Si pierdes la credencial, tendrás que regenerarla y entregar la nueva.</span></p><div className="mt-4 flex justify-end"><button type="button" onClick={closeQr} className="inline-flex min-h-11 items-center rounded-xl border border-slate-200 px-4 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">Cerrar</button></div></div></div> : null}
   </section>;
 }

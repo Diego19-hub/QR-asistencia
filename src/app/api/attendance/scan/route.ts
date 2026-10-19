@@ -19,6 +19,13 @@ const messages: Record<string, { status: number; message: string }> = {
   "23505": { status: 409, message: "El movimiento ya fue procesado. Actualiza el estado de la jornada." },
 };
 
+function pinFailure(code: unknown) {
+  if (code === "pin_locked") return { status: 429, message: "El PIN está bloqueado temporalmente. Intenta más tarde.", code: "P0001" };
+  if (code === "pin_not_configured") return { status: 409, message: "No se pudo validar el PIN o el movimiento.", code: "23514" };
+  if (code === "pin_invalid") return { status: 422, message: "El PIN no es válido.", code: "22023" };
+  return null;
+}
+
 export async function POST(request: Request) {
   const supabase = await createClient();
   const { data: auth, error: authError } = await supabase.auth.getUser();
@@ -54,6 +61,14 @@ export async function POST(request: Request) {
   if (result.error) {
     const mapped = messages[result.error.code ?? ""];
     return Response.json({ error: { message: mapped?.message ?? "No fue posible validar el movimiento." } }, { status: mapped?.status ?? 503, headers: { "Cache-Control": "no-store" } });
+  }
+  const rpcData = result.data && typeof result.data === "object" ? result.data as Record<string, unknown> : null;
+  if (rpcData && Object.hasOwn(rpcData, "pinError")) {
+    const pinError = pinFailure(rpcData.pinError);
+    if (!pinError) {
+      return Response.json({ error: { message: "No fue posible validar el movimiento." } }, { status: 503, headers: { "Cache-Control": "no-store" } });
+    }
+    return Response.json({ error: { message: pinError.message, code: pinError.code } }, { status: pinError.status, headers: { "Cache-Control": "no-store" } });
   }
   return Response.json({ result: result.data }, { headers: { "Cache-Control": "no-store, private" } });
 }
