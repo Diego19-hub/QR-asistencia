@@ -18,6 +18,14 @@ Este documento resume las rutas observadas en el árbol del repositorio. Los con
 5. Revisar expiración, revocación, reuso y destinatario de credenciales/invitaciones.
 6. Confirmar que las respuestas y logs no revelen secretos ni permitan enumerar usuarios.
 
+## Enlaces permanentes de acceso (QR-001)
+
+La configuración administrativa muestra enlaces absolutos para `/scanner` y `/mi-qr`, construidos con el origen canónico de `APP_BASE_URL`. Los enlaces no incluyen empresa, correo, PIN, token ni identificadores. WhatsApp recibe solo un texto general y la URL codificados; no se requiere número destinatario.
+
+Los enlaces son puntos de entrada, no credenciales. `/scanner` vuelve al login con un destino de retorno permitido y sigue validando sesión, membresía activa de supervisor y la autorización del dispositivo en el contexto de escaneo. `/mi-qr` sigue validando sesión, membresía activa de empleado y expediente propio activo vinculado. El retorno de login acepta únicamente `/scanner` o `/mi-qr`; el destino solo se conserva si coincide con el rol activo. Las identidades con varias membresías conservan la selección explícita de empresa y rol. Si existen invitaciones pendientes, el flujo de invitación mantiene prioridad sobre la navegación al destino.
+
+Copiar usa primero la API del portapapeles y recurre a `document.execCommand("copy")` cuando la API falta o rechaza el permiso. Si ambos métodos fallan, el enlace permanece seleccionable y se informa cómo copiarlo manualmente.
+
 ## Rutas clave
 
 - Acceso: `/login`, `/invitacion`, `/seleccionar-empresa`, `/auth/callback`, `/auth/confirm`.

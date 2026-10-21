@@ -12,7 +12,7 @@
     "test:pin-lockout": "node --test tests/attendance-pin-lockout.test.mjs",
     "test:pin-lockout:db": "test -n \"${PIN_LOCKOUT_SUPABASE_WORKDIR:-}\" || { echo 'Set PIN_LOCKOUT_SUPABASE_WORKDIR to an isolated disposable Supabase project.' >&2; exit 2; }; grep -Eq '^project_id = \"qr_pin_lockout_disposable_[A-Za-z0-9_]+\"$' \"$PIN_LOCKOUT_SUPABASE_WORKDIR/supabase/config.toml\" || { echo 'Refusing DB tests: project_id is not marked disposable.' >&2; exit 2; }; npx supabase --workdir \"$PIN_LOCKOUT_SUPABASE_WORKDIR\" test db --local \"$PIN_LOCKOUT_SUPABASE_WORKDIR/supabase/tests/attendance_pin_lockout_test.sql\" && { test -n \"${PIN_LOCKOUT_DATABASE_URL:-}\" || { echo 'Set PIN_LOCKOUT_DATABASE_URL to the disposable database URL.' >&2; exit 2; }; node tests/attendance-pin-lockout-postgres.integration.mjs; }",
     "test:employee-portal": "node --experimental-strip-types --test tests/employee-portal-scope.test.mjs",
-    "test:user-access": "node --experimental-strip-types --test tests/user-access-management.test.mjs",
+    "test:user-access": "node --experimental-strip-types --test tests/user-access-management.test.mjs tests/access-links.test.mjs",
     "test:deployment": "node --experimental-strip-types --test tests/deployment-readiness.test.mjs",
     "test:auth-flow": "node --experimental-strip-types --test tests/auth-email-flow.test.mjs",
     "test:credentials": "node --experimental-strip-types --test tests/employee-credential-emission.test.mjs tests/credential-api-error.test.mjs",
