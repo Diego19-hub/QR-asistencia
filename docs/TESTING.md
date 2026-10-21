@@ -13,6 +13,8 @@ Consulta los scripts actuales en `package.json`; esta lista puede cambiar. No ej
 
 Las pruebas pgTAP están en `supabase/tests/`. El README de Supabase documenta `npx supabase start` y `npx supabase test db --local`; el script `test:pin-lockout:db` además exige un workdir marcado como desechable y una URL local configurada. No apuntes pruebas a Testing ni Producción. Las migraciones no deben aplicarse durante una tarea de documentación.
 
+QR-003 documenta la reproducción legacy y los resultados de pgTAP/integración en [PIN-LOCKOUT-FIX.md](PIN-LOCKOUT-FIX.md). `tests/security-jwt-matrix.integration.mjs` apunta a Testing y requiere credenciales reales de ese entorno; no lo ejecutes como prueba local.
+
 ## Prácticas por tipo
 
 - **Unitarias:** reglas de dominio y presentación; comprobar límites y errores.

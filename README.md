@@ -66,4 +66,5 @@ Antes de cambiar el sistema, lee [AGENTS.md](AGENTS.md), selecciona una tarea de
 - [TASKS.md](TASKS.md): backlog con criterios de aceptación y evidencia.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ACCESS-FLOW.md](docs/ACCESS-FLOW.md), [docs/TESTING.md](docs/TESTING.md) y [docs/DEVELOPMENT-WORKFLOW.md](docs/DEVELOPMENT-WORKFLOW.md): arquitectura, acceso, validación y flujo de trabajo.
 - [docs/DECISIONS.md](docs/DECISIONS.md), [docs/PERFORMANCE.md](docs/PERFORMANCE.md) y [docs/CODE-CLEANUP.md](docs/CODE-CLEANUP.md): decisiones, medición y limpieza segura.
+- [docs/PIN-LOCKOUT-FIX.md](docs/PIN-LOCKOUT-FIX.md): diagnóstico y validación local de QR-003; el despliegue a Testing queda separado.
 - [supabase/README.md](supabase/README.md) y los documentos operativos enlazados allí: operación de base de datos, bootstrap e invitaciones.
