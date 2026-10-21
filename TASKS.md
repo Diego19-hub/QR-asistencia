@@ -6,7 +6,7 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 |---|---|---|---|---|
 | QR-001 | P1 | Pendiente | — | Enlaces permanentes de acceso |
 | QR-002 | P1 | Pendiente | QR-004 | Invitaciones manuales |
-| QR-003 | P0 | Pendiente | — | Verificar persistencia de fallos de PIN |
+| QR-003 | P0 | En curso | — | Verificar persistencia de fallos de PIN; la migración está validada localmente y falta desplegarla en Testing |
 | QR-004 | P1 | Pendiente | — | Auditoría de seguridad multiempresa |
 | QR-005 | P1 | Pendiente | QR-004 | Pruebas E2E con Playwright |
 | QR-006 | P2 | Pendiente | QR-005 | Estabilidad del escáner |
@@ -31,10 +31,15 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 
 ## QR-003 — Verificar persistencia de fallos de PIN
 
-- **Objetivo:** comprobar si el flujo de errores PostgreSQL revierte los contadores de PIN fallidos y preparar una corrección si la evidencia lo confirma.
-- **Criterios de aceptación:** reproducir el flujo de preview y confirmación en una base local desechable; comprobar contador, bloqueo, expiración y ausencia de evento de asistencia cuando el PIN no es válido; documentar causa raíz y una propuesta mínima con pruebas.
-- **Restricción de tarea:** no aplicar migraciones ni modificar una base remota. La corrección queda para una tarea autorizada posterior.
-- **Evidencia inicial:** existe `supabase/migrations/20261018120000_persist_employee_pin_failures.sql`; `supabase/tests/attendance_pin_lockout_test.sql` comprueba resultados estructurados, persistencia, bloqueo y que no se registre asistencia. Revisar la migración y reproducir antes de concluir.
+- **Objetivo:** reproducir y verificar la persistencia de intentos fallidos; reutilizar la corrección versionada existente si resuelve la causa.
+- **Criterios de aceptación:** reproducir el flujo legacy y el corregido en una base local desechable; comprobar contador, bloqueo, expiración y ausencia de evento cuando el PIN no es válido; documentar causa raíz y pruebas.
+- **Restricción de tarea:** las migraciones se aplican solo en bases locales desechables para esta verificación. No ejecutar cambios, RPC de prueba ni migraciones en Testing o Producción; coordinar cualquier despliegue remoto en una tarea autorizada separada.
+- **Diagnóstico:** las versiones anteriores de `scan_employee_attendance` y `confirm_employee_attendance` lanzaban una excepción después de que `private.verify_employee_pin` incrementaba el contador. La excepción abortaba la transacción y revertía el incremento.
+- **Corrección en el repositorio:** ya existe `supabase/migrations/20261018120000_persist_employee_pin_failures.sql`. Ambas RPC devuelven un rechazo estructurado `pinError` sin lanzar una excepción después de verificar el PIN. No se creó ni duplicó una migración.
+- **Reproducción local:** en un stack Supabase desechable con migraciones hasta `20261012143000`, preview y confirm devolvieron SQLSTATE `22023` y el contador quedó en 0. Tras aplicar la migración existente solo en esa base local, preview y confirm devolvieron `pin_invalid`, el contador persistió en 1 y 2, y no se creó ningún evento de asistencia.
+- **Pruebas:** `npm run test:pin-lockout` pasó (3/3); `npm run test:pin-lockout:db` pasó (pgTAP 35/35 e integración PostgreSQL); la integración verificó intentos concurrentes, bloqueo de cinco intentos por 15 minutos, expiración, reset, dispositivo no autorizado/revocado y aislamiento entre empresas. `npm test`, lint, typecheck y build también pasaron; detalles en [docs/PIN-LOCKOUT-FIX.md](docs/PIN-LOCKOUT-FIX.md).
+- **Estado de Testing:** la consulta de solo lectura del historial de migraciones de Testing mostró como última versión `20261012143000`; no aparece `20261018120000`. No se consultó el cuerpo de las funciones ni se ejecutaron pruebas o cambios en Testing. El despliegue de la migración existente sigue pendiente de revisión y de un procedimiento autorizado separado.
+- **Riesgo/pendiente:** mientras Testing no registre la migración, se debe asumir que ese entorno puede conservar el comportamiento anterior. No hacer rollback a las definiciones de `20261012030630`, porque volverían a lanzar la excepción y podrían revertir los contadores.
 
 ## QR-004 — Seguridad multiempresa
 
