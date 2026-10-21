@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { RefreshCw, Send, UserPlus, UserRound, Shield, CircleAlert, X } from "lucide-react";
 
 import { useAdminContext } from "@/components/admin/admin-context";
+import { AccessLinksSection } from "@/components/admin/access-links-section";
 
 type Role = "owner" | "admin" | "supervisor" | "employee";
 type AccessUser = { membershipId: string; userId: string; email: string | null; role: Role; active: boolean; emailConfirmed: boolean; branches: string[]; employeeId: string | null; employeeName: string | null };
@@ -22,7 +23,7 @@ function matchingEmployees(email: string | null, employees: Employee[]) {
   return employees.filter((employee) => !employee.email || (normalizedEmail && employee.email.toLowerCase() === normalizedEmail));
 }
 
-export function UserAccessManagement() {
+export function UserAccessManagement({ publicOrigin }: { publicOrigin: string | null }) {
   const { company } = useAdminContext();
   const [data, setData] = useState<State>({ users: [], invitations: [], unlinkedEmployees: [] });
   const [loading, setLoading] = useState(true);
@@ -141,6 +142,9 @@ export function UserAccessManagement() {
           onRevoke={(invitation) => void mutate({ action: "revoke-invitation", invitationId: invitation.id }, invitation.id)}
         />
       </div>
+    </div>
+    <div className="border-t border-slate-100 p-5 sm:p-6">
+      <AccessLinksSection publicOrigin={publicOrigin} />
     </div>
   </section>;
 }

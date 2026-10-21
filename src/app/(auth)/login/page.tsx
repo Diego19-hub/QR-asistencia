@@ -1,7 +1,8 @@
 import { signIn } from "./actions";
+import { accessReturnDestination } from "@/lib/access/access-links";
 
 type LoginPageProps = {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; next?: string }>;
 };
 
 const errorMessages: Record<string, string> = {
@@ -13,7 +14,8 @@ const errorMessages: Record<string, string> = {
 };
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {
-  const { error } = await searchParams;
+  const { error, next: requestedNext } = await searchParams;
+  const next = accessReturnDestination(requestedNext);
   const message = error ? errorMessages[error] : undefined;
 
   return (
@@ -35,6 +37,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         </div>
 
         <form action={signIn} className="space-y-5">
+          {next ? <input type="hidden" name="next" value={next} /> : null}
           <div>
             <label htmlFor="email" className="mb-2 block text-sm font-medium text-slate-800">
               Correo electrónico

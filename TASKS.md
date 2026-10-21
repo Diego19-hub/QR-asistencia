@@ -4,7 +4,7 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 
 | ID | Prioridad | Estado | Dependencias | Tarea |
 |---|---|---|---|---|
-| QR-001 | P1 | Pendiente | — | Enlaces permanentes de acceso |
+| QR-001 | P1 | Hecha | — | Enlaces permanentes de acceso |
 | QR-002 | P1 | Pendiente | QR-004 | Invitaciones manuales |
 | QR-003 | P0 | En curso | — | Verificar persistencia de fallos de PIN; la migración está validada localmente y falta desplegarla en Testing |
 | QR-004 | P1 | Pendiente | — | Auditoría de seguridad multiempresa |
@@ -21,6 +21,10 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 - **Criterios de aceptación:** el administrador ve las URLs del origen actual sin datos de empresa/usuario; los destinos exigen sesión autenticada y membresía/permisos activos; copiar y compartir tienen alternativa funcional si Web Share no está disponible; otras empresas no pueden alterar el acceso.
 - **Evidencia requerida:** rutas y controles revisados; pruebas de permisos, copiar/compartir y acceso denegado documentadas.
 - **Referencias iniciales:** `src/app/(supervisor)/scanner/page.tsx`, `src/app/(employee)/mi-qr/page.tsx`, `src/app/(admin)/admin/configuracion/page.tsx`.
+- **Resultado:** configuración muestra enlaces absolutos construidos desde el `APP_BASE_URL` validado: `/scanner` y `/mi-qr`. Copiar admite Clipboard API y fallback DOM; compartir usa `https://wa.me/?text=...` codificado y sin número. El texto compartido no incluye datos de empresa o persona.
+- **Retorno de autenticación:** las rutas protegidas conservan un destino cerrado (`/scanner` o `/mi-qr`) en el login. Solo se usa si coincide con el rol activo; múltiples membresías siguen requiriendo selección explícita. Las invitaciones pendientes conservan prioridad. El retorno no acepta URLs externas ni parámetros arbitrarios.
+- **Seguridad revisada:** las páginas siguen comprobando sesión y membresía activa por rol. El API del portal valida empleado activo y expediente vinculado; el contexto del escáner mantiene autorización de dispositivo y sucursal.
+- **Pruebas:** `node --experimental-strip-types --test tests/access-links.test.mjs` pasó (6/6); `npm run test:user-access` pasó (6/6); `npm run lint`, `npm run typecheck`, `npm test` y `npm run build` terminaron con código 0. Node mostró avisos existentes de módulos TypeScript sin `type: module` durante las pruebas; no hubo fallos.
 
 ## QR-002 — Invitaciones manuales
 

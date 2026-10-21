@@ -3,10 +3,17 @@
 import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
-import { destinationForRole, selectInitialMembership, type MembershipRole } from "@/lib/access/user-management";
+import { selectInitialMembership, type MembershipRole } from "@/lib/access/user-management";
 import { clearActiveMembershipCookie, setActiveMembershipCookie } from "@/lib/access/active-membership-cookie";
+import {
+  accessReturnDestination,
+  companySelectionPathForAccessDestination,
+  destinationForAccessRole,
+} from "@/lib/access/access-links";
 
 export async function signIn(formData: FormData) {
+  const requestedNext = accessReturnDestination(formData.get("next"));
+  const loginError = (code: string) => `/login?error=${encodeURIComponent(code)}${requestedNext ? `&next=${encodeURIComponent(requestedNext)}` : ""}`;
   const email = formData.get("email");
   const password = formData.get("password");
 
@@ -16,7 +23,7 @@ export async function signIn(formData: FormData) {
     !email.trim() ||
     !password
   ) {
-    redirect("/login?error=invalid");
+    redirect(loginError("invalid"));
   }
 
   let signInError: Error | null = null;
@@ -37,11 +44,11 @@ export async function signIn(formData: FormData) {
         .eq("user_id", data.user.id)
         .eq("active", true);
 
-      if (membershipError) destination = "/login?error=service";
+      if (membershipError) destination = loginError("service");
       else {
         const { data: pending, error: invitationError } = await supabase.rpc("list_my_pending_company_invitations");
         const invitationFunctionMissing = invitationError?.code === "PGRST202" || invitationError?.code === "42883";
-        if (invitationError && !invitationFunctionMissing) destination = "/login?error=service";
+        if (invitationError && !invitationFunctionMissing) destination = loginError("service");
         else if (Array.isArray(pending) && pending.length) destination = "/invitacion";
         else {
           const choices = (memberships ?? []).map((membership) => ({
@@ -51,23 +58,23 @@ export async function signIn(formData: FormData) {
           }));
           const selected = selectInitialMembership(choices);
           if (selected.kind === "none") destination = "/login?error=no-company";
-          else if (selected.kind === "choose") destination = "/seleccionar-empresa";
+          else if (selected.kind === "choose") destination = companySelectionPathForAccessDestination(requestedNext);
           else {
             await setActiveMembershipCookie(selected.membership.membershipId ?? "");
-            destination = destinationForRole(selected.membership.role);
+            destination = destinationForAccessRole(selected.membership.role, requestedNext);
           }
         }
       }
     }
   } catch {
-    redirect("/login?error=service");
+    redirect(loginError("service"));
   }
 
   if (signInError) {
     if (authStatus === 429 || (authStatus !== undefined && authStatus >= 500)) {
-      redirect("/login?error=service");
+      redirect(loginError("service"));
     }
-    redirect("/login?error=credentials");
+    redirect(loginError("credentials"));
   }
 
   redirect(destination ?? "/login?error=service");
