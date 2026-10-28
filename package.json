@@ -19,6 +19,7 @@
     "test:reports": "node --experimental-strip-types --test tests/reports-exports.test.mjs tests/reports-data.test.mjs tests/reports-export-lease.test.mjs",
     "test:reports:integration": "node --test tests/reports-cross-tenant.integration.test.mjs",
     "test:reports:lease:local": "node tests/reports-export-lease.local.integration.mjs",
+    "test:security:matrix:local": "node tests/qr004-auth-matrix.local.integration.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test:security:jwt": "node tests/security-jwt-matrix.integration.mjs"

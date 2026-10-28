@@ -8,7 +8,7 @@ Base revisada: `02263e1ae17d1151e6466838058b297b1cbd0181` (`main`, posterior al 
 
 La revisión del código y migraciones de esta base no confirmó una nueva ruta de explotación entre empresas. Los componentes centrales derivan identidad de `auth.getUser()`, comprueban membresías activas, acotan consultas por `company_id` y mantienen RLS y restricciones SQL como segunda frontera. La migración QR-003 contiene la corrección local de persistencia de fallos de PIN.
 
-QR-004 **permanece en curso**. Las pruebas locales unitarias y de integración de lease pasan, pero no se ejecutó una matriz completa de autenticación/autorización para todos los roles y recursos. Tampoco se volvió a consultar el estado efectivo de Testing o Producción. En particular, documentos anteriores indican que Testing no tenía aplicada QR-003; eso es un riesgo conocido documentado, no una verificación remota nueva de este informe. No se consultó ni modificó Producción.
+QR-004 **permanece en curso**. En esta fase se ejecutó una matriz SQL local con usuarios, empresas, sucursales, membresías, credenciales y dispositivos sintéticos en un stack Supabase desechable. Se cubrieron RLS, roles, acceso entre tenants, membresías inactivas, sucursales, RPC privilegiadas, QR/dispositivos y ausencia de efectos secundarios ante rechazos. No se consultó ni modificó Testing o Producción; la evidencia previa sobre QR-003 no se revalidó. La matriz no certifica todos los endpoints HTTP ni la configuración de los entornos remotos.
 
 ## Alcance y método
 
@@ -38,7 +38,7 @@ QR-004 **permanece en curso**. Las pruebas locales unitarias y de integración d
 | Rol insuficiente | Denegado | Denegada | Denegada | Denegado | Permisos efectivos se evalúan en API/RPC/RLS; la matriz JWT completa queda pendiente. |
 | Membresía inactiva o revocada | Denegado en solicitudes posteriores | Denegada | Denegada; cambios de acceso revocan dispositivos asociados | Denegado | Consultas usan `active=true`; RPC vuelve a comprobar estado. Pendiente prueba dinámica integral local. |
 | Usuario con varias membresías activas | Solo tenants autorizados | Solo empresa elegida y permiso concedido | Solo membresía/dispositivo elegido | Solo cuenta/empresa de empleado permitida | Cookies contienen ID de membresía, que se vuelve a resolver contra usuario y estado activo; la selección es explícita cuando hay múltiples opciones. |
-| Supervisor de otra sucursal | Datos/operaciones fuera de alcance denegados | Denegada | Denegado para sucursal ajena | Denegado | El SQL de escáner compara sucursal empleado/dispositivo; prueba remota histórica descrita en SECURITY-AUDIT-ETAPA-9.4A, no repetida aquí. |
+| Supervisor de otra sucursal | Datos/operaciones fuera de alcance denegados | Denegada | Denegado para sucursal ajena | Denegado | pgTAP local: el supervisor solo lee empleados en su sucursal; RPC directa del escáner rechaza un QR de otra sucursal. |
 
 Esta matriz describe controles observados y evidencia disponible; las filas que no tienen una prueba dinámica ejecutada en este turno no se consideran demostradas para todas las rutas.
 
@@ -46,7 +46,7 @@ Esta matriz describe controles observados y evidencia disponible; las filas que 
 
 ### Hallazgos de explotación confirmada en esta revisión
 
-No se confirmó una nueva vulnerabilidad explotable entre empresas en el SHA revisado. Esto no es una certificación de los entornos remotos ni reemplaza la cobertura de autorización pendiente.
+No se confirmó una nueva vulnerabilidad explotable entre empresas en el SHA revisado. Los controles ejercitados pasaron en el stack local. Esto no certifica los entornos remotos ni todos los endpoints HTTP.
 
 ### Riesgos conocidos y limitaciones
 
@@ -58,12 +58,12 @@ No se confirmó una nueva vulnerabilidad explotable entre empresas en el SHA rev
 - **Recomendación:** mantener QR-003 abierta; antes de aplicarla, terminar la reconciliación del historial, confirmar el proyecto y realizar el procedimiento aislado/preflight ya solicitado en QR-003. Después comprobar con identidades y empleados sintéticos autorizados.
 - **Regresión requerida:** el test local de PIN debe comprobar contador, quinto intento, expiración, concurrencia y ausencia de evento. No lanzar intentos contra empleados reales ni remotos.
 
-#### QR004-R2 — Matriz completa de autorización no ejecutada en base local
+#### QR004-R2 — Cobertura restante fuera de la matriz SQL local
 
-- **Severidad:** media como brecha de evidencia; no es una vulnerabilidad demostrada.
-- **Evidencia:** `npm test` cubre unidades Node, incluyendo escáner, portal, acceso y PIN, pero no realiza por sí solo una matriz Postgres/Auth de todos los roles. La integración SQL ejecutada se centra en lease de exportación. El test JWT configurado no es local y por ello se omitió.
-- **Impacto/condición:** una regresión en una RPC/RLS no cubierta podría pasar los checks locales actuales sin quedar detectada.
-- **Recomendación:** añadir/ejecutar en un siguiente cambio una matriz con stack local desechable y fixtures sintéticas para owner/admin, supervisor por sucursal, empleado ligado, membresía inactiva, otra empresa, anónimo y usuario multiempresa. Verificar lecturas y escrituras negativas y estado antes/después.
+- **Severidad:** baja como riesgo residual de cobertura; no es vulnerabilidad demostrada.
+- **Evidencia:** la matriz local ejecutó seis suites pgTAP (142 aserciones), con owner/admin/supervisor/empleado, tenants A/B, sucursales, usuarios inactivos/revocados, privilegios de RPC, hashes de credenciales y RPC de escáner/dispositivo. Se omitió `tests/security-jwt-matrix.integration.mjs` porque apunta a Testing. No se ejecutó la suite de bloqueo PIN para mantener QR-003 fuera de alcance.
+- **Impacto/condición:** rutas HTTP y comportamientos Auth reales fuera de los fixtures SQL podrían tener regresiones sin detectar en esta matriz.
+- **Recomendación:** mantener la matriz local en CI y ampliar en tarea separada a los endpoints HTTP y escenarios Auth no cubiertos. Consultar Testing/Producción solo mediante autorización independiente y lectura segregada por entorno.
 - **Regresión requerida:** pgTAP/RPC más HTTP para endpoints críticos; assert de cero cambios colaterales ante cada denegación.
 
 #### QR004-R3 — Configuración de producción y Testing no inspeccionada
@@ -97,9 +97,10 @@ No se confirmó una nueva vulnerabilidad explotable entre empresas en el SHA rev
 | `npm run typecheck` | Aprobado (código 0). |
 | `npm test` | Aprobado (69/69 pruebas Node; suites de unidad y regresión listadas por el script `test`). Node emitió advertencias existentes de `MODULE_TYPELESS_PACKAGE_JSON`; sin fallos. |
 | `npm run test:reports:lease:local` | Aprobado (14/14 controles): proyecto Supabase desechable, migraciones locales, 13 pgTAP, Auth/JWT sintéticos, rechazo cross-tenant/rol/anónimo, carrera concurrente y HTTP/exportación. El script confirmó limpieza del stack/volúmenes. |
+| `npm run test:security:matrix:local` | Aprobado: seis suites pgTAP, 142 aserciones, en proyecto Supabase aleatorio desechable. Incluye tenant/RLS/roles, memberships, sucursales, ACL de RPC/credenciales y escáner con dispositivo desconocido, tenant/sucursal cruzados, QR revocado y cero eventos/sesiones/contadores PIN tras rechazos. El runner eliminó el stack y verificó que la instancia QR preexistente no cambiara. |
 | `npm run build` | Aprobado (código 0), Next.js 16.4.0. `.env.local` fue detectado por Next; no se imprimieron valores de entorno. |
 | `npm run test:pin-lockout:db` | No ejecutado: requiere un workdir y URL PostgreSQL locales configurados como proyecto QR PIN desechable. No se reutilizó una instancia compartida ni se imprimieron variables. La prueba Node de PIN sí pasó dentro de `npm test`. |
-| Matriz `tests/security-jwt-matrix.integration.mjs` | Omitida intencionalmente: su configuración apunta a Testing; la guía prohíbe usarla como prueba local. |
+| Matriz `tests/security-jwt-matrix.integration.mjs` | Omitida intencionalmente: su configuración apunta a Testing; no se ejecutaron pruebas remotas. |
 
 La integración lease sí valida PostgreSQL/Auth real local para ese recurso; no constituye la matriz completa de autorización de todas las RPC, tablas y rutas.
 
@@ -121,4 +122,4 @@ La integración lease sí valida PostgreSQL/Auth real local para ese recurso; no
 
 ## Estado
 
-**QR-004: en curso; revisión estática y validaciones locales registradas.** No se hicieron cambios funcionales, SQL ni remotos. Este documento no certifica el estado actual de Testing/Producción ni autoriza una migración o despliegue.
+**QR-004: en curso; matriz SQL multiempresa local completada para los casos descritos.** Se añadió solo un test pgTAP y su runner; no se modificaron migraciones ni lógica funcional. Testing y Producción no se consultaron ni modificaron. Este documento no certifica el estado remoto ni autoriza una migración o despliegue.

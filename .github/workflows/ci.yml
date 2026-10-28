@@ -26,6 +26,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run test
       - run: npm run test:reports:lease:local
+      - run: npm run test:security:matrix:local
       - run: npm run build
         env:
           NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
