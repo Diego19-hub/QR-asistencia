@@ -7,7 +7,7 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 | QR-001 | P1 | Hecha | — | Enlaces permanentes de acceso |
 | QR-002 | P1 | Pendiente | QR-004 | Invitaciones manuales |
 | QR-003 | P0 | En curso | — | Verificar persistencia de fallos de PIN; la migración está validada localmente y falta desplegarla en Testing |
-| QR-004 | P1 | En curso | — | Auditoría de seguridad multiempresa; revisión estática y pruebas locales completadas parcialmente. Falta ejecutar una matriz completa de autorización por rol/tenant en una base local aislada y verificar configuración efectiva de Testing/Producción en tareas autorizadas. Informe: [docs/QR-004-SECURITY-AUDIT.md](docs/QR-004-SECURITY-AUDIT.md) |
+| QR-004 | P1 | En curso | — | Auditoría multiempresa; matriz local sintética ejecutada para RLS, roles, sucursales, RPC, credenciales y dispositivos. La verificación remota de Testing/Producción sigue separada y no se hizo en esta fase. Informe: [docs/QR-004-SECURITY-AUDIT.md](docs/QR-004-SECURITY-AUDIT.md) |
 | QR-005 | P1 | Pendiente | QR-004 | Pruebas E2E con Playwright |
 | QR-006 | P2 | Pendiente | QR-005 | Estabilidad del escáner |
 | QR-007 | P1 | Pendiente | — | Auditoría y optimización general del código |
@@ -50,6 +50,7 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 - **Objetivo:** auditar RLS, sesiones, permisos, `SECURITY DEFINER`, sucursales, credenciales QR y dispositivos autorizados.
 - **Criterios de aceptación:** matriz rol × operación × empresa/sucursal; inventario de funciones privilegiadas y grants; pruebas negativas entre empresas y membresías inactivas; hallazgos con evidencia, severidad, mitigación y pruebas de regresión.
 - **Evidencia inicial:** migraciones multiempresa, RLS, QR, escáner, portal y acceso de usuarios en `supabase/migrations/`; pruebas SQL en `supabase/tests/` y pruebas de seguridad en `tests/`.
+- **Resultado fase 2:** se agregó `tests/qr004-auth-matrix.local.integration.mjs` y `supabase/tests/qr004_scanner_authorization_test.sql`. Se ejecutaron 142 aserciones pgTAP en un stack local desechable: tenant/RLS y roles, sucursales, membresías y revocaciones, RPC de acceso, ACL de credenciales, escáner directo, cruce de empresa/sucursal, dispositivo desconocido, QR revocado y ausencia de eventos/sesiones ante denegaciones. Sin intentos de PIN incorrectos. No se consultó ni modificó Testing o Producción. QR-004 sigue en curso por la revisión remota separada y otros dominios/rutas aún no incluidos en esta matriz. Evidencia completa: [docs/QR-004-SECURITY-AUDIT.md](docs/QR-004-SECURITY-AUDIT.md).
 
 ## QR-005 — Pruebas E2E
 
