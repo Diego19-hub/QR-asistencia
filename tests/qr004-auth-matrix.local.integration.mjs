@@ -21,7 +21,7 @@ const suites = [
   "qr004_scanner_authorization_test.sql",
 ];
 let temp;
-let started = false;
+let startAttempted = false;
 
 function safeCli(args, timeout = 900_000) {
   const env = { ...process.env, SUPABASE_TELEMETRY_DISABLED: "1", CI: "1" };
@@ -62,6 +62,8 @@ function dockerResources(kind) {
 }
 
 const before = Object.fromEntries(["containers", "volumes", "networks"].map((kind) => [kind, dockerResources(kind)]));
+const cleanupErrors = [];
+let primaryError;
 try {
   temp = await mkdtemp(join(tmpdir(), "qr004-auth-matrix-"));
   const workdir = join(temp, "project");
@@ -78,9 +80,14 @@ try {
     .replace("port = 54324", `port = ${base + 4}`).replace("port = 54329", `port = ${base + 9}`).replace("port = 54327", `port = ${base + 7}`);
   assert.match(config, new RegExp(`^project_id = "${projectId}"$`, "m"));
   await writeFile(join(workdir, "supabase/config.toml"), config, { mode: 0o600 });
+  for (const kind of Object.keys(before)) {
+    assert.equal(before[kind].some((name) => name.includes(projectId)), false, `random disposable project ID already exists in Docker ${kind}`);
+  }
   process.stdout.write(`Disposable local project ${projectId}; no remote link.\n`);
+  // A failed `start` may still have created some project containers. Always
+  // attempt the scoped stop after invoking start, including partial failures.
+  startAttempted = true;
   safeCli(["start", "--exclude", excluded]);
-  started = true;
   safeCli(["db", "reset", "--local"]);
   process.stdout.write("PASS fresh disposable database with repository migrations applied locally\n");
   for (const suite of suites) {
@@ -93,17 +100,39 @@ try {
       ?? `${plan} pgTAP assertions passed (CLI exited successfully)`;
     process.stdout.write(`PASS ${suite}: ${summary}\n`);
   }
+} catch (error) {
+  primaryError = error;
 } finally {
-  if (started) {
-    safeCli(["stop", "--project-id", projectId, "--no-backup"], 180_000);
-    started = false;
+  if (startAttempted) {
+    try {
+      // Never use `stop --all`: this project ID was checked absent before start.
+      safeCli(["stop", "--project-id", projectId, "--no-backup"], 180_000);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
   }
-  const after = Object.fromEntries(["containers", "volumes", "networks"].map((kind) => [kind, dockerResources(kind)]));
-  for (const kind of Object.keys(before)) {
-    const prefix = `supabase_${projectId}`;
-    assert.deepEqual(after[kind].filter((name) => name.includes(prefix)), [], `disposable ${kind} remain after cleanup`);
+
+  try {
+    const after = Object.fromEntries(["containers", "volumes", "networks"].map((kind) => [kind, dockerResources(kind)]));
+    for (const kind of Object.keys(before)) {
+      assert.deepEqual(after[kind].filter((name) => name.includes(projectId)), [], `disposable ${kind} remain after cleanup`);
+      for (const name of before[kind]) assert.ok(after[kind].includes(name), `pre-existing Docker ${kind} resource was removed: ${name}`);
+    }
+  } catch (error) {
+    cleanupErrors.push(error);
+  } finally {
+    try {
+      if (temp) await rm(temp, { recursive: true, force: true });
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
   }
-  assert.deepEqual(after.containers.filter((name) => name.includes("codigo_QR")), before.containers.filter((name) => name.includes("codigo_QR")), "pre-existing QR stack was changed");
-  if (temp) await rm(temp, { recursive: true, force: true });
-  process.stdout.write("PASS temporary stack and data removed; pre-existing QR stack unchanged\n");
 }
+
+if (primaryError) {
+  // Preserve the original test/start failure; cleanup diagnostics remain attached.
+  if (cleanupErrors.length) primaryError.cleanupErrors = cleanupErrors;
+  throw primaryError;
+}
+if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "temporary Supabase cleanup did not complete cleanly");
+process.stdout.write("PASS temporary stack and data removed; pre-existing Docker resources preserved\n");
