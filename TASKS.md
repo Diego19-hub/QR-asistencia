@@ -7,7 +7,7 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 | QR-001 | P1 | Hecha | — | Enlaces permanentes de acceso |
 | QR-002 | P1 | Pendiente | QR-004 | Invitaciones manuales |
 | QR-003 | P0 | En curso | — | Verificar persistencia de fallos de PIN; la migración está validada localmente y falta desplegarla en Testing |
-| QR-004 | P1 | Pendiente | — | Auditoría de seguridad multiempresa |
+| QR-004 | P1 | En curso | — | Auditoría de seguridad multiempresa; revisión estática y pruebas locales completadas parcialmente. Falta ejecutar una matriz completa de autorización por rol/tenant en una base local aislada y verificar configuración efectiva de Testing/Producción en tareas autorizadas. Informe: [docs/QR-004-SECURITY-AUDIT.md](docs/QR-004-SECURITY-AUDIT.md) |
 | QR-005 | P1 | Pendiente | QR-004 | Pruebas E2E con Playwright |
 | QR-006 | P2 | Pendiente | QR-005 | Estabilidad del escáner |
 | QR-007 | P1 | Pendiente | — | Auditoría y optimización general del código |
