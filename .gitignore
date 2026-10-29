@@ -37,6 +37,11 @@
 *.backup
 *.bak
 *.sql.gz
+*.qr-testing-backup.gpg
+*.qr-testing-backup.json
+*.qr-testing-backup.gpg.sha256
+__pycache__/
+*.py[cod]
 
 # debug and logs
 npm-debug.log*

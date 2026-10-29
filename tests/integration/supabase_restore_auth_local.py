@@ -24,6 +24,9 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from scripts.qr_testing_backup import decrypt_bytes, encrypt_stream
+
 REMOTE_PROJECT_IDS = {"llxyziffgtqnzlguxhyt", "jawdrhewabqajxnswhkn"}
 PREFIX = "qr95d"
 EXPECTED = 56
@@ -449,27 +452,15 @@ def restore_database() -> tuple[Path, str, str, int, int]:
     proc = subprocess.run(["docker", "exec", "supabase_db_qr95d_source", "pg_dump", "-Fc", "-U", "postgres", "-d", "postgres"], capture_output=True, timeout=900)
     if proc.returncode:
         raise RuntimeError("local pg_dump failed")
-    source_sha256 = hashlib.sha256(proc.stdout).hexdigest()
-    encryption = subprocess.run([
-        "gpg", "--homedir", str(TEMP / "gnupg"), "--batch", "--yes",
-        "--pinentry-mode", "loopback", "--passphrase-file", str(TEMP / "backup.passphrase"),
-        "--symmetric", "--cipher-algo", "AES256", "--s2k-digest-algo", "SHA512", "--output", "-",
-    ], input=proc.stdout, capture_output=True, timeout=300)
-    if encryption.returncode:
-        raise RuntimeError("local synthetic dump encryption failed")
-    encrypted_dump.write_bytes(encryption.stdout)
-    os.chmod(encrypted_dump, 0o600)
-    decryption = subprocess.run([
-        "gpg", "--homedir", str(TEMP / "gnupg"), "--batch", "--yes",
-        "--pinentry-mode", "loopback", "--passphrase-file", str(TEMP / "backup.passphrase"),
-        "--decrypt", str(encrypted_dump),
-    ], capture_output=True, timeout=300)
-    if decryption.returncode:
-        raise RuntimeError("local synthetic dump decryption failed")
-    restored_sha256 = hashlib.sha256(decryption.stdout).hexdigest()
+    import io
+    hashes = encrypt_stream(io.BytesIO(proc.stdout), encrypted_dump,
+                            (TEMP / "backup.passphrase").read_text(), TEMP / "gnupg")
+    source_sha256 = str(hashes["plaintext_sha256"])
+    decrypted_bytes, restored_sha256 = decrypt_bytes(
+        encrypted_dump, (TEMP / "backup.passphrase").read_text(), TEMP / "gnupg")
     if restored_sha256 != source_sha256:
         raise RuntimeError("decrypted local dump SHA-256 did not match source")
-    archive = subprocess.run(["docker", "exec", "-i", "supabase_db_qr95d_restore", "pg_restore", "--list"], input=decryption.stdout, capture_output=True, timeout=120)
+    archive = subprocess.run(["docker", "exec", "-i", "supabase_db_qr95d_restore", "pg_restore", "--list"], input=decrypted_bytes, capture_output=True, timeout=120)
     # Destination container receives the archive on stdin; --list does not touch its database.
     if archive.returncode:
         raise RuntimeError("pg_restore archive listing validation failed")
@@ -486,7 +477,7 @@ def restore_database() -> tuple[Path, str, str, int, int]:
     run(["docker", "exec", keep, "dropdb", "-U", "supabase_admin", "--maintenance-db=template1", "--if-exists", "postgres"], timeout=90)
     run(["docker", "exec", keep, "createdb", "-U", "supabase_admin", "--maintenance-db=template1", "--template=template0", "--owner=supabase_admin", "postgres"], timeout=90)
     restore_start = time.monotonic()
-    proc = subprocess.run(["docker", "exec", "-i", keep, "pg_restore", "--exit-on-error", "-U", "supabase_admin", "-d", "postgres"], input=decryption.stdout, capture_output=True, timeout=1200)
+    proc = subprocess.run(["docker", "exec", "-i", keep, "pg_restore", "--exit-on-error", "-U", "supabase_admin", "-d", "postgres"], input=decrypted_bytes, capture_output=True, timeout=1200)
     if proc.returncode:
         raise RuntimeError("pg_restore into fresh template0 database failed")
     restore_ms = int((time.monotonic() - restore_start) * 1000)
@@ -668,6 +659,15 @@ def teardown() -> tuple[bool, str]:
     except Exception as exc:
         errors.append("Docker teardown verification errored: " + type(exc).__name__)
     if TEMP and TEMP.exists():
+        gpgconf = shutil.which("gpgconf")
+        if gpgconf and (TEMP / "gnupg").exists():
+            try:
+                subprocess.run([gpgconf, "--homedir", str(TEMP / "gnupg"),
+                                "--kill", "gpg-agent"],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=10, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                errors.append("temporary GnuPG agent cleanup timed out")
         shutil.rmtree(TEMP)
     if TEMP and TEMP.exists():
         errors.append("temporary directory remains")
