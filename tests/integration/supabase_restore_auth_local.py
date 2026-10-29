@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Strict local-only Supabase PostgreSQL/Auth restore rehearsal.
 
-This script is deliberately self-contained and uses only the Python standard
-library plus the repository-pinned Supabase CLI and local Docker CLI. It never
+This script uses the Python standard library, the repository-pinned Supabase
+CLI, local Docker, and GnuPG for a symmetric-encryption rehearsal. It never
 links to, or accepts credentials for, a hosted Supabase project.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 REMOTE_PROJECT_IDS = {"llxyziffgtqnzlguxhyt", "jawdrhewabqajxnswhkn"}
 PREFIX = "qr95d"
-EXPECTED = 55
+EXPECTED = 56
 EMAILS = {
     "admin_a": "restore-admin-a@qr-asistencia.invalid",
     "admin_b": "restore-admin-b@qr-asistencia.invalid",
@@ -200,6 +200,7 @@ def create_project(name: str, port_offset: int) -> Path:
     if any(remote in text for remote in REMOTE_PROJECT_IDS) or f'project_id = "{PREFIX}_{name}"' not in text:
         raise RuntimeError("temporary local config failed project ID safety check")
     (root / "supabase/config.toml").write_text(text)
+    shutil.copytree(ROOT / "supabase/templates", root / "supabase/templates")
     for migration in (ROOT / "supabase/migrations").glob("*.sql"):
         shutil.copy2(migration, root / "supabase/migrations" / migration.name)
     return root
@@ -377,7 +378,12 @@ def source_checks(users: dict[str, str]) -> dict[str, str]:
                      query=f"?select=id&company_id=eq.{IDS['company_a']}")[1]
     db_version = db("source", "select split_part(current_setting('server_version'),'.',1) || '.' || split_part(current_setting('server_version'),'.',2)").strip()
     migration_count = db("source", "select count(*) from supabase_migrations.schema_migrations").strip()
-    check("source_anonymous_postgres17_migrations", ((status in (401, 403)) or (status == 200 and isinstance(anon_rows, list) and not anon_rows)) and db_version == "17.11" and migration_count == "20")
+    expected_migrations = len(list((PROJECTS["source"] / "supabase" / "migrations").glob("*.sql")))
+    anonymous_read_safe = (status in (401, 403)) or (
+        status == 200 and isinstance(anon_rows, list) and not anon_rows)
+    check("source_anonymous_postgres17_migrations",
+          anonymous_read_safe and db_version.split(".", 1)[0] == "17"
+          and migration_count == str(expected_migrations))
     return users
 
 
@@ -436,17 +442,34 @@ def source_cleanup(users: dict[str, str]) -> bool:
     return all(results) and db("source", f"select count(*) from public.companies where id in ('{IDS['company_a']}','{IDS['company_b']}')").strip() == "0"
 
 
-def restore_database() -> tuple[Path, int, int]:
-    dump = TEMP / "synthetic.dump"
-    dump.touch(mode=0o600)
+def restore_database() -> tuple[Path, str, str, int, int]:
+    encrypted_dump = TEMP / "synthetic.dump.gpg"
     started = time.monotonic()
     # Use the PostgreSQL 17 tool in the source container, with owner/ACL data.
     proc = subprocess.run(["docker", "exec", "supabase_db_qr95d_source", "pg_dump", "-Fc", "-U", "postgres", "-d", "postgres"], capture_output=True, timeout=900)
     if proc.returncode:
         raise RuntimeError("local pg_dump failed")
-    dump.write_bytes(proc.stdout)
-    os.chmod(dump, 0o600)
-    archive = subprocess.run(["docker", "exec", "-i", "supabase_db_qr95d_restore", "pg_restore", "--list"], input=proc.stdout, capture_output=True, timeout=120)
+    source_sha256 = hashlib.sha256(proc.stdout).hexdigest()
+    encryption = subprocess.run([
+        "gpg", "--homedir", str(TEMP / "gnupg"), "--batch", "--yes",
+        "--pinentry-mode", "loopback", "--passphrase-file", str(TEMP / "backup.passphrase"),
+        "--symmetric", "--cipher-algo", "AES256", "--s2k-digest-algo", "SHA512", "--output", "-",
+    ], input=proc.stdout, capture_output=True, timeout=300)
+    if encryption.returncode:
+        raise RuntimeError("local synthetic dump encryption failed")
+    encrypted_dump.write_bytes(encryption.stdout)
+    os.chmod(encrypted_dump, 0o600)
+    decryption = subprocess.run([
+        "gpg", "--homedir", str(TEMP / "gnupg"), "--batch", "--yes",
+        "--pinentry-mode", "loopback", "--passphrase-file", str(TEMP / "backup.passphrase"),
+        "--decrypt", str(encrypted_dump),
+    ], capture_output=True, timeout=300)
+    if decryption.returncode:
+        raise RuntimeError("local synthetic dump decryption failed")
+    restored_sha256 = hashlib.sha256(decryption.stdout).hexdigest()
+    if restored_sha256 != source_sha256:
+        raise RuntimeError("decrypted local dump SHA-256 did not match source")
+    archive = subprocess.run(["docker", "exec", "-i", "supabase_db_qr95d_restore", "pg_restore", "--list"], input=decryption.stdout, capture_output=True, timeout=120)
     # Destination container receives the archive on stdin; --list does not touch its database.
     if archive.returncode:
         raise RuntimeError("pg_restore archive listing validation failed")
@@ -463,7 +486,7 @@ def restore_database() -> tuple[Path, int, int]:
     run(["docker", "exec", keep, "dropdb", "-U", "supabase_admin", "--maintenance-db=template1", "--if-exists", "postgres"], timeout=90)
     run(["docker", "exec", keep, "createdb", "-U", "supabase_admin", "--maintenance-db=template1", "--template=template0", "--owner=supabase_admin", "postgres"], timeout=90)
     restore_start = time.monotonic()
-    proc = subprocess.run(["docker", "exec", "-i", keep, "pg_restore", "--exit-on-error", "-U", "supabase_admin", "-d", "postgres"], input=proc.stdout, capture_output=True, timeout=1200)
+    proc = subprocess.run(["docker", "exec", "-i", keep, "pg_restore", "--exit-on-error", "-U", "supabase_admin", "-d", "postgres"], input=decryption.stdout, capture_output=True, timeout=1200)
     if proc.returncode:
         raise RuntimeError("pg_restore into fresh template0 database failed")
     restore_ms = int((time.monotonic() - restore_start) * 1000)
@@ -481,7 +504,7 @@ def restore_database() -> tuple[Path, int, int]:
         time.sleep(2)
     else:
         raise RuntimeError("restored GoTrue did not become healthy")
-    return dump, dump_ms, restore_ms
+    return encrypted_dump, source_sha256, restored_sha256, dump_ms, restore_ms
 
 
 def restored_users(source_ids: dict[str, str]) -> dict[str, str]:
@@ -591,8 +614,13 @@ def prepare() -> None:
     cli_version = run([str(ROOT / "node_modules/.bin/supabase"), "--version"]).strip()
     if not cli_version.startswith("2."):
         raise RuntimeError("repository-local Supabase CLI unavailable")
+    if shutil.which("gpg") is None:
+        raise RuntimeError("GnuPG is required for the local encrypted-backup rehearsal")
     TEMP = Path(tempfile.mkdtemp(prefix="qr95d-", dir="/private/tmp"))
     os.chmod(TEMP, 0o700)
+    (TEMP / "gnupg").mkdir(mode=0o700)
+    (TEMP / "backup.passphrase").write_text(secrets.token_urlsafe(48))
+    os.chmod(TEMP / "backup.passphrase", 0o600)
     PORT_OFFSETS["source"] = choose_port_offset(set())
     PORT_OFFSETS["restore"] = choose_port_offset(set(
         int(value) + PORT_OFFSETS["source"] for value in
@@ -658,10 +686,11 @@ def main() -> int:
         users = auth_create_source()
         source_checks(users)
         # Dump is taken before source account/fixture cleanup, includes Auth.
-        dump, dump_ms, restore_ms = restore_database()
+        dump, source_sha256, restored_sha256, dump_ms, restore_ms = restore_database()
         dump_hash = hashlib.sha256(dump.read_bytes()).hexdigest()
-        dump_info = (dump.stat().st_size, dump_hash, dump_ms, restore_ms)
-        check("backup_archive_integrity", dump.stat().st_size > 100_000 and len(dump_hash) == 64)
+        dump_info = (dump.stat().st_size, dump_hash, source_sha256, dump_ms, restore_ms)
+        check("backup_archive_integrity", dump.stat().st_size > 100_000 and len(dump_hash) == 64 and not dump.read_bytes().startswith(b"PGDMP"))
+        check("backup_decryption_matches_sha256", source_sha256 == restored_sha256)
         source_clean = source_cleanup(users)
         check("source_fixture_and_auth_cleanup", source_clean)
         restored = restored_users(users)
@@ -686,8 +715,8 @@ def main() -> int:
     omitted = max(0, EXPECTED - len(CHECKS))
     print(f"SUMMARY: {result}/{EXPECTED} PASS, {failed} FAIL, {omitted} SKIP; elapsed_ms={int((time.monotonic()-START_TIME)*1000)}")
     if dump_info:
-        size, sha, dump_ms, restore_ms = dump_info
-        print(f"DUMP: bytes={size}, sha256={sha}, pg_dump_ms={dump_ms}, pg_restore_ms={restore_ms}")
+        size, sha, plain_sha, dump_ms, restore_ms = dump_info
+        print(f"DUMP: encrypted_bytes={size}, ciphertext_sha256={sha}, plaintext_sha256={plain_sha}, pg_dump_ms={dump_ms}, pg_restore_ms={restore_ms}")
     if failure:
         print("RUN STATUS: FAIL (" + failure + ")")
     success = not failure and clean and len(CHECKS) == EXPECTED and result == EXPECTED and failed == 0 and omitted == 0

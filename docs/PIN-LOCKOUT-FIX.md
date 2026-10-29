@@ -45,6 +45,8 @@ La consulta histórica anterior se actualizó en una auditoría de solo lectura 
 
 El preflight, estrategia de manifiesto y dry-run exclusivo de QR-003 están en [QR-003-MIGRATION-RECONCILIATION.md](QR-003-MIGRATION-RECONCILIATION.md). No aplicar la migración como parte de una tarea documental.
 
+El procedimiento de backup, recuperación y POC sintética local está en [QR-003-BACKUP-RECOVERY-PLAN.md](QR-003-BACKUP-RECOVERY-PLAN.md). Estado operativo vigente en la última comprobación: no había respaldos listados ni PITR; por ello no se autoriza escritura hasta confirmar una recuperación viable.
+
 ## Procedimiento para futura revisión autorizada
 
 Regenerar el manifiesto temporal a partir del estado actual de Testing, verificar hashes e inspeccionar las funciones/grants con `SELECT`, y exigir que `supabase db push --dry-run --project-ref llxyziffgtqnzlguxhyt --skip-vault` liste solo QR-003. El dry-run confirmado en la auditoría del 2026-10-28 no sustituye la repetición inmediata antes de un cambio. La aplicación y las pruebas con datos sintéticos en Testing requieren autorización explícita en una tarea posterior.
