@@ -41,13 +41,13 @@ La matriz `tests/security-jwt-matrix.integration.mjs` está fijada explícitamen
 
 ## Estado de Supabase Testing
 
-Una consulta de solo lectura histórica registró como última versión `20261012143000_company_user_access_management` y no mostró `20261018120000_persist_employee_pin_failures`. **Ese hallazgo no está actualizado ni confirmado en esta tarea.** No se consultó actualmente el historial ni la definición remota de funciones y no se modificó Testing ni Producción. No asumir el antiguo historial como estado presente.
+La consulta histórica anterior se actualizó en una auditoría de solo lectura el 2026-10-28: el proyecto `llxyziffgtqnzlguxhyt` tenía 24 migraciones, incluidas 23 con nombre común respecto a `main`. No constaban QR-003 ni QR-002. Las RPC remotas todavía lanzaban excepción para PIN inválido. Las dependencias relevantes, definiciones y grants comparados coincidieron con una réplica local construida desde los SQL archivados; esa comparación limitada no descarta modificaciones manuales ajenas a esos objetos. No se modificó Testing ni Producción.
 
-La migración correctiva y la posterior de QR-002 están en `main`. El inventario, dependencias, riesgos y procedimiento actual de lectura previa están en [QR-003-TESTING-PREFLIGHT.md](QR-003-TESTING-PREFLIGHT.md). No aplicar la migración en el marco de una tarea documental.
+El preflight, estrategia de manifiesto y dry-run exclusivo de QR-003 están en [QR-003-MIGRATION-RECONCILIATION.md](QR-003-MIGRATION-RECONCILIATION.md). No aplicar la migración como parte de una tarea documental.
 
 ## Procedimiento para futura revisión autorizada
 
-Primero confirmar el ref exacto de Testing, recuperar su historia en una copia temporal enlazada únicamente a ese proyecto, comparar versiones y cuerpos SQL, e inspeccionar las funciones/grants de PIN en transacción de solo lectura. Continuar únicamente si las dependencias y definiciones coinciden y `supabase db push --dry-run --linked` muestra exactamente la migración QR-003 prevista. Si aparece QR-002 u otra diferencia, detenerse y resolver el alcance por separado. La aplicación y las pruebas con datos sintéticos en Testing requieren autorización explícita en una tarea posterior.
+Regenerar el manifiesto temporal a partir del estado actual de Testing, verificar hashes e inspeccionar las funciones/grants con `SELECT`, y exigir que `supabase db push --dry-run --project-ref llxyziffgtqnzlguxhyt --skip-vault` liste solo QR-003. El dry-run confirmado en la auditoría del 2026-10-28 no sustituye la repetición inmediata antes de un cambio. La aplicación y las pruebas con datos sintéticos en Testing requieren autorización explícita en una tarea posterior.
 
 ## Reversión y riesgos
 
