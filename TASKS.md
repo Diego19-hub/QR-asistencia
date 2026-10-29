@@ -5,7 +5,7 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 | ID | Prioridad | Estado | Dependencias | Tarea |
 |---|---|---|---|---|
 | QR-001 | P1 | Hecha | — | Enlaces permanentes de acceso |
-| QR-002 | P1 | Pendiente | QR-004 | Invitaciones manuales |
+| QR-002 | P1 | En curso | QR-004 | Invitaciones manuales |
 | QR-003 | P0 | En curso | — | Verificar persistencia de fallos de PIN; la migración está validada localmente y falta desplegarla en Testing |
 | QR-004 | P1 | En curso | — | Auditoría multiempresa; matriz local sintética ejecutada para RLS, roles, sucursales, RPC, credenciales y dispositivos. La verificación remota de Testing/Producción sigue separada y no se hizo en esta fase. Informe: [docs/QR-004-SECURITY-AUDIT.md](docs/QR-004-SECURITY-AUDIT.md) |
 | QR-005 | P1 | Pendiente | QR-004 | Pruebas E2E con Playwright |
@@ -32,6 +32,10 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 - **Criterios de aceptación:** token individual de un solo uso, expiración y revocación comprobadas en servidor; destinatario verificado y vinculado al flujo Auth; el token no otorga permisos sin autenticación/membresía activa; rate limiting/auditoría y protección ante enumeración evaluadas; correo actual sigue funcionando.
 - **Evidencia requerida:** modelo de amenazas breve, pruebas para expiración/revocación/destinatario/reutilización y regresión del correo.
 - **Referencias iniciales:** `src/lib/access/`, `src/app/(auth)/invitacion/`, `src/app/api/admin/access/`, `INVITATION-FLOW-TESTING.md`, `supabase/migrations/20261012143000_company_user_access_management.sql`.
+- **Diseño implementado para revisión:** las invitaciones manuales reutilizan la invitación individual por correo existente. El enlace es adicional, de un solo uso, expira junto con la invitación y exige sesión Supabase Auth con correo confirmado idéntico al destinatario. Las cuentas nuevas completan primero el alta/verificación por el correo Auth existente; el registro público permanece deshabilitado.
+- **Resultado local:** la corrección en PR #7 permite aceptar por correo incluso cuando existe enlace WhatsApp; ambos caminos verifican Auth, correo confirmado, destinatario, expiración, autorización y membresía. La aceptación bloquea la fila, marca una sola vez y borra el hash para invalidar el canal alterno. Se conserva el flujo de reenvío de correo.
+- **Pruebas:** `npm run test:security:matrix:local` pasó con las 156 aserciones pgTAP originales, más regresiones HTTP/Auth de aceptación por correo con enlace, invalidación mutua, repetición, regeneración, concurrencia entre canales y owner-only para enlaces de invitación admin. Mailpit confirmó el correo HTTP 201 y el reenvío HTTP 200; runner verificó limpieza. Pasaron lint, typecheck, `npm test` (70) y build aislado sin `.env*`. Solo avisos conocidos de Node `MODULE_TYPELESS_PACKAGE_JSON` y trazado standalone por `node_modules` enlazado. No se accedió a Testing ni Producción.
+- **Estado:** pendiente de revisión del PR y CI. Riesgo residual operativo: una persona sin cuenta depende del correo de verificación inicial. Evidencia del diseño y pruebas: [INVITATION-FLOW-TESTING.md](INVITATION-FLOW-TESTING.md).
 
 ## QR-003 — Verificar persistencia de fallos de PIN
 

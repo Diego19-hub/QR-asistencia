@@ -1,4 +1,4 @@
-export type AccessReturnDestination = "/scanner" | "/mi-qr";
+export type AccessReturnDestination = "/scanner" | "/mi-qr" | "/invitacion/compartida";
 export type AccessRole = "owner" | "admin" | "supervisor" | "employee";
 
 export function getPermanentAccessLinks(appOrigin: string) {
@@ -24,10 +24,11 @@ export function createWhatsAppShareUrl(message: string, accessUrl: string) {
 }
 
 export function accessReturnDestination(value: unknown): AccessReturnDestination | null {
-  return value === "/scanner" || value === "/mi-qr" ? value : null;
+  return value === "/scanner" || value === "/mi-qr" || value === "/invitacion/compartida" ? value : null;
 }
 
 export function destinationForAccessRole(role: AccessRole, requested?: AccessReturnDestination | null) {
+  if (requested === "/invitacion/compartida") return requested;
   if (requested === "/scanner" && role === "supervisor") return requested;
   if (requested === "/mi-qr" && role === "employee") return requested;
   if (role === "owner" || role === "admin") return "/admin";

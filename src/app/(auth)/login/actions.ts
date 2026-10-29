@@ -38,30 +38,34 @@ export async function signIn(formData: FormData) {
     signInError = error;
     authStatus = (error as (Error & { status?: number }) | null)?.status;
     if (!error && data.user) {
-      const { data: memberships, error: membershipError } = await supabase
-        .from("company_memberships")
-        .select("id,company_id,role")
-        .eq("user_id", data.user.id)
-        .eq("active", true);
+      if (requestedNext === "/invitacion/compartida") {
+        destination = requestedNext;
+      } else {
+        const { data: memberships, error: membershipError } = await supabase
+          .from("company_memberships")
+          .select("id,company_id,role")
+          .eq("user_id", data.user.id)
+          .eq("active", true);
 
-      if (membershipError) destination = loginError("service");
-      else {
-        const { data: pending, error: invitationError } = await supabase.rpc("list_my_pending_company_invitations");
-        const invitationFunctionMissing = invitationError?.code === "PGRST202" || invitationError?.code === "42883";
-        if (invitationError && !invitationFunctionMissing) destination = loginError("service");
-        else if (Array.isArray(pending) && pending.length) destination = "/invitacion";
+        if (membershipError) destination = loginError("service");
         else {
-          const choices = (memberships ?? []).map((membership) => ({
-            companyId: membership.company_id,
-            role: membership.role as MembershipRole,
-            membershipId: membership.id,
-          }));
-          const selected = selectInitialMembership(choices);
-          if (selected.kind === "none") destination = "/login?error=no-company";
-          else if (selected.kind === "choose") destination = companySelectionPathForAccessDestination(requestedNext);
+          const { data: pending, error: invitationError } = await supabase.rpc("list_my_pending_company_invitations");
+          const invitationFunctionMissing = invitationError?.code === "PGRST202" || invitationError?.code === "42883";
+          if (invitationError && !invitationFunctionMissing) destination = loginError("service");
+          else if (Array.isArray(pending) && pending.length) destination = "/invitacion";
           else {
-            await setActiveMembershipCookie(selected.membership.membershipId ?? "");
-            destination = destinationForAccessRole(selected.membership.role, requestedNext);
+            const choices = (memberships ?? []).map((membership) => ({
+              companyId: membership.company_id,
+              role: membership.role as MembershipRole,
+              membershipId: membership.id,
+            }));
+            const selected = selectInitialMembership(choices);
+            if (selected.kind === "none") destination = "/login?error=no-company";
+            else if (selected.kind === "choose") destination = companySelectionPathForAccessDestination(requestedNext);
+            else {
+              await setActiveMembershipCookie(selected.membership.membershipId ?? "");
+              destination = destinationForAccessRole(selected.membership.role, requestedNext);
+            }
           }
         }
       }

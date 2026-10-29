@@ -7,7 +7,8 @@ Este documento resume las rutas observadas en el árbol del repositorio. Los con
 | Usuario administrativo | `/login`, `/auth/callback`, `/auth/confirm` | `/admin` o selección de empresa | `src/app/(auth)`, `src/app/(admin)`, `src/lib/access` |
 | Supervisor | sesión/membresía y dispositivo autorizado | `/scanner` | `src/app/(supervisor)/scanner`, `/api/supervisor/scanner/context`, `/api/attendance/scan` |
 | Empleado | sesión autenticada | `/mi-qr` | `src/app/(employee)/mi-qr`, `/api/employee/portal`, rutas API de credenciales |
-| Administrador que invita | `/admin` | invitación y flujo `/invitacion` | `src/app/(admin)/admin`, `/api/admin/access`, `src/lib/access` |
+| Administrador que invita | `/admin` | invitación por correo o enlace individual WhatsApp | `src/app/(admin)/admin`, `/api/admin/access`, `/api/admin/access/invitations/:id/share-link`, `src/lib/access` |
+| Invitado por WhatsApp | enlace `/invitacion/compartida#t=…` | sesión Auth confirmada, luego empresa/rol autorizados | `/api/invitations/share/accept`, RPC `accept_company_user_share_invitation` |
 
 ## Revisión para cada flujo
 
@@ -29,6 +30,7 @@ Copiar usa primero la API del portapapeles y recurre a `document.execCommand("co
 ## Rutas clave
 
 - Acceso: `/login`, `/invitacion`, `/seleccionar-empresa`, `/auth/callback`, `/auth/confirm`.
+- Invitaciones individuales: `/invitacion/compartida` toma el token desde el fragmento solo en el navegador y requiere una aceptación explícita con sesión Auth y correo confirmado coincidente. Las cuentas nuevas completan primero el correo de alta Auth existente; WhatsApp no habilita el registro público.
 - Administración: `/admin` y páginas hijas para empleados, supervisores, asistencias, horarios, horas extra, reportes y configuración.
 - Operación: `/scanner`, `/mi-qr`.
 - API: `src/app/api/**/route.ts`; inspecciona el Route Handler correspondiente y sus helpers antes de ampliar acceso.
