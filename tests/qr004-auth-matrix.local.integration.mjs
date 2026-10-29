@@ -26,7 +26,7 @@ const suites = [
 ];
 let temp;
 let startAttempted = false;
-let appServer, dbPool, service, apiUrl, anonKey, serviceKey, dbUrl, appUrl, appOutput = "";
+let appServer, dbPool, service, apiUrl, anonKey, serviceKey, dbUrl, appUrl, mailpitUrl, appOutput = "";
 
 function safeCli(args, timeout = 900_000) {
   const env = { ...process.env, SUPABASE_TELEMETRY_DISABLED: "1", CI: "1" };
@@ -169,6 +169,23 @@ async function request(path, { user, method = "GET", body, cookieExtra = "" } = 
   if (body !== undefined) headers["content-type"] = "application/json";
   return fetch(new URL(path, appUrl), { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: "manual" });
 }
+async function waitForMailpitRecipient(email, expectedCount) {
+  assert.ok(mailpitUrl, "local Mailpit URL is configured");
+  const deadline = Date.now() + 20_000;
+  let recipientCount = 0;
+  while (Date.now() < deadline) {
+    const response = await fetch(new URL("/api/v1/messages?limit=100", mailpitUrl));
+    assert.equal(response.status, 200, "local Mailpit API is available");
+    const payload = await response.json();
+    const messages = Array.isArray(payload) ? payload : payload.messages;
+    assert.ok(Array.isArray(messages), "local Mailpit returned its message list");
+    recipientCount = messages.filter((message) => (message.To ?? message.to ?? [])
+      .some((recipient) => (recipient.Address ?? recipient.address ?? "").toLowerCase() === email.toLowerCase())).length;
+    if (recipientCount >= expectedCount) break;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  assert.equal(recipientCount, expectedCount, `Mailpit captured exactly ${expectedCount} message(s) for the synthetic recipient`);
+}
 
 const before = Object.fromEntries(["containers", "volumes", "networks"].map((kind) => [kind, dockerResources(kind)]));
 const cleanupErrors = [];
@@ -187,6 +204,8 @@ try {
     .replace("port = 54321", `port = ${base}`).replace("port = 54322", `port = ${base + 1}`)
     .replace("shadow_port = 54320", `shadow_port = ${base + 2}`).replace("port = 54323", `port = ${base + 3}`)
     .replace("port = 54324", `port = ${base + 4}`).replace("port = 54329", `port = ${base + 9}`).replace("port = 54327", `port = ${base + 7}`);
+  mailpitUrl = `http://127.0.0.1:${base + 4}`;
+  localUrl(mailpitUrl, "Mailpit URL");
   assert.match(config, new RegExp(`^project_id = "${projectId}"$`, "m"));
   await writeFile(join(workdir, "supabase/config.toml"), config, { mode: 0o600 });
   for (const kind of Object.keys(before)) {
@@ -218,6 +237,8 @@ try {
   assert.ok(anonKey && serviceKey && anonKey !== serviceKey, "local Supabase keys are available in memory");
   dbPool = new pg.Pool({ connectionString: dbUrl, max: 2 }); await dbPool.query("select 1");
   service = createClient(apiUrl, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
+  const mailpitReady = await fetch(new URL("/api/v1/messages?limit=1", mailpitUrl));
+  assert.equal(mailpitReady.status, 200, "isolated local Mailpit API is reachable");
   const companyAResult = await service.from("companies").insert({ name: `QR004 HTTP Synthetic A ${randomUUID()}` }).select("id").single();
   const companyBResult = await service.from("companies").insert({ name: `QR004 HTTP Synthetic B ${randomUUID()}` }).select("id").single();
   if (companyAResult.error || companyBResult.error) throw new Error("failed creating synthetic HTTP test companies");
@@ -276,20 +297,23 @@ try {
   response = await request(`/api/admin/audit?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 403);
   response = await request(`/api/admin/permissions?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
   await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "company.manage");
-  response = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "POST", body: { email: `new-invite-${randomUUID()}@qr-asistencia.invalid`, role: "employee", employeeId: null } });
-  assert.ok([201, 502].includes(response.status), `valid local invite returned documented success or local SMTP failure status, got ${response.status}`);
-  process.stdout.write(`PASS valid local invitation route returned HTTP ${response.status} (local SMTP only)\n`);
+  const inviteEmail = `new-invite-${randomUUID()}@qr-asistencia.invalid`;
+  response = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "POST", body: { email: inviteEmail, role: "employee", employeeId: null } });
+  assert.equal(response.status, 201, `valid invitation with local SMTP available returns HTTP 201, got ${response.status}`);
+  await waitForMailpitRecipient(inviteEmail, 1);
+  process.stdout.write("PASS valid local invitation returned HTTP 201 and Mailpit captured its synthetic recipient\n");
   const inviteBody = await response.json();
   if (inviteBody.invitationId) {
     assert.equal((await dbPool.query("select id from public.company_user_invitations where id=$1 and company_id=$2", [inviteBody.invitationId, companyA])).rows[0]?.id, inviteBody.invitationId);
     response = await request(`/api/admin/access/invitations/${inviteBody.invitationId}/resend?companyId=${companyA}`, { user: supervisorA, method: "POST" }); assert.equal(response.status, 403);
     response = await request(`/api/admin/access/invitations/not-a-uuid/resend?companyId=${companyA}`, { user: adminA, method: "POST" }); assert.equal(response.status, 400);
     const beforeResend = await snapshot(companyA);
-    response = await request(`/api/admin/access/invitations/${inviteBody.invitationId}/resend?companyId=${companyA}`, { user: adminA, method: "POST" }); assert.ok([200, 503].includes(response.status));
-    if (response.status === 200) assert.equal((await response.json()).deliveryMode, "auth-invite");
-    else assert.equal((await response.json()).error.code, "existing_account_delivery_unconfigured");
+    response = await request(`/api/admin/access/invitations/${inviteBody.invitationId}/resend?companyId=${companyA}`, { user: adminA, method: "POST" });
+    assert.equal(response.status, 200, `valid invitation resend with local SMTP available returns HTTP 200, got ${response.status}`);
+    assert.equal((await response.json()).deliveryMode, "auth-invite");
+    await waitForMailpitRecipient(inviteEmail, 2);
     assert.deepEqual(await snapshot(companyA), beforeResend, "resend has no database side effects");
-    process.stdout.write(`PASS local invitation resend returned HTTP ${response.status} with no database side effects\n`);
+    process.stdout.write("PASS local invitation resend returned HTTP 200, Mailpit captured both messages, and database state was unchanged\n");
     response = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { action: "revoke-invitation", invitationId: inviteBody.invitationId } }); assert.equal(response.status, 200);
   }
   process.stdout.write("PASS admin access GET/POST/PATCH/resend scope, role, permission, validation and rejected-write snapshots\n");
