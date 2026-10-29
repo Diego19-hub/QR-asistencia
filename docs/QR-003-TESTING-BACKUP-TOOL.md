@@ -41,6 +41,8 @@ La ejecución final del harness informó un ciphertext sintético de 766604 byte
 
 El harness de restauración cifrada valida el flujo de extremo a extremo incluyendo Auth en un stack Supabase nuevo. No es una exportación ni restauración del estado de Testing, y no valida objetos Storage o ajustes de servicio alojado.
 
+**Límite de la validación del CLI:** el comando `restore-local` no se ejecutó como acción independiente; sus barreras de destino se comprobaron con pruebas unitarias. El ensayo de extremo a extremo reutilizó `encrypt_stream`/`decrypt_bytes` en el harness existente, que restaura con `pg_restore` 17 dentro del contenedor PostgreSQL efímero y comprueba Auth/RLS/RPC/PIN. En este Mac el `pg_restore` del host es major 18, así que `verify`/`restore-local` exigen tener cliente PostgreSQL 17 en `PATH`; no se instaló ningún cliente adicional. La exportación CLI de Testing tampoco se probó ni ejecutó.
+
 ## Procedimiento futuro sujeto a autorización
 
 ### Crear respaldo de Testing
