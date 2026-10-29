@@ -15,6 +15,7 @@
     "test:user-access": "node --experimental-strip-types --test tests/user-access-management.test.mjs tests/access-links.test.mjs",
     "test:deployment": "node --experimental-strip-types --test tests/deployment-readiness.test.mjs",
     "test:backup-tool": "python3 tests/qr_testing_backup_test.py",
+    "test:backup-tool:restore-local": "python3 tests/integration/qr_testing_backup_restore_local.py",
     "test:auth-flow": "node --experimental-strip-types --test tests/auth-email-flow.test.mjs",
     "test:credentials": "node --experimental-strip-types --test tests/employee-credential-emission.test.mjs tests/credential-api-error.test.mjs",
     "test:reports": "node --experimental-strip-types --test tests/reports-exports.test.mjs tests/reports-data.test.mjs tests/reports-export-lease.test.mjs",

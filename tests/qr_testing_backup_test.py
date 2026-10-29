@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -26,6 +27,7 @@ from scripts.qr_testing_backup import (
     safe_output_dir,
     validate_project,
     validate_disposable_restore_target,
+    validate_ca_certificate,
     verify_artifact,
 )
 
@@ -49,14 +51,52 @@ class BackupSafetyTests(unittest.TestCase):
     def test_database_url_is_limited_to_local_or_exact_testing_direct_host(self):
         _, local = parse_database_url("postgresql://postgres:synthetic@127.0.0.1:54322/postgres", remote=False)
         self.assertEqual(local["PGHOST"], "127.0.0.1")
-        testing = f"postgresql://postgres:synthetic@db.{TESTING_REF}.supabase.co:5432/postgres?sslmode=require"
-        parsed, remote = parse_database_url(testing, remote=True)
+        with tempfile.TemporaryDirectory(prefix="qr-backup-ca-") as folder:
+            certificate = Path(folder) / "supabase-ca.crt"
+            subprocess.run([
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                "-keyout", str(Path(folder) / "ca.key"), "-out", str(certificate),
+                "-days", "1", "-subj", "/CN=QR synthetic test CA",
+                "-addext", "basicConstraints=critical,CA:TRUE",
+            ], check=True, capture_output=True)
+            testing = f"postgresql://postgres:synthetic@db.{TESTING_REF}.supabase.co:5432/postgres?sslmode=verify-full"
+            parsed, remote = parse_database_url(testing, remote=True, ca_certificate=str(certificate))
         self.assertEqual(parsed.hostname, f"db.{TESTING_REF}.supabase.co")
-        self.assertEqual(remote["PGSSLMODE"], "require")
+        self.assertEqual(remote["PGSSLMODE"], "verify-full")
+        self.assertEqual(remote["PGSSLROOTCERT"], str(certificate.resolve()))
         with self.assertRaises(BackupError):
-            parse_database_url(f"postgresql://postgres:x@db.{PRODUCTION_REF}.supabase.co:5432/postgres?sslmode=require", remote=True)
+            parse_database_url(f"postgresql://postgres:x@db.{PRODUCTION_REF}.supabase.co:5432/postgres?sslmode=verify-full", remote=True, ca_certificate=str(certificate))
+        with self.assertRaises(BackupError):
+            parse_database_url(f"postgresql://postgres:x@db.{TESTING_REF}.supabase.co:5432/postgres?sslmode=require", remote=True, ca_certificate=str(certificate))
         with self.assertRaises(BackupError):
             parse_database_url("postgresql://postgres:x@example.invalid/postgres", remote=False)
+
+    def test_remote_tls_fails_closed_for_missing_or_invalid_ca(self):
+        url = f"postgresql://postgres:synthetic@db.{TESTING_REF}.supabase.co/postgres?sslmode=verify-full"
+        with self.assertRaisesRegex(BackupError, "Falta el certificado CA"):
+            parse_database_url(url, remote=True)
+        with tempfile.TemporaryDirectory(prefix="qr-backup-invalid-ca-") as folder:
+            invalid = Path(folder) / "invalid.crt"
+            invalid.write_text("not a PEM certificate\n")
+            with self.assertRaisesRegex(BackupError, "no es válido"):
+                parse_database_url(url, remote=True, ca_certificate=str(invalid))
+
+    def test_remote_tls_ca_must_be_outside_repository(self):
+        with self.assertRaisesRegex(BackupError, "fuera del repositorio"):
+            validate_ca_certificate(str(ROOT / "AGENTS.md"))
+
+    def test_database_authentication_failure_does_not_echo_connection_details(self):
+        secret = "synthetic-auth-secret-never-log"
+        failed = subprocess.CompletedProcess(
+            args=["psql"], returncode=2, stdout="", stderr=f"password={secret}: authentication failed")
+        with tempfile.TemporaryDirectory(prefix="qr-backup-auth-fail-") as folder:
+            with patch("scripts.qr_testing_backup.pg_binary", return_value="pg_dump"), \
+                 patch("scripts.qr_testing_backup.subprocess.run", return_value=failed):
+                with self.assertRaises(BackupError) as error:
+                    from scripts.qr_testing_backup import create_database_backup
+                    create_database_backup("postgresql://synthetic:secret@127.0.0.1/postgres", False,
+                                           Path(folder), "synthetic-long-passphrase")
+            self.assertNotIn(secret, str(error.exception))
 
     def test_validated_dsn_cannot_be_overridden_by_inherited_libpq_variables(self):
         with patch.dict(os.environ, {

@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import stat
 import subprocess
 import sys
@@ -238,7 +239,29 @@ def validate_project(project_ref: str, confirm_ref: str, approval_id: str,
         raise BackupError("La exportación remota está prohibida desde CI.")
 
 
-def parse_database_url(value: str, remote: bool) -> tuple[urllib.parse.ParseResult, dict[str, str]]:
+def validate_ca_certificate(certificate_value: str) -> Path:
+    if not certificate_value:
+        raise BackupError("Falta el certificado CA de Supabase para verificar TLS.")
+    certificate = Path(certificate_value).expanduser().resolve()
+    try:
+        certificate.relative_to(ROOT.resolve())
+    except ValueError:
+        pass
+    else:
+        raise BackupError("El certificado CA debe mantenerse fuera del repositorio.")
+    try:
+        if not certificate.is_file() or not os.access(certificate, os.R_OK):
+            raise ValueError
+        context = ssl.create_default_context(cafile=str(certificate))
+        if not context.get_ca_certs():
+            raise ValueError
+    except (OSError, ssl.SSLError, ValueError):
+        raise BackupError("El certificado CA de Supabase no es válido o no se puede leer.") from None
+    return certificate
+
+
+def parse_database_url(value: str, remote: bool,
+                       ca_certificate: str | None = None) -> tuple[urllib.parse.ParseResult, dict[str, str]]:
     try:
         parsed = urllib.parse.urlparse(value)
         if parsed.scheme not in ("postgres", "postgresql") or not parsed.hostname or not parsed.username or not parsed.password or not parsed.path.strip("/"):
@@ -246,9 +269,11 @@ def parse_database_url(value: str, remote: bool) -> tuple[urllib.parse.ParseResu
         params = urllib.parse.parse_qs(parsed.query, strict_parsing=True)
         if set(params) - {"sslmode"}:
             raise ValueError
+        certificate_path: Path | None = None
         if remote:
-            if parsed.hostname != f"db.{TESTING_REF}.supabase.co" or params.get("sslmode") != ["require"]:
+            if parsed.hostname != f"db.{TESTING_REF}.supabase.co" or params.get("sslmode") != ["verify-full"]:
                 raise ValueError
+            certificate_path = validate_ca_certificate(ca_certificate or "")
         elif parsed.hostname.lower() not in {"localhost", "127.0.0.1", "::1"}:
             raise ValueError
         info = {
@@ -257,9 +282,11 @@ def parse_database_url(value: str, remote: bool) -> tuple[urllib.parse.ParseResu
             "PGDATABASE": urllib.parse.unquote(parsed.path.lstrip("/")),
             "PGUSER": urllib.parse.unquote(parsed.username),
             "PGPASSWORD": urllib.parse.unquote(parsed.password),
-            "PGSSLMODE": "require" if remote else "disable",
+            "PGSSLMODE": "verify-full" if remote else "disable",
             "PGCONNECT_TIMEOUT": "15",
         }
+        if certificate_path:
+            info["PGSSLROOTCERT"] = str(certificate_path)
         return parsed, info
     except (ValueError, TypeError):
         raise BackupError("La URL de conexión no corresponde al host permitido o tiene opciones no admitidas.") from None
@@ -302,8 +329,9 @@ def safe_output_dir(path_value: str) -> Path:
 
 
 def create_database_backup(url: str, remote: bool, output_dir: Path,
-                           passphrase: str, gpg_home: Path | None = None) -> tuple[Path, Path, dict[str, object]]:
-    _, pg_env = parse_database_url(url, remote)
+                           passphrase: str, gpg_home: Path | None = None,
+                           ca_certificate: str | None = None) -> tuple[Path, Path, dict[str, object]]:
+    _, pg_env = parse_database_url(url, remote, ca_certificate)
     pg_dump = pg_binary("pg_dump")
     pg_restore = pg_binary("pg_restore")
     # Query only the server version; no application rows or identities are read here.
@@ -395,7 +423,9 @@ def verify_artifact(artifact: Path, passphrase: str, gpg_home: Path | None = Non
     if recorded != digest.hexdigest():
         raise BackupError("El sidecar SHA-256 no coincide.")
     restore = pg_binary("pg_restore")
-    result = decrypt_stream(artifact, passphrase, [restore, "--list", "-"], homedir=gpg_home)
+    # pg_restore reads stdin when no archive path is given; a literal "-" is
+    # treated as a filename by PostgreSQL 17 and fails with ENOENT.
+    result = decrypt_stream(artifact, passphrase, [restore, "--list"], homedir=gpg_home)
     if result["plaintext_sha256"] != data["plaintext_sha256"]:
         raise BackupError("SHA-256 del archivo descifrado no coincide.")
     return result
@@ -517,12 +547,14 @@ def run_backup(args: argparse.Namespace) -> int:
         if not url:
             print("SIMULACIÓN: sin conexión ni exportación. Para probar, proporcione QR_BACKUP_LOCAL_DATABASE_URL de una base local sintética.")
             return 0
-    parse_database_url(url, remote)
+    ca_certificate = os.getenv("QR_TESTING_CA_CERT", "") if remote else None
+    parse_database_url(url, remote, ca_certificate)
     if not args.output_dir:
         raise BackupError("Indique --output-dir fuera del repositorio.")
     output_dir = safe_output_dir(args.output_dir)
     phrase = prompt_passphrase(confirm=True)
-    artifact, manifest, metadata = create_database_backup(url, remote, output_dir, phrase)
+    artifact, manifest, metadata = create_database_backup(
+        url, remote, output_dir, phrase, ca_certificate=ca_certificate)
     print(f"Backup cifrado creado: {artifact.name}")
     print(f"Manifiesto: {manifest.name}")
     print(f"SHA-256 ciphertext: {metadata['ciphertext_sha256']}")
