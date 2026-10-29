@@ -12,7 +12,7 @@ export default async function InvitationPage({ searchParams }: { searchParams: P
   if (!auth.user) redirect("/login");
   const { data, error } = await supabase.rpc("list_my_pending_company_invitations");
   if (error) redirect("/login?error=service");
-  const invitations = Array.isArray(data) ? data as Array<{ id: string; companyId: string; companyName: string; role: string; email: string; expiresAt: string; shareLinkRequired?: boolean }> : [];
+  const invitations = Array.isArray(data) ? data as Array<{ id: string; companyId: string; companyName: string; role: string; email: string; expiresAt: string; shareLinkAvailable?: boolean }> : [];
   if (!invitations.length) {
     const { data: memberships } = await supabase.from("company_memberships").select("id,role").eq("user_id", auth.user.id).eq("active", true);
     if (memberships?.length === 1) redirect(memberships[0].role === "owner" || memberships[0].role === "admin" ? "/admin" : memberships[0].role === "supervisor" ? "/scanner" : "/mi-qr");
@@ -41,16 +41,12 @@ export default async function InvitationPage({ searchParams }: { searchParams: P
         <label className="block text-xs font-semibold text-slate-700">Confirma la contraseña<input name="confirmation" type="password" minLength={6} maxLength={128} autoComplete="new-password" required className="mt-1 h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" /></label>
         <button className="h-10 rounded-lg bg-blue-700 px-4 text-sm font-semibold text-white">Guardar contraseña</button>
       </form> : null}
-      <div className="mt-6 space-y-3">{invitations.map((invitation) => invitation.shareLinkRequired ? <article key={invitation.id} className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-        <p className="font-semibold text-slate-900">{invitation.companyName}</p>
-        <p className="mt-1 text-sm text-slate-700">Acceso: {roleNames[invitation.role] ?? "Usuario"}</p>
-        <p className="mt-2 text-sm leading-5 text-emerald-900">Esta invitación requiere su enlace individual de WhatsApp. Vuelve al mensaje que contiene ese enlace para aceptarla; tu sesión y tu correo confirmado no bastan sin ese código.</p>
-        <p className="mt-2 text-xs text-slate-600">Vence: {new Date(invitation.expiresAt).toLocaleDateString("es-MX")}</p>
-      </article> : <form key={invitation.id} action={acceptInvitation} className="rounded-xl border border-slate-200 p-4">
+      <div className="mt-6 space-y-3">{invitations.map((invitation) => <form key={invitation.id} action={acceptInvitation} className="rounded-xl border border-slate-200 p-4">
         <input type="hidden" name="invitationId" value={invitation.id} />
         <p className="font-semibold text-slate-900">{invitation.companyName}</p>
-        <p className="mt-1 text-sm text-slate-600">Acceso: {roleNames[invitation.role] ?? "Usuario"}</p>
-        <p className="mt-1 text-xs text-slate-500">Vence: {new Date(invitation.expiresAt).toLocaleDateString("es-MX")}</p>
+        <p className="mt-1 text-sm text-slate-700">Acceso: {roleNames[invitation.role] ?? "Usuario"}</p>
+        <p className="mt-2 text-xs text-slate-600">Vence: {new Date(invitation.expiresAt).toLocaleDateString("es-MX")}</p>
+        {invitation.shareLinkAvailable ? <p className="mt-2 text-xs leading-5 text-emerald-800">Puedes aceptar aquí desde tu cuenta con correo confirmado o usar el enlace individual de WhatsApp. El primer método que completes invalida el otro.</p> : <p className="mt-2 text-xs text-slate-500">Acepta con la cuenta cuyo correo recibió la invitación.</p>}
         <button disabled={needsPasswordSetup} className="mt-4 h-10 rounded-lg bg-blue-700 px-4 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50">Aceptar invitación</button>
       </form>)}</div>
     </section>

@@ -104,7 +104,7 @@ begin
   if actor_email is null then return '[]'::jsonb; end if;
   select coalesce(jsonb_agg(jsonb_build_object('id',i.id,'companyId',i.company_id,'companyName',c.name,
       'role',i.role,'email',i.email,'expiresAt',i.expires_at,
-      'shareLinkRequired',i.share_token_hash is not null) order by i.created_at), '[]'::jsonb)
+      'shareLinkAvailable',i.share_token_hash is not null) order by i.created_at), '[]'::jsonb)
    into result from public.company_user_invitations i join public.companies c on c.id=i.company_id
    where i.email=actor_email and i.status='pending' and i.expires_at>now();
   return result;
@@ -123,7 +123,7 @@ begin
     raise exception 'verified email authentication required' using errcode='42501';
   end if;
   select * into invite from public.company_user_invitations i where i.id=p_invitation_id
-    and i.email=actor_email and i.share_token_hash is null and i.status='pending' and i.expires_at>now() for update;
+    and i.email=actor_email and i.status='pending' and i.expires_at>now() for update;
   if not found then raise exception 'invitation unavailable' using errcode='P0002'; end if;
   select m.* into inviter from public.company_memberships m where m.company_id=invite.company_id
     and m.user_id=invite.invited_by and m.active;
@@ -166,7 +166,7 @@ begin
         and (e.email is null or lower(trim(e.email))=actor_email);
     if not found then raise exception 'employee record unavailable' using errcode='23503'; end if;
   end if;
-  update public.company_user_invitations i set status='accepted',accepted_at=now(),accepted_by=actor_id
+  update public.company_user_invitations i set status='accepted',accepted_at=now(),accepted_by=actor_id,share_token_hash=null
     where i.id=invite.id;
   insert into public.audit_log(company_id,actor_user_id,action,entity_table,entity_id,after_data)
    values(invite.company_id,actor_id,'USER_INVITATION_ACCEPTED','company_user_invitations',invite.id,

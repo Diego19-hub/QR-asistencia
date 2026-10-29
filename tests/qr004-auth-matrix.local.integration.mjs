@@ -378,6 +378,16 @@ try {
   assert.equal(new Date(storedShare.expires_at).toISOString(), new Date(shareCreated.expiresAt).toISOString());
   assert.equal(Number((await dbPool.query("select count(*) n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_SHARE_LINK_CREATED'", [companyA, shareInvitationId])).rows[0].n), 1);
 
+  const ownerOnlyEmail = `share-admin-${randomUUID()}@qr-asistencia.invalid`;
+  const ownerOnlyInvitation = await ownerA.client.rpc("create_company_user_invitation", { p_company_id: companyA, p_email: ownerOnlyEmail, p_role: "admin", p_employee_id: null });
+  assert.ok(!ownerOnlyInvitation.error && ownerOnlyInvitation.data);
+  const beforeAdminLinkDenial = await snapshot(companyA);
+  const deniedAdminLink = await getShareLink(companyA, ownerOnlyInvitation.data, adminA);
+  assert.equal(deniedAdminLink.response.status, 403, "company admins cannot create WhatsApp links for administrator invitations");
+  assert.deepEqual(await snapshot(companyA), beforeAdminLinkDenial, "owner-only share-link denial has no side effects");
+  const ownerAdminLink = await getShareLink(companyA, ownerOnlyInvitation.data, ownerA);
+  assert.equal(ownerAdminLink.response.status, 201, "owner can create a WhatsApp link for an administrator invitation");
+
   const beforePreview = await snapshot(companyA);
   response = await request(`/invitacion/compartida#t=${shareToken}`, { redirect: "manual" });
   assert.equal(response.status, 200, "link preview only renders the acceptance page");
@@ -392,7 +402,7 @@ try {
   assert.deepEqual(await snapshot(companyA), beforeUnverified, "wrong verified identity cannot consume a share invitation");
   const pendingShareList = await shareRecipient.client.rpc("list_my_pending_company_invitations");
   assert.ok(Array.isArray(pendingShareList.data));
-  assert.equal(pendingShareList.data.find((item) => item.id === shareInvitationId)?.shareLinkRequired, true);
+  assert.equal(pendingShareList.data.find((item) => item.id === shareInvitationId)?.shareLinkAvailable, true);
   assert.equal(JSON.stringify(pendingShareList.data).includes(shareToken), false, "pending-invite list never returns the raw share token");
   response = await request("/api/invitations/share/accept", { user: shareRecipient, method: "POST", body: { token: shareToken } }); assert.equal(response.status, 200);
   const shareAccepted = await response.json(); assert.equal(shareAccepted.accepted, true); assert.equal(shareAccepted.next, "/mi-qr");
@@ -404,6 +414,75 @@ try {
   const afterShareAccept = await snapshot(companyA);
   response = await request("/api/invitations/share/accept", { user: shareRecipient, method: "POST", body: { token: shareToken } }); assert.equal(response.status, 404);
   assert.deepEqual(await snapshot(companyA), afterShareAccept, "reused share token has no side effects");
+  const emailReplayAfterShare = await shareRecipient.client.rpc("accept_company_user_invitation", { p_invitation_id: shareInvitationId });
+  assert.equal(emailReplayAfterShare.error?.code, "P0002", "WhatsApp acceptance invalidates the traditional email acceptance path");
+  assert.deepEqual(await snapshot(companyA), afterShareAccept, "email replay after WhatsApp acceptance has no side effects");
+
+  const emailWithShare = `email-with-share-${randomUUID()}@qr-asistencia.invalid`;
+  const emailWithShareId = await createPendingInvite(emailWithShare);
+  const { body: emailWithShareLink } = await getShareLink(companyA, emailWithShareId);
+  const emailWithShareToken = new URLSearchParams(new URL(emailWithShareLink.shareUrl).hash.slice(1)).get("t");
+  const emailWithShareRecipient = await createHttpIdentity(emailWithShare, { emailConfirmed: false });
+  const beforeUnconfirmedEmailAccept = await snapshot(companyA);
+  const unconfirmedEmailAcceptance = await emailWithShareRecipient.client.rpc("accept_company_user_invitation", { p_invitation_id: emailWithShareId });
+  assert.equal(unconfirmedEmailAcceptance.error?.code, "42501", "traditional email acceptance requires a verified Auth email even when a share link exists");
+  assert.deepEqual(await snapshot(companyA), beforeUnconfirmedEmailAccept, "unconfirmed email acceptance has no side effects");
+  await dbPool.query("update auth.users set email_confirmed_at=clock_timestamp() where id=$1", [emailWithShareRecipient.userId]);
+  const wrongEmailAcceptance = await employeeA.client.rpc("accept_company_user_invitation", { p_invitation_id: emailWithShareId });
+  assert.equal(wrongEmailAcceptance.error?.code, "P0002", "traditional email acceptance still requires the exact recipient identity");
+  assert.deepEqual(await snapshot(companyA), beforeUnconfirmedEmailAccept, "wrong email identity acceptance has no side effects");
+  const acceptedByEmail = await emailWithShareRecipient.client.rpc("accept_company_user_invitation", { p_invitation_id: emailWithShareId });
+  assert.ok(!acceptedByEmail.error, `traditional email acceptance still works when a share link exists: ${acceptedByEmail.error?.message ?? ""}`);
+  const emailAcceptedRow = (await dbPool.query("select status,share_token_hash from public.company_user_invitations where id=$1", [emailWithShareId])).rows[0];
+  assert.equal(emailAcceptedRow.status, "accepted"); assert.equal(emailAcceptedRow.share_token_hash, null, "email acceptance invalidates the WhatsApp token");
+  assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships where company_id=$1 and user_id=$2 and active", [companyA, emailWithShareRecipient.userId])).rows[0].n), 1);
+  assert.equal(Number((await dbPool.query("select count(*) n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_ACCEPTED'", [companyA, emailWithShareId])).rows[0].n), 1);
+  const afterEmailAccept = await snapshot(companyA);
+  response = await request("/api/invitations/share/accept", { user: emailWithShareRecipient, method: "POST", body: { token: emailWithShareToken } }); assert.equal(response.status, 404);
+  assert.deepEqual(await snapshot(companyA), afterEmailAccept, "WhatsApp token is invalid after traditional email acceptance");
+
+  const regeneratedEmail = `share-regenerated-${randomUUID()}@qr-asistencia.invalid`;
+  const regeneratedId = await createPendingInvite(regeneratedEmail);
+  const { body: firstGenerated } = await getShareLink(companyA, regeneratedId);
+  const staleToken = new URLSearchParams(new URL(firstGenerated.shareUrl).hash.slice(1)).get("t");
+  const { body: regenerated } = await getShareLink(companyA, regeneratedId);
+  const currentToken = new URLSearchParams(new URL(regenerated.shareUrl).hash.slice(1)).get("t");
+  assert.notEqual(currentToken, staleToken, "regeneration produces a new independent token");
+  const regeneratedRecipient = await createHttpIdentity(regeneratedEmail);
+  const beforeStaleToken = await snapshot(companyA);
+  response = await request("/api/invitations/share/accept", { user: regeneratedRecipient, method: "POST", body: { token: staleToken } }); assert.equal(response.status, 404);
+  assert.deepEqual(await snapshot(companyA), beforeStaleToken, "regenerated link invalidates the previous token without side effects");
+  response = await request("/api/invitations/share/accept", { user: regeneratedRecipient, method: "POST", body: { token: currentToken } }); assert.equal(response.status, 200);
+
+  const crossChannelRaceEmail = `share-cross-race-${randomUUID()}@qr-asistencia.invalid`;
+  const crossChannelRaceId = await createPendingInvite(crossChannelRaceEmail);
+  const { body: crossChannelRaceLink } = await getShareLink(companyA, crossChannelRaceId);
+  const crossChannelRaceToken = new URLSearchParams(new URL(crossChannelRaceLink.shareUrl).hash.slice(1)).get("t");
+  const crossChannelRecipient = await createHttpIdentity(crossChannelRaceEmail);
+  const [whatsAppRaceResponse, emailRaceResult] = await Promise.all([
+    request("/api/invitations/share/accept", { user: crossChannelRecipient, method: "POST", body: { token: crossChannelRaceToken } }),
+    crossChannelRecipient.client.rpc("accept_company_user_invitation", { p_invitation_id: crossChannelRaceId }),
+  ]);
+  assert.ok([200, 404].includes(whatsAppRaceResponse.status), `WhatsApp race outcome is accepted once or rejected after email wins: ${whatsAppRaceResponse.status}`);
+  if (emailRaceResult.error) {
+    assert.equal(emailRaceResult.error.code, "P0002");
+    assert.equal(whatsAppRaceResponse.status, 200, "WhatsApp wins only when the email path is rejected as already consumed");
+  } else {
+    assert.equal(whatsAppRaceResponse.status, 404, "email wins only when the WhatsApp token is invalidated");
+  }
+  const raceAcceptedRow = (await dbPool.query("select status,share_token_hash from public.company_user_invitations where id=$1", [crossChannelRaceId])).rows[0];
+  assert.equal(raceAcceptedRow.status, "accepted"); assert.equal(raceAcceptedRow.share_token_hash, null);
+  assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships m join auth.users u on u.id=m.user_id where m.company_id=$1 and lower(u.email)=$2 and m.active", [companyA, crossChannelRaceEmail])).rows[0].n), 1);
+  assert.equal(Number((await dbPool.query("select count(*) n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_ACCEPTED'", [companyA, crossChannelRaceId])).rows[0].n), 1);
+  const afterCrossChannelRace = await snapshot(companyA);
+  if (whatsAppRaceResponse.status === 404) {
+    const replayEmail = await crossChannelRecipient.client.rpc("accept_company_user_invitation", { p_invitation_id: crossChannelRaceId });
+    assert.equal(replayEmail.error?.code, "P0002");
+  } else {
+    const replayWhatsApp = await request("/api/invitations/share/accept", { user: crossChannelRecipient, method: "POST", body: { token: crossChannelRaceToken } });
+    assert.equal(replayWhatsApp.status, 404);
+  }
+  assert.deepEqual(await snapshot(companyA), afterCrossChannelRace, "concurrent cross-channel replay cannot add a membership or audit row");
 
   const expiredShareEmail = `share-expired-${randomUUID()}@qr-asistencia.invalid`;
   const expiredShareId = await createPendingInvite(expiredShareEmail);
@@ -445,7 +524,7 @@ try {
   assert.deepEqual(concurrentResults.map((item) => item.status).sort(), [200, 404], "concurrent accept attempts consume the invitation once");
   assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships m join auth.users u on u.id=m.user_id where m.company_id=$1 and lower(u.email)=$2 and m.active", [companyA, concurrentEmail])).rows[0].n), 1);
   assert.equal(Number((await dbPool.query("select count(*) n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_ACCEPTED'", [companyA, concurrentInvitationId])).rows[0].n), 1);
-  process.stdout.write("PASS share-link management and acceptance enforce permission, tenant, confirmed-email, expiry, revocation, one-use, concurrency and audit controls\n");
+  process.stdout.write("PASS email and WhatsApp acceptance interoperate, invalidate each other, serialize concurrent attempts, enforce owner-only administrator links and reject regenerated tokens\n");
   process.stdout.write("PASS admin access GET/POST/PATCH/resend scope, role, permission, validation and rejected-write snapshots\n");
 
   // API sessions and pages: requests use the real Auth cookies issued above.

@@ -349,7 +349,7 @@ function InvitationRow({ invitation, shareUrl, activeRole, busy, onResend, onRev
     <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
         <p className="truncate text-xs font-semibold text-slate-800">{invitation.email}</p>
-        <p className="mt-1 text-[11px] text-slate-500">{roleName[invitation.role]} · Correo · {invitation.shareLinkCreated ? "enlace WhatsApp creado" : "sin enlace WhatsApp"} · {status}</p>
+        <p className="mt-1 text-[11px] text-slate-500">{roleName[invitation.role]} · {invitation.shareLinkCreated ? "Correo y WhatsApp disponibles" : "Correo"} · {status}</p>
       </div>
       {canManage ? (
         <div className="flex flex-col gap-2">
