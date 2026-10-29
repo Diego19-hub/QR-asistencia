@@ -9,6 +9,12 @@ import {
   destinationForAccessRole,
   getPermanentAccessLinks,
 } from "../src/lib/access/access-links.ts";
+import {
+  createShareInvitationToken,
+  createShareInvitationUrl,
+  hashShareInvitationToken,
+  isShareInvitationToken,
+} from "../src/lib/access/share-invitation.ts";
 
 test("permanent access URLs use only the configured public origin and fixed paths", () => {
   const links = getPermanentAccessLinks("https://attendance.example.com/config?company=private#tab");
@@ -18,6 +24,23 @@ test("permanent access URLs use only the configured public origin and fixed path
   });
   assert.throws(() => getPermanentAccessLinks("https://user:secret@attendance.example.com"));
   assert.throws(() => getPermanentAccessLinks("javascript:alert(1)"));
+});
+
+test("share invitation tokens are random, hashed, and kept in a URL fragment", () => {
+  const token = createShareInvitationToken();
+  const hash = hashShareInvitationToken(token);
+  const url = new URL(createShareInvitationUrl("https://attendance.example.com", token));
+  assert.equal(isShareInvitationToken(token), true);
+  assert.equal(token.length, 43);
+  assert.match(hash, /^[a-f0-9]{64}$/);
+  assert.equal(hash.includes(token), false);
+  assert.equal(url.origin, "https://attendance.example.com");
+  assert.equal(url.pathname, "/invitacion/compartida");
+  assert.equal(url.search, "");
+  assert.equal(url.hash, `#t=${token}`);
+  assert.throws(() => createShareInvitationUrl("https://user:pass@attendance.example.com", token));
+  assert.throws(() => createShareInvitationUrl("https://attendance.example.com/path", token));
+  assert.throws(() => hashShareInvitationToken("short"));
 });
 
 test("WhatsApp sharing encodes the text and has no recipient number", () => {
@@ -30,12 +53,14 @@ test("WhatsApp sharing encodes the text and has no recipient number", () => {
 test("login return destinations are a closed set and must match the membership role", () => {
   assert.equal(accessReturnDestination("/scanner"), "/scanner");
   assert.equal(accessReturnDestination("/mi-qr"), "/mi-qr");
+  assert.equal(accessReturnDestination("/invitacion/compartida"), "/invitacion/compartida");
   for (const unsafe of ["//attacker.example", "https://attacker.example", "/scanner?companyId=secret", "/admin", "\\\\attacker.example"]) {
     assert.equal(accessReturnDestination(unsafe), null);
   }
   assert.equal(destinationForAccessRole("supervisor", "/scanner"), "/scanner");
   assert.equal(destinationForAccessRole("employee", "/scanner"), "/mi-qr");
   assert.equal(destinationForAccessRole("employee", "/mi-qr"), "/mi-qr");
+  assert.equal(destinationForAccessRole("admin", "/invitacion/compartida"), "/invitacion/compartida");
   assert.equal(destinationForAccessRole("admin", "/scanner"), "/admin");
 });
 
@@ -91,6 +116,7 @@ test("access routes retain server-side role, active membership, employee linkage
   assert.match(selectionAction, /\.eq\("user_id", auth\.user\.id\)\.eq\("active", true\)/);
   assert.match(settingsPage, /getAuthRedirectUrl\("confirm"\)\?\.origin/);
   assert.ok(loginAction.indexOf("pending.length") < loginAction.indexOf("const choices"), "pending invitations keep precedence over access-link return routing");
+  assert.match(loginAction, /requestedNext === "\/invitacion\/compartida"/);
 });
 
 test("access link controls remain usable in a narrow mobile layout", async () => {

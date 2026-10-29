@@ -5,10 +5,11 @@ import { RefreshCw, Send, UserPlus, UserRound, Shield, CircleAlert, X } from "lu
 
 import { useAdminContext } from "@/components/admin/admin-context";
 import { AccessLinksSection } from "@/components/admin/access-links-section";
+import { copyTextToClipboard, createWhatsAppShareUrl } from "@/lib/access/access-links";
 
 type Role = "owner" | "admin" | "supervisor" | "employee";
 type AccessUser = { membershipId: string; userId: string; email: string | null; role: Role; active: boolean; emailConfirmed: boolean; branches: string[]; employeeId: string | null; employeeName: string | null };
-type Invitation = { id: string; email: string; role: Exclude<Role, "owner">; employeeId: string | null; status: "pending" | "accepted" | "revoked" | "expired"; expiresAt: string };
+type Invitation = { id: string; email: string; role: Exclude<Role, "owner">; employeeId: string | null; status: "pending" | "accepted" | "revoked" | "expired"; expiresAt: string; shareLinkCreated?: boolean };
 type Employee = { id: string; name: string; email: string | null; employeeNumber: string };
 type State = { users: AccessUser[]; invitations: Invitation[]; unlinkedEmployees: Employee[] };
 type ErrorBody = { error?: { message?: string } };
@@ -33,6 +34,8 @@ export function UserAccessManagement({ publicOrigin }: { publicOrigin: string | 
   const [role, setRole] = useState<"admin" | "supervisor" | "employee">("supervisor");
   const [linkTargets, setLinkTargets] = useState<Record<string, string>>({});
   const [inviteEmail, setInviteEmail] = useState("");
+  const [shareLinkState, setShareLinkState] = useState<{ companyId: string; links: Record<string, string> }>({ companyId: company.companyId, links: {} });
+  const shareLinks = shareLinkState.companyId === company.companyId ? shareLinkState.links : {};
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -71,6 +74,13 @@ export function UserAccessManagement({ publicOrigin }: { publicOrigin: string | 
       const response = await fetch(`/api/admin/access?companyId=${encodeURIComponent(company.companyId)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const result = await response.json() as ErrorBody;
       if (!response.ok) throw new Error(result.error?.message ?? "No fue posible actualizar el acceso.");
+      if ("action" in body && body.action === "revoke-invitation" && "invitationId" in body && typeof body.invitationId === "string") {
+        setShareLinkState((current) => {
+          const next = current.companyId === company.companyId ? { ...current.links } : {};
+          delete next[body.invitationId as string];
+          return { companyId: company.companyId, links: next };
+        });
+      }
       setNotice("Acceso actualizado y registrado en auditoría."); await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No fue posible actualizar el acceso."); }
     finally { setBusy(""); }
@@ -85,6 +95,28 @@ export function UserAccessManagement({ publicOrigin }: { publicOrigin: string | 
       setNotice("Invitación reenviada."); await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No fue posible reenviar la invitación."); }
     finally { setBusy(""); }
+  }
+
+  async function generateShareLink(invitation: Invitation) {
+    if (invitation.shareLinkCreated && !window.confirm("Generar un enlace nuevo invalidará el enlace de WhatsApp anterior. ¿Continuar?")) return;
+    setBusy(`${invitation.id}:share`); setError(""); setNotice("");
+    try {
+      const response = await fetch(`/api/admin/access/invitations/${invitation.id}/share-link?companyId=${encodeURIComponent(company.companyId)}`, { method: "POST" });
+      const result = await response.json() as { shareUrl?: string; expiresAt?: string } & ErrorBody;
+      if (!response.ok || !result.shareUrl) throw new Error(result.error?.message ?? "No fue posible generar el enlace.");
+      setShareLinkState((current) => ({ companyId: company.companyId, links: { ...(current.companyId === company.companyId ? current.links : {}), [invitation.id]: result.shareUrl! } }));
+      setData((current) => ({ ...current, invitations: current.invitations.map((item) => item.id === invitation.id ? { ...item, shareLinkCreated: true } : item) }));
+      setNotice(`Enlace disponible hasta ${new Date(result.expiresAt ?? invitation.expiresAt).toLocaleDateString("es-MX")}. Compártelo solo con la persona invitada.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "No fue posible generar el enlace."); }
+    finally { setBusy(""); }
+  }
+
+  async function copyShareLink(invitationId: string) {
+    const value = shareLinks[invitationId];
+    if (!value) return;
+    const copied = await copyTextToClipboard(value, navigator.clipboard ?? null, document);
+    if (copied) setNotice("Enlace de invitación copiado.");
+    else setError("No se pudo copiar automáticamente. Selecciona y copia el enlace mostrado.");
   }
 
 
@@ -136,10 +168,13 @@ export function UserAccessManagement({ publicOrigin }: { publicOrigin: string | 
         />
         <InvitationList
           invitations={data.invitations}
+          shareLinks={shareLinks}
           activeRole={activeRole}
           busy={busy}
           onResend={(invitation) => void resend(invitation)}
           onRevoke={(invitation) => void mutate({ action: "revoke-invitation", invitationId: invitation.id }, invitation.id)}
+          onGenerateShareLink={(invitation) => void generateShareLink(invitation)}
+          onCopyShareLink={(invitationId) => void copyShareLink(invitationId)}
         />
       </div>
     </div>
@@ -289,23 +324,23 @@ function InviteForm({ role, activeRole, inviteEmail, employees, busy, onRoleChan
   );
 }
 
-type InvitationListProps = { invitations: Invitation[]; activeRole: Role; busy: string; onResend: (invitation: Invitation) => void; onRevoke: (invitation: Invitation) => void };
+type InvitationListProps = { invitations: Invitation[]; shareLinks: Record<string, string>; activeRole: Role; busy: string; onResend: (invitation: Invitation) => void; onRevoke: (invitation: Invitation) => void; onGenerateShareLink: (invitation: Invitation) => void; onCopyShareLink: (invitationId: string) => void };
 
-function InvitationList({ invitations, activeRole, busy, onResend, onRevoke }: InvitationListProps) {
+function InvitationList({ invitations, shareLinks, activeRole, busy, onResend, onRevoke, onGenerateShareLink, onCopyShareLink }: InvitationListProps) {
   if (!invitations.length) return null;
   return (
     <div className="mt-5">
       <h3 className="text-sm font-semibold text-slate-900">Invitaciones</h3>
       <div className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-200">
         {invitations.map((invitation) => (
-          <InvitationRow key={invitation.id} invitation={invitation} activeRole={activeRole} busy={busy} onResend={onResend} onRevoke={onRevoke} />
+          <InvitationRow key={invitation.id} invitation={invitation} shareUrl={shareLinks[invitation.id]} activeRole={activeRole} busy={busy} onResend={onResend} onRevoke={onRevoke} onGenerateShareLink={onGenerateShareLink} onCopyShareLink={onCopyShareLink} />
         ))}
       </div>
     </div>
   );
 }
 
-function InvitationRow({ invitation, activeRole, busy, onResend, onRevoke }: { invitation: Invitation; activeRole: Role; busy: string; onResend: InvitationListProps["onResend"]; onRevoke: InvitationListProps["onRevoke"] }) {
+function InvitationRow({ invitation, shareUrl, activeRole, busy, onResend, onRevoke, onGenerateShareLink, onCopyShareLink }: { invitation: Invitation; shareUrl?: string; activeRole: Role; busy: string; onResend: InvitationListProps["onResend"]; onRevoke: InvitationListProps["onRevoke"]; onGenerateShareLink: InvitationListProps["onGenerateShareLink"]; onCopyShareLink: InvitationListProps["onCopyShareLink"] }) {
   const status = invitation.status === "pending"
     ? `Pendiente hasta ${new Date(invitation.expiresAt).toLocaleDateString("es-MX")}`
     : invitation.status === "accepted" ? "Aceptada" : invitation.status === "expired" ? "Vencida" : "Revocada";
@@ -314,12 +349,22 @@ function InvitationRow({ invitation, activeRole, busy, onResend, onRevoke }: { i
     <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
         <p className="truncate text-xs font-semibold text-slate-800">{invitation.email}</p>
-        <p className="mt-1 text-[11px] text-slate-500">{roleName[invitation.role]} · {status}</p>
+        <p className="mt-1 text-[11px] text-slate-500">{roleName[invitation.role]} · Correo · {invitation.shareLinkCreated ? "enlace WhatsApp creado" : "sin enlace WhatsApp"} · {status}</p>
       </div>
       {canManage ? (
-        <div className="flex gap-2">
-          <button type="button" disabled={Boolean(busy)} onClick={() => onResend(invitation)} className="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 px-2 text-[11px] font-semibold text-slate-700"><RefreshCw size={12} />Reenviar</button>
-          <button type="button" disabled={Boolean(busy)} onClick={() => onRevoke(invitation)} className="h-8 rounded-lg border border-rose-100 px-2 text-[11px] font-semibold text-rose-700">Revocar</button>
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-2">
+            <button type="button" disabled={Boolean(busy)} onClick={() => onResend(invitation)} className="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 px-2 text-[11px] font-semibold text-slate-700"><RefreshCw size={12} />Reenviar correo</button>
+            <button type="button" disabled={Boolean(busy)} onClick={() => onGenerateShareLink(invitation)} className="h-8 rounded-lg border border-emerald-200 px-2 text-[11px] font-semibold text-emerald-800">{invitation.shareLinkCreated ? "Regenerar enlace WhatsApp" : "Crear enlace WhatsApp"}</button>
+            <button type="button" disabled={Boolean(busy)} onClick={() => onRevoke(invitation)} className="h-8 rounded-lg border border-rose-100 px-2 text-[11px] font-semibold text-rose-700">Revocar</button>
+          </div>
+          {shareUrl ? <div className="w-full space-y-2 sm:max-w-lg">
+            <input aria-label="Enlace individual de invitación" readOnly value={shareUrl} className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs text-slate-600" />
+            <div className="flex gap-2">
+              <button type="button" onClick={() => onCopyShareLink(invitation.id)} className="h-8 rounded-lg border border-slate-200 px-3 text-[11px] font-semibold text-slate-700">Copiar enlace</button>
+              <a href={createWhatsAppShareUrl("Te invitaron a Asistencia QR. Inicia sesión con el correo confirmado de la invitación y acepta el acceso.", shareUrl)} target="_blank" rel="noreferrer" className="inline-flex h-8 items-center rounded-lg bg-emerald-700 px-3 text-[11px] font-semibold text-white">Compartir por WhatsApp</a>
+            </div>
+          </div> : invitation.shareLinkCreated ? <p className="max-w-lg text-[11px] text-amber-700">El enlace se muestra solo una vez. Regénéralo para copiar o compartir; el anterior dejará de funcionar.</p> : null}
         </div>
       ) : null}
     </div>

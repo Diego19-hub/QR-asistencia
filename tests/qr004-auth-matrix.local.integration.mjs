@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* Local-only disposable Supabase authorization matrix. Never links a remote project. */
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -21,6 +21,7 @@ const suites = [
   "employee_portal_rls_behavior_test.sql",
   "company_user_access_behavior_test.sql",
   "company_user_access_management_test.sql",
+  "company_user_share_invitations_test.sql",
   "employee_credentials_test.sql",
   "qr004_scanner_authorization_test.sql",
 ];
@@ -155,9 +156,26 @@ async function createAuthOnly(email) {
   if (login.error || !login.data.session) throw new Error("synthetic identity failed local Auth login");
   return client;
 }
+async function createHttpIdentity(email, { emailConfirmed = true } = {}) {
+  const password = randomBytes(32).toString("base64url");
+  const created = await service.auth.admin.createUser({ email, password, email_confirm: true });
+  if (created.error || !created.data.user) throw new Error("failed creating synthetic HTTP Auth identity");
+  const client = createClient(apiUrl, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
+  const login = await client.auth.signInWithPassword({ email, password });
+  if (login.error || !login.data.session) throw new Error("synthetic HTTP identity could not establish a local Auth session");
+  const jar = new Map();
+  const ssr = createServerClient(apiUrl, anonKey, { cookies: {
+    getAll: () => [...jar].map(([name, value]) => ({ name, value })),
+    setAll: (items) => items.forEach(({ name, value }) => jar.set(name, value)),
+  } });
+  const ssrLogin = await ssr.auth.signInWithPassword({ email, password });
+  if (ssrLogin.error) throw new Error("synthetic HTTP identity could not establish an SSR session");
+  if (!emailConfirmed) await dbPool.query("update auth.users set email_confirmed_at=null where id=$1", [created.data.user.id]);
+  return { email, password, userId: created.data.user.id, client, cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; ") };
+}
 async function snapshot(companyId) {
   const { rows } = await dbPool.query(`select
-    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'status',status,'email',email,'expires_at',expires_at) order by id),'[]'::jsonb) from public.company_user_invitations where company_id=$1) invitations,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'status',status,'email',email,'expires_at',expires_at,'share_token_hash',share_token_hash) order by id),'[]'::jsonb) from public.company_user_invitations where company_id=$1) invitations,
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'actor_user_id',actor_user_id,'action',action,'entity_table',entity_table,'entity_id',entity_id,'before_data',before_data,'after_data',after_data) order by id),'[]'::jsonb) from public.audit_log where company_id=$1) audit,
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'user_id',user_id,'role',role,'active',active) order by id),'[]'::jsonb) from public.company_memberships where company_id=$1) memberships,
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'membership_id',membership_id,'active',active,'revoked_at',revoked_at) order by id),'[]'::jsonb) from public.authorized_devices where company_id=$1) devices`, [companyId]);
@@ -166,6 +184,7 @@ async function snapshot(companyId) {
 async function request(path, { user, method = "GET", body, cookieExtra = "" } = {}) {
   const headers = {};
   if (user?.cookie) headers.cookie = [user.cookie, cookieExtra].filter(Boolean).join("; ");
+  if (method !== "GET") headers.origin = appUrl;
   if (body !== undefined) headers["content-type"] = "application/json";
   return fetch(new URL(path, appUrl), { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: "manual" });
 }
@@ -316,6 +335,117 @@ try {
     process.stdout.write("PASS local invitation resend returned HTTP 200, Mailpit captured both messages, and database state was unchanged\n");
     response = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { action: "revoke-invitation", invitationId: inviteBody.invitationId } }); assert.equal(response.status, 200);
   }
+
+  const createPendingInvite = async (email, companyId = companyA, role = "employee") => {
+    const manager = companyId === companyB ? adminB : adminA;
+    const created = await manager.client.rpc("create_company_user_invitation", { p_company_id: companyId, p_email: email, p_role: role, p_employee_id: null });
+    if (created.error || !created.data) throw new Error("failed creating synthetic invitation for share-link coverage");
+    return created.data;
+  };
+  const getShareLink = async (companyId, invitationId, user = adminA) => {
+    const linkResponse = await request(`/api/admin/access/invitations/${invitationId}/share-link?companyId=${companyId}`, { user, method: "POST" });
+    return { response: linkResponse, body: linkResponse.status === 201 ? await linkResponse.json() : null };
+  };
+
+  // Individual WhatsApp links: admin scope, token secrecy, verified identity,
+  // lifecycle, concurrency, and no side effects for rejected requests.
+  const shareEmail = `share-${randomUUID()}@qr-asistencia.invalid`;
+  const shareInvitationId = await createPendingInvite(shareEmail);
+  const beforeShareDenialsA = await snapshot(companyA), beforeShareDenialsB = await snapshot(companyB);
+  response = await request(`/api/admin/access/invitations/${shareInvitationId}/share-link?companyId=${companyA}`, { method: "POST" }); assert.equal(response.status, 401);
+  response = await request(`/api/admin/access/invitations/${shareInvitationId}/share-link?companyId=${companyA}`, { user: supervisorA, method: "POST" }); assert.equal(response.status, 403);
+  response = await request(`/api/admin/access/invitations/${shareInvitationId}/share-link?companyId=${companyB}`, { user: adminB, method: "POST" }); assert.equal(response.status, 404);
+  assert.deepEqual(await snapshot(companyA), beforeShareDenialsA, "anonymous, wrong-role, and cross-company share creation have no side effects in company A");
+  assert.deepEqual(await snapshot(companyB), beforeShareDenialsB, "cross-company share creation has no side effects in company B");
+  const noManage = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "company.manage", allowed: false });
+  if (noManage.error) throw new Error("could not prepare synthetic company.manage share-link denial");
+  const beforeSharePermissionDenial = await snapshot(companyA);
+  response = await request(`/api/admin/access/invitations/${shareInvitationId}/share-link?companyId=${companyA}`, { user: adminA, method: "POST" }); assert.equal(response.status, 403);
+  assert.deepEqual(await snapshot(companyA), beforeSharePermissionDenial, "company.manage denial leaves the invitation and audit state unchanged");
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "company.manage");
+
+  const { response: shareCreatedResponse, body: shareCreated } = await getShareLink(companyA, shareInvitationId);
+  assert.equal(shareCreatedResponse.status, 201);
+  assert.equal(shareCreatedResponse.headers.get("cache-control"), "no-store, max-age=0");
+  assert.equal(shareCreatedResponse.headers.get("referrer-policy"), "no-referrer");
+  const shareUrl = new URL(shareCreated.shareUrl);
+  assert.equal(shareUrl.origin, appUrl); assert.equal(shareUrl.pathname, "/invitacion/compartida"); assert.equal(shareUrl.search, "");
+  const shareToken = new URLSearchParams(shareUrl.hash.slice(1)).get("t"); assert.match(shareToken, /^[A-Za-z0-9_-]{43}$/);
+  const storedShare = (await dbPool.query("select share_token_hash,expires_at from public.company_user_invitations where id=$1", [shareInvitationId])).rows[0];
+  const expectedShareHash = createHash("sha256").update(shareToken).digest("hex");
+  assert.equal(storedShare.share_token_hash, expectedShareHash, "database stores only the SHA-256 token hash");
+  assert.notEqual(storedShare.share_token_hash, shareToken);
+  assert.equal(new Date(storedShare.expires_at).toISOString(), new Date(shareCreated.expiresAt).toISOString());
+  assert.equal(Number((await dbPool.query("select count(*) n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_SHARE_LINK_CREATED'", [companyA, shareInvitationId])).rows[0].n), 1);
+
+  const beforePreview = await snapshot(companyA);
+  response = await request(`/invitacion/compartida#t=${shareToken}`, { redirect: "manual" });
+  assert.equal(response.status, 200, "link preview only renders the acceptance page");
+  assert.deepEqual(await snapshot(companyA), beforePreview, "GET preview does not consume a token or change the database");
+
+  const shareRecipient = await createHttpIdentity(shareEmail, { emailConfirmed: false });
+  const beforeUnverified = await snapshot(companyA);
+  response = await request("/api/invitations/share/accept", { user: shareRecipient, method: "POST", body: { token: shareToken } }); assert.equal(response.status, 403);
+  assert.deepEqual(await snapshot(companyA), beforeUnverified, "unverified Auth identity cannot consume a share invitation");
+  await dbPool.query("update auth.users set email_confirmed_at=clock_timestamp() where id=$1", [shareRecipient.userId]);
+  response = await request("/api/invitations/share/accept", { user: employeeA, method: "POST", body: { token: shareToken } }); assert.equal(response.status, 404);
+  assert.deepEqual(await snapshot(companyA), beforeUnverified, "wrong verified identity cannot consume a share invitation");
+  const pendingShareList = await shareRecipient.client.rpc("list_my_pending_company_invitations");
+  assert.ok(Array.isArray(pendingShareList.data));
+  assert.equal(pendingShareList.data.find((item) => item.id === shareInvitationId)?.shareLinkRequired, true);
+  assert.equal(JSON.stringify(pendingShareList.data).includes(shareToken), false, "pending-invite list never returns the raw share token");
+  response = await request("/api/invitations/share/accept", { user: shareRecipient, method: "POST", body: { token: shareToken } }); assert.equal(response.status, 200);
+  const shareAccepted = await response.json(); assert.equal(shareAccepted.accepted, true); assert.equal(shareAccepted.next, "/mi-qr");
+  assert.match(response.headers.get("set-cookie") ?? "", /qr_active_membership_id=/);
+  const acceptedShareRow = (await dbPool.query("select status,share_token_hash from public.company_user_invitations where id=$1", [shareInvitationId])).rows[0];
+  assert.equal(acceptedShareRow.status, "accepted"); assert.equal(acceptedShareRow.share_token_hash, null, "accepted token hash is cleared");
+  assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships m join auth.users u on u.id=m.user_id where m.company_id=$1 and lower(u.email)=$2 and m.active", [companyA, shareEmail])).rows[0].n), 1);
+  assert.equal(Number((await dbPool.query("select count(*) n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_ACCEPTED'", [companyA, shareInvitationId])).rows[0].n), 1);
+  const afterShareAccept = await snapshot(companyA);
+  response = await request("/api/invitations/share/accept", { user: shareRecipient, method: "POST", body: { token: shareToken } }); assert.equal(response.status, 404);
+  assert.deepEqual(await snapshot(companyA), afterShareAccept, "reused share token has no side effects");
+
+  const expiredShareEmail = `share-expired-${randomUUID()}@qr-asistencia.invalid`;
+  const expiredShareId = await createPendingInvite(expiredShareEmail);
+  const { body: expiredShare } = await getShareLink(companyA, expiredShareId);
+  const expiredShareToken = new URLSearchParams(new URL(expiredShare.shareUrl).hash.slice(1)).get("t");
+  await dbPool.query("update public.company_user_invitations set expires_at=clock_timestamp()-interval '1 minute' where id=$1", [expiredShareId]);
+  const expiredShareRecipient = await createHttpIdentity(expiredShareEmail);
+  const beforeExpiredShare = await snapshot(companyA);
+  response = await request("/api/invitations/share/accept", { user: expiredShareRecipient, method: "POST", body: { token: expiredShareToken } }); assert.equal(response.status, 404);
+  assert.deepEqual(await snapshot(companyA), beforeExpiredShare, "expired share token is rejected without side effects");
+
+  const revokedShareEmail = `share-revoked-${randomUUID()}@qr-asistencia.invalid`;
+  const revokedShareId = await createPendingInvite(revokedShareEmail);
+  const { body: revokedShare } = await getShareLink(companyA, revokedShareId);
+  const revokedShareToken = new URLSearchParams(new URL(revokedShare.shareUrl).hash.slice(1)).get("t");
+  response = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { action: "revoke-invitation", invitationId: revokedShareId } }); assert.equal(response.status, 200);
+  const revokedShareRecipient = await createHttpIdentity(revokedShareEmail);
+  const beforeRevokedShare = await snapshot(companyA);
+  response = await request("/api/invitations/share/accept", { user: revokedShareRecipient, method: "POST", body: { token: revokedShareToken } }); assert.equal(response.status, 404);
+  assert.deepEqual(await snapshot(companyA), beforeRevokedShare, "revoked share token is rejected without side effects");
+
+  const existingMemberInvitation = await dbPool.query("insert into public.company_user_invitations(company_id,email,role,invited_by) values($1,$2,'employee',$3) returning id", [companyA, employeeA.email, adminA.userId]);
+  const existingMemberShareId = existingMemberInvitation.rows[0].id;
+  const { body: existingMemberShare } = await getShareLink(companyA, existingMemberShareId);
+  const existingMemberShareToken = new URLSearchParams(new URL(existingMemberShare.shareUrl).hash.slice(1)).get("t");
+  const beforeAlreadyMember = await snapshot(companyA);
+  response = await request("/api/invitations/share/accept", { user: employeeA, method: "POST", body: { token: existingMemberShareToken } }); assert.equal(response.status, 409);
+  assert.deepEqual(await snapshot(companyA), beforeAlreadyMember, "existing active membership blocks share acceptance without side effects");
+
+  const concurrentEmail = `share-race-${randomUUID()}@qr-asistencia.invalid`;
+  const concurrentInvitationId = await createPendingInvite(concurrentEmail);
+  const { body: concurrentShare } = await getShareLink(companyA, concurrentInvitationId);
+  const concurrentToken = new URLSearchParams(new URL(concurrentShare.shareUrl).hash.slice(1)).get("t");
+  const concurrentRecipient = await createHttpIdentity(concurrentEmail);
+  const concurrentResults = await Promise.all([
+    request("/api/invitations/share/accept", { user: concurrentRecipient, method: "POST", body: { token: concurrentToken } }),
+    request("/api/invitations/share/accept", { user: concurrentRecipient, method: "POST", body: { token: concurrentToken } }),
+  ]);
+  assert.deepEqual(concurrentResults.map((item) => item.status).sort(), [200, 404], "concurrent accept attempts consume the invitation once");
+  assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships m join auth.users u on u.id=m.user_id where m.company_id=$1 and lower(u.email)=$2 and m.active", [companyA, concurrentEmail])).rows[0].n), 1);
+  assert.equal(Number((await dbPool.query("select count(*) n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_ACCEPTED'", [companyA, concurrentInvitationId])).rows[0].n), 1);
+  process.stdout.write("PASS share-link management and acceptance enforce permission, tenant, confirmed-email, expiry, revocation, one-use, concurrency and audit controls\n");
   process.stdout.write("PASS admin access GET/POST/PATCH/resend scope, role, permission, validation and rejected-write snapshots\n");
 
   // API sessions and pages: requests use the real Auth cookies issued above.
