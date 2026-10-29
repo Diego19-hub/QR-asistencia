@@ -8,13 +8,15 @@ Base revisada: `02263e1ae17d1151e6466838058b297b1cbd0181` (`main`, posterior al 
 
 La revisión del código y migraciones de esta base no confirmó una nueva ruta de explotación entre empresas. Los componentes centrales derivan identidad de `auth.getUser()`, comprueban membresías activas, acotan consultas por `company_id` y mantienen RLS y restricciones SQL como segunda frontera. La migración QR-003 contiene la corrección local de persistencia de fallos de PIN.
 
-QR-004 **permanece en curso**. En esta fase se ejecutó una matriz SQL local con usuarios, empresas, sucursales, membresías, credenciales y dispositivos sintéticos en un stack Supabase desechable. Se cubrieron RLS, roles, acceso entre tenants, membresías inactivas, sucursales, RPC privilegiadas, QR/dispositivos y ausencia de efectos secundarios ante rechazos. No se consultó ni modificó Testing o Producción; la evidencia previa sobre QR-003 no se revalidó. La matriz no certifica todos los endpoints HTTP ni la configuración de los entornos remotos.
+QR-004 **permanece en curso**. La fase 2 ejecutó una matriz SQL local con usuarios, empresas, sucursales, membresías, credenciales y dispositivos sintéticos en un stack Supabase desechable. La fase 3 amplió el mismo runner para iniciar Auth local y Next.js en loopback, probando endpoints Route Handler, páginas protegidas y RPC de invitación con sesiones reales sintéticas. No se consultó ni modificó Testing o Producción; la evidencia previa sobre QR-003 no se revalidó. La matriz no certifica todos los Server Actions, E2E de navegador ni la configuración de entornos remotos.
 
 ## Alcance y método
 
 - Inspección estática de `src/app/api/**`, rutas protegidas, helpers Auth, alcance administrativo/de empleado, migraciones, RLS, grants, funciones privilegiadas y pruebas existentes.
 - Ejecución local de lint, TypeScript, suite Node, integración Supabase/PostgreSQL aislada para report-export lease y build.
 - La integración SQL creó un proyecto local con identificador aleatorio, puertos libres y servicios limitados a loopback. Sus propias guardas rechazaban los refs de Testing y Producción. El resultado informó el borrado de contenedores, red y volúmenes de prueba; el stack preexistente `codigo_QR` permaneció intacto.
+- La fase HTTP reutilizó ese proyecto desechable, creó Auth users, empresas, membresías y expedientes sintéticos, e inició una copia temporal de Next.js con una lista permitida de variables. Los endpoints recibieron cookies SSR emitidas por Auth local. El runner conservó Mailpit local para correos de invitación; no configuró Resend ni credenciales SMTP externas. `.env.local` no se copió al servidor de prueba ni al build aislado.
+- Las solicitudes denegadas se contrastaron con snapshots PostgreSQL de invitaciones, auditoría, membresías y dispositivos. La pila temporal, los usuarios/datos sintéticos, el servidor Next.js y el directorio temporal se eliminan al finalizar incluso si falla la matriz.
 - No se ejecutó `tests/security-jwt-matrix.integration.mjs`: `docs/TESTING.md` especifica que apunta a Testing. No se ejecutaron operaciones, consultas, intentos PIN, migraciones ni pruebas de ataque en proyectos remotos.
 - La revisión del SQL corresponde al repositorio en el SHA indicado. No equivale a comprobar los catálogos, ACL o configuración desplegada actualmente.
 
@@ -58,13 +60,13 @@ No se confirmó una nueva vulnerabilidad explotable entre empresas en el SHA rev
 - **Recomendación:** mantener QR-003 abierta; antes de aplicarla, terminar la reconciliación del historial, confirmar el proyecto y realizar el procedimiento aislado/preflight ya solicitado en QR-003. Después comprobar con identidades y empleados sintéticos autorizados.
 - **Regresión requerida:** el test local de PIN debe comprobar contador, quinto intento, expiración, concurrencia y ausencia de evento. No lanzar intentos contra empleados reales ni remotos.
 
-#### QR004-R2 — Cobertura restante fuera de la matriz SQL local
+#### QR004-R2 — Cobertura restante fuera de la matriz SQL y HTTP local
 
 - **Severidad:** baja como riesgo residual de cobertura; no es vulnerabilidad demostrada.
-- **Evidencia:** la matriz local ejecutó seis suites pgTAP (142 aserciones), con owner/admin/supervisor/empleado, tenants A/B, sucursales, usuarios inactivos/revocados, privilegios de RPC, hashes de credenciales y RPC de escáner/dispositivo. Se omitió `tests/security-jwt-matrix.integration.mjs` porque apunta a Testing. No se ejecutó la suite de bloqueo PIN para mantener QR-003 fuera de alcance.
-- **Impacto/condición:** rutas HTTP y comportamientos Auth reales fuera de los fixtures SQL podrían tener regresiones sin detectar en esta matriz.
-- **Recomendación:** mantener la matriz local en CI y ampliar en tarea separada a los endpoints HTTP y escenarios Auth no cubiertos. Consultar Testing/Producción solo mediante autorización independiente y lectura segregada por entorno.
-- **Regresión requerida:** pgTAP/RPC más HTTP para endpoints críticos; assert de cero cambios colaterales ante cada denegación.
+- **Evidencia:** seis suites pgTAP (142 aserciones) y Route Handlers/páginas Next probados con sesiones Auth sintéticas. La matriz HTTP no cubre todos los Server Actions ni todas las rutas API de la aplicación. Se omitió `tests/security-jwt-matrix.integration.mjs` porque apunta a Testing. No se ejecutó la suite DB de bloqueo PIN para mantener QR-003 fuera de alcance.
+- **Impacto/condición:** comportamientos fuera de las rutas y escenarios nombrados siguen sin evidencia dinámica en esta matriz.
+- **Recomendación:** mantener el runner local en CI y añadir cobertura específica por dominio conforme se priorice. Consultar Testing/Producción solo mediante autorización independiente y lectura segregada por entorno.
+- **Regresión requerida:** conservar pruebas SQL/RPC, Route Handlers y snapshots de cero cambios colaterales ante denegaciones; los Server Actions continúan con sus pruebas unitarias y requieren un mecanismo de integración estable antes de ejercitarse dinámicamente.
 
 #### QR004-R3 — Configuración de producción y Testing no inspeccionada
 
@@ -98,18 +100,19 @@ No se confirmó una nueva vulnerabilidad explotable entre empresas en el SHA rev
 | `npm test` | Aprobado (69/69 pruebas Node; suites de unidad y regresión listadas por el script `test`). Node emitió advertencias existentes de `MODULE_TYPELESS_PACKAGE_JSON`; sin fallos. |
 | `npm run test:reports:lease:local` | Aprobado (14/14 controles): proyecto Supabase desechable, migraciones locales, 13 pgTAP, Auth/JWT sintéticos, rechazo cross-tenant/rol/anónimo, carrera concurrente y HTTP/exportación. El script confirmó limpieza del stack/volúmenes. |
 | `npm run test:security:matrix:local` | Aprobado: seis suites pgTAP, 142 aserciones, en proyecto Supabase aleatorio desechable. Incluye tenant/RLS/roles, memberships, sucursales, ACL de RPC/credenciales y escáner con dispositivo desconocido, tenant/sucursal cruzados, QR revocado y cero eventos/sesiones/contadores PIN tras rechazos. El runner eliminó el stack y verificó que la instancia QR preexistente no cambiara. |
-| `npm run build` | Aprobado (código 0), Next.js 16.4.0. `.env.local` fue detectado por Next; no se imprimieron valores de entorno. |
+| `npm run test:security:matrix:local` (fase HTTP/Auth) | Aprobado junto con 142/142 pgTAP. Cubre `GET/POST/PATCH /api/admin/access`, `POST /api/admin/access/invitations/:id/resend`, `GET /api/me`, `GET /api/employee/portal`, `/admin`, `/mi-qr`, `GET /api/admin/audit`, `GET /api/admin/permissions` y RPC de aceptación/revocación. Incluye sesiones ausentes, rol insuficiente, tenant cruzado, `company.manage`, selección multiempresa, cambios de rol y membresía revocada, validación, snapshots completos sin cambios en rechazos, destinatario incorrecto, expiración, revocación, consumo y doble aceptación. La invitación local válida respondió HTTP 201 y el correo quedó en el transporte local. El reenvío respondió HTTP 200 usando Auth SMTP local, sin cambiar datos ni configurar Resend. |
+| `npm run build` | Aprobado (código 0), Next.js 16.4.0, en una copia temporal sin `.env.local`; variables Supabase sintéticas apuntaron a loopback. Next avisó que archivos de salida standalone fuera de la raíz de trazado no se incluyeron porque `node_modules` estaba enlazado desde el repo; la compilación, TypeScript y generación de rutas terminaron correctamente. El temporal se eliminó. |
 | `npm run test:pin-lockout:db` | No ejecutado: requiere un workdir y URL PostgreSQL locales configurados como proyecto QR PIN desechable. No se reutilizó una instancia compartida ni se imprimieron variables. La prueba Node de PIN sí pasó dentro de `npm test`. |
 | Matriz `tests/security-jwt-matrix.integration.mjs` | Omitida intencionalmente: su configuración apunta a Testing; no se ejecutaron pruebas remotas. |
 
-La integración lease sí valida PostgreSQL/Auth real local para ese recurso; no constituye la matriz completa de autorización de todas las RPC, tablas y rutas.
+La fase HTTP ejercita Route Handlers y páginas protegidas con Auth local real. La aceptación/expiración/revocación de invitaciones se prueba por RPC autenticada; no se fabricaron peticiones a Server Actions. `tests/auth-email-flow.test.mjs` conserva la cobertura unitaria de esas acciones. Esto no constituye una matriz completa de cada RPC, tabla y ruta.
 
 ## Recomendaciones priorizadas
 
 1. **P0 operacional:** mantener QR-003 en curso y verificar su despliegue únicamente mediante el procedimiento separado autorizado. No usar intentos PIN sobre empleados reales.
-2. **P1 evidencia:** completar una matriz local aislada de permisos para funciones RPC, RLS y rutas críticas; incluir denegaciones de otra empresa/sucursal y estado sin efectos secundarios.
+2. **P1 evidencia:** extender con casos adicionales para rutas API restantes y un E2E de navegador solo si existe infraestructura local estable; conservar la prohibición de peticiones inventadas a Server Actions.
 3. **P1 entorno:** si se autoriza una auditoría remota de solo lectura, comparar por separado Testing y Producción; revisar refs, historial, cuerpos SQL, ACL, RLS y configuración Auth sin tratar snapshots anteriores como actuales.
-4. **P2 mantenimiento:** hacer que los tests de SQL y API críticos se ejecuten en CI en infraestructura aislada con fixtures efímeras; nunca inyectar secretos o datos personales en logs/artefactos.
+4. **P2 mantenimiento:** mantener el runner SQL/HTTP en CI con fixtures efímeras; nunca inyectar secretos o datos personales en logs/artefactos.
 5. **P2 revisiones futuras:** para cada RPC privilegiada, conservar una lista de funciones/ACL esperadas y comprobar cambios de `search_path`, owner, `EXECUTE`, identidad y alcance tenant.
 
 ## Condiciones antes de QR-002
@@ -122,4 +125,4 @@ La integración lease sí valida PostgreSQL/Auth real local para ese recurso; no
 
 ## Estado
 
-**QR-004: en curso; matriz SQL multiempresa local completada para los casos descritos.** Se añadió solo un test pgTAP y su runner; no se modificaron migraciones ni lógica funcional. Testing y Producción no se consultaron ni modificaron. Este documento no certifica el estado remoto ni autoriza una migración o despliegue.
+**QR-004: en curso; matrices SQL y HTTP/Auth locales completadas para los casos descritos.** Se amplió `tests/qr004-auth-matrix.local.integration.mjs`, ya conectado al script de CI existente. No se modificaron migraciones ni lógica funcional, dependencias o suites unitarias. Testing y Producción no se consultaron ni modificaron. No se confirmó una vulnerabilidad nueva. El resultado no certifica rutas no incluidas ni el estado remoto, y no autoriza una migración o despliegue.
