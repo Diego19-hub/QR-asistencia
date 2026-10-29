@@ -6,7 +6,7 @@ Este informe prepara una revisión futura de QR-asistencia-Testing (`llxyziffgtq
 
 El PR #7 está integrado mediante squash en `main`, commit `2c574781e3cc96cd7846a2fda838eed6def5f5bc`. La rama de este informe parte de ese commit. El árbol estaba limpio al iniciar la tarea. La migración local `20261018120000_persist_employee_pin_failures.sql` existe y contiene la corrección documentada.
 
-**El estado remoto de Testing no está confirmado actualmente.** Los documentos QR-003 existentes registran una consulta histórica que veía `20261012143000` como última migración, pero esa observación no se repitió aquí y no debe usarse como estado actual. Tampoco se sabe si cambió manualmente alguna función después de esa observación.
+**Actualización posterior:** esta versión inicial no consultó Testing. La auditoría de solo lectura del 2026-10-28 confirmó su historial actual de ese momento, las funciones relevantes y una ruta temporal para aislar QR-003. Véase [QR-003-MIGRATION-RECONCILIATION.md](QR-003-MIGRATION-RECONCILIATION.md). Esa evidencia también es una fotografía; debe repetirse en cualquier tarea futura de aplicación.
 
 ## Inventario local ordenado
 

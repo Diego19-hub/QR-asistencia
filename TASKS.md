@@ -6,7 +6,7 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 |---|---|---|---|---|
 | QR-001 | P1 | Hecha | — | Enlaces permanentes de acceso |
 | QR-002 | P1 | En curso | QR-004 | Invitaciones manuales; implementación y regresiones están fusionadas en PR #7. QR-004 residual sigue como dependencia de cierre |
-| QR-003 | P0 | En curso | — | Cerrar preflight de persistencia de fallos de PIN; corrección validada localmente. El estado actual de Testing está sin verificar y cualquier aplicación requiere autorización separada |
+| QR-003 | P0 | En curso | — | Reconciliar historial de Testing y preparar aplicación exclusiva del fix de PIN. La ruta fue validada localmente y con dry-run; aplicación y pruebas remotas siguen requiriendo autorización separada |
 | QR-004 | P1 | En curso | — | Auditoría multiempresa; matriz local sintética ejecutada para RLS, roles, sucursales, RPC, credenciales y dispositivos. La verificación remota de Testing/Producción sigue separada y no se hizo en esta fase. Informe: [docs/QR-004-SECURITY-AUDIT.md](docs/QR-004-SECURITY-AUDIT.md) |
 | QR-005 | P1 | Pendiente | QR-004 | Pruebas E2E con Playwright |
 | QR-006 | P2 | Pendiente | QR-005 | Estabilidad del escáner |
@@ -46,8 +46,9 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 - **Corrección en el repositorio:** ya existe `supabase/migrations/20261018120000_persist_employee_pin_failures.sql`. Ambas RPC devuelven un rechazo estructurado `pinError` sin lanzar una excepción después de verificar el PIN. No se creó ni duplicó una migración.
 - **Reproducción local:** en un stack Supabase desechable con migraciones hasta `20261012143000`, preview y confirm devolvieron SQLSTATE `22023` y el contador quedó en 0. Tras aplicar la migración existente solo en esa base local, preview y confirm devolvieron `pin_invalid`, el contador persistió en 1 y 2, y no se creó ningún evento de asistencia.
 - **Pruebas:** `npm run test:pin-lockout` pasó (3/3); `npm run test:pin-lockout:db` pasó (pgTAP 35/35 e integración PostgreSQL); la integración verificó intentos concurrentes, bloqueo de cinco intentos por 15 minutos, expiración, reset, dispositivo no autorizado/revocado y aislamiento entre empresas. `npm test`, lint, typecheck y build también pasaron; detalles en [docs/PIN-LOCKOUT-FIX.md](docs/PIN-LOCKOUT-FIX.md).
-- **Estado remoto:** el informe anterior registró históricamente `20261012143000` como última versión en Testing. No se volvió a consultar en esta tarea; ese dato puede estar desactualizado y no representa el estado actual confirmado. Informe de preflight e inventario: [docs/QR-003-TESTING-PREFLIGHT.md](docs/QR-003-TESTING-PREFLIGHT.md).
-- **Riesgo/pendiente:** hasta que una revisión autorizada confirme historia y definiciones actuales, no se conoce si Testing conserva el comportamiento anterior ni qué migraciones le faltan. No hacer rollback a las definiciones de `20261012030630`, porque reintroduciría la excepción que puede revertir los contadores.
+- **Auditoría remota de solo lectura:** al 2026-10-28 Testing registra 24 migraciones; QR-003 y QR-002 no constan aplicadas. Las RPC de escaneo aún lanzan excepción por PIN inválido. Se compararon los 23 SQL con nombres comunes, ACL y estructura de dependencias relevante. Informe y manifiesto con hashes: [docs/QR-003-MIGRATION-RECONCILIATION.md](docs/QR-003-MIGRATION-RECONCILIATION.md) y [docs/QR-003-TESTING-MIGRATION-MANIFEST.csv](docs/QR-003-TESTING-MIGRATION-MANIFEST.csv).
+- **Resultado de preparación:** el push desde los timestamps canónicos de `main` falla en dry-run con `DbPushMissingLocalError`. Un manifiesto temporal reconstruido con los 24 SQL archivados de Testing más QR-003 mostró solo QR-003 pendiente; la simulación local y pgTAP 35/35 pasaron. No se ejecutó repair ni escritura remota.
+- **Riesgo/pendiente:** cualquier cambio manual ajeno a las funciones/tablas inspeccionadas no queda descartado. La aplicación, pruebas con datos sintéticos en Testing y limpieza requieren autorización separada. No volver a las definiciones de `20261012030630`, que reintroducirían la excepción.
 
 ## QR-004 — Seguridad multiempresa
 
