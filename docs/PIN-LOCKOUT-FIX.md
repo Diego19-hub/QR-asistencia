@@ -41,17 +41,13 @@ La matriz `tests/security-jwt-matrix.integration.mjs` está fijada explícitamen
 
 ## Estado de Supabase Testing
 
-La consulta de solo lectura al historial de migraciones del proyecto Testing mostró `20261012143000_company_user_access_management` como última migración y no mostró `20261018120000_persist_employee_pin_failures`. Esto indica que la migración correctiva no figura como aplicada allí. No se consultó la definición remota de las funciones, no se ejecutaron RPC y no se modificó Testing ni Producción.
+Una consulta de solo lectura histórica registró como última versión `20261012143000_company_user_access_management` y no mostró `20261018120000_persist_employee_pin_failures`. **Ese hallazgo no está actualizado ni confirmado en esta tarea.** No se consultó actualmente el historial ni la definición remota de funciones y no se modificó Testing ni Producción. No asumir el antiguo historial como estado presente.
 
-El código de la corrección está en el repositorio. La aplicación de la migración a Testing requiere revisión de este PR y un procedimiento de despliegue autorizado separado. No apliques la migración remota como parte de QR-003.
+La migración correctiva y la posterior de QR-002 están en `main`. El inventario, dependencias, riesgos y procedimiento actual de lectura previa están en [QR-003-TESTING-PREFLIGHT.md](QR-003-TESTING-PREFLIGHT.md). No aplicar la migración en el marco de una tarea documental.
 
-## Procedimiento propuesto para Testing
+## Procedimiento para futura revisión autorizada
 
-1. Revisar y fusionar el PR que documenta QR-003.
-2. En una solicitud de despliegue separada, confirmar explícitamente el proyecto destino de Testing y comparar su historial con el archivo versionado.
-3. Aplicar `20261018120000_persist_employee_pin_failures.sql` una sola vez por el flujo de migraciones autorizado del proyecto. No crear una copia ni editar el historial anterior.
-4. Verificar el número de migración aplicado y probar el flujo de escaneo con datos sintéticos conforme al runbook de Testing. No usar credenciales reales.
-5. Registrar resultado, operador, hora y evidencia; mantener Producción fuera de este procedimiento.
+Primero confirmar el ref exacto de Testing, recuperar su historia en una copia temporal enlazada únicamente a ese proyecto, comparar versiones y cuerpos SQL, e inspeccionar las funciones/grants de PIN en transacción de solo lectura. Continuar únicamente si las dependencias y definiciones coinciden y `supabase db push --dry-run --linked` muestra exactamente la migración QR-003 prevista. Si aparece QR-002 u otra diferencia, detenerse y resolver el alcance por separado. La aplicación y las pruebas con datos sintéticos en Testing requieren autorización explícita en una tarea posterior.
 
 ## Reversión y riesgos
 
