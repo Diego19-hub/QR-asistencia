@@ -377,6 +377,224 @@ try {
   process.stdout.write("PASS local Auth users and temporary Next.js server use only the disposable Supabase loopback endpoints\n");
 
   let response;
+  // Company settings and dashboard APIs: real local Auth sessions, company
+  // permission overrides, PostgreSQL RLS, two synthetic tenants, and branch
+  // scoped attendance data with timezone-local work dates.
+  const inactiveBranchResult = await service.from("branches").insert({ company_id: companyA, name: `HTTP Inactive Branch ${randomUUID()}`, timezone: "America/Mexico_City", active: false }).select("id").single();
+  if (inactiveBranchResult.error || !inactiveBranchResult.data) throw new Error("failed creating inactive synthetic dashboard branch");
+  const inactiveBranchA = inactiveBranchResult.data.id;
+  const pacificBranchResult = await service.from("branches").insert({ company_id: companyA, name: `HTTP Pacific Branch ${randomUUID()}`, timezone: "Pacific/Kiritimati", active: true }).select("id").single();
+  if (pacificBranchResult.error || !pacificBranchResult.data) throw new Error("failed creating synthetic dashboard branch with a distinct timezone");
+  const pacificBranchA = pacificBranchResult.data.id;
+  const dashboardEmployeeA2 = await service.from("employees").insert({ company_id: companyA, branch_id: otherBranchA, employee_number: `DASH-${randomBytes(4).toString("hex")}`, first_name: "Synthetic", last_name: "TenantA-OtherBranch", active: true }).select("id").single();
+  const dashboardEmployeePacific = await service.from("employees").insert({ company_id: companyA, branch_id: pacificBranchA, employee_number: `DASH-${randomBytes(4).toString("hex")}`, first_name: "Synthetic", last_name: "TenantA-Pacific", active: true }).select("id").single();
+  const dashboardEmployeeB = await service.from("employees").insert({ company_id: companyB, branch_id: branchB, employee_number: `DASH-${randomBytes(4).toString("hex")}`, first_name: "Synthetic", last_name: "TenantB-SecretMovement", active: true }).select("id").single();
+  if (dashboardEmployeeA2.error || dashboardEmployeePacific.error || dashboardEmployeeB.error) throw new Error("failed creating synthetic dashboard employees");
+  const dashboardDeviceOwnerA = await service.from("supervisors").insert({ company_id: companyA, membership_id: ownerA.memberships[0].id });
+  const dashboardDeviceAdminB = await service.from("supervisors").insert({ company_id: companyB, membership_id: adminB.memberships[0].id });
+  if (dashboardDeviceOwnerA.error || dashboardDeviceAdminB.error) throw new Error("failed creating synthetic dashboard device authorization fixtures");
+  const dashboardDeviceA = await service.from("authorized_devices").insert({ company_id: companyA, branch_id: branchA, membership_id: ownerA.memberships[0].id, label: "Synthetic dashboard device A" }).select("id").single();
+  const dashboardDeviceA2 = await service.from("authorized_devices").insert({ company_id: companyA, branch_id: otherBranchA, membership_id: ownerA.memberships[0].id, label: "Synthetic dashboard device A2" }).select("id").single();
+  const dashboardDevicePacific = await service.from("authorized_devices").insert({ company_id: companyA, branch_id: pacificBranchA, membership_id: ownerA.memberships[0].id, label: "Synthetic dashboard device Pacific" }).select("id").single();
+  const dashboardDeviceB = await service.from("authorized_devices").insert({ company_id: companyB, branch_id: branchB, membership_id: adminB.memberships[0].id, label: "Synthetic dashboard device B" }).select("id").single();
+  if ([dashboardDeviceA, dashboardDeviceA2, dashboardDevicePacific, dashboardDeviceB].some((result) => result.error || !result.data)) throw new Error("failed creating synthetic dashboard devices");
+  const dashboardNow = new Date();
+  const dashboardInstant = dashboardNow.toISOString();
+  const dateInZone = (date, timeZone) => {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date).map(({ type, value }) => [type, value]));
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  };
+  const makeDashboardSession = async ({ companyId, employeeId, branchId, deviceId, timezone, recordedBy, closed, label }) => {
+    const start = new Date(dashboardNow.getTime() - 5 * 60_000);
+    const session = await service.from("attendance_sessions").insert({
+      company_id: companyId, employee_id: employeeId, branch_id: branchId,
+      local_work_date: dateInZone(dashboardNow, timezone), timezone,
+      status: "open", started_at: start.toISOString(), scheduled_minutes: 480,
+    }).select("id").single();
+    if (session.error || !session.data) throw new Error(`failed creating synthetic ${label} dashboard session`);
+    const clockIn = await service.from("attendance_events").insert({
+      company_id: companyId, session_id: session.data.id, event_type: "clock_in", sequence_no: 1,
+      occurred_at: start.toISOString(), recorded_by: recordedBy, device_id: deviceId, idempotency_key: randomUUID(),
+      metadata: { fixture: "qr004-dashboard-synthetic" },
+    }).select("id").single();
+    if (clockIn.error || !clockIn.data) throw new Error(`failed creating synthetic ${label} dashboard clock-in`);
+    let clockOutId = null;
+    if (closed) {
+      const clockOut = await service.from("attendance_events").insert({
+        company_id: companyId, session_id: session.data.id, event_type: "clock_out", sequence_no: 2,
+        occurred_at: dashboardInstant, recorded_by: recordedBy, device_id: deviceId, idempotency_key: randomUUID(),
+        metadata: { fixture: "qr004-dashboard-synthetic" },
+      }).select("id").single();
+      if (clockOut.error || !clockOut.data) throw new Error(`failed creating synthetic ${label} dashboard clock-out`);
+      clockOutId = clockOut.data.id;
+    }
+    return { sessionId: session.data.id, clockInId: clockIn.data.id, clockOutId };
+  };
+  const dashboardAOpen = await makeDashboardSession({ companyId: companyA, employeeId: employeeA.employeeId, branchId: branchA, deviceId: dashboardDeviceA.data.id, timezone: "America/Mexico_City", recordedBy: ownerA.userId, closed: false, label: "company A branch A open" });
+  const dashboardAClosed = await makeDashboardSession({ companyId: companyA, employeeId: dashboardEmployeeA2.data.id, branchId: otherBranchA, deviceId: dashboardDeviceA2.data.id, timezone: "America/Mexico_City", recordedBy: ownerA.userId, closed: true, label: "company A branch A2 closed" });
+  const dashboardAPacificClosed = await makeDashboardSession({ companyId: companyA, employeeId: dashboardEmployeePacific.data.id, branchId: pacificBranchA, deviceId: dashboardDevicePacific.data.id, timezone: "Pacific/Kiritimati", recordedBy: ownerA.userId, closed: true, label: "company A Pacific branch closed" });
+  const dashboardBClosed = await makeDashboardSession({ companyId: companyB, employeeId: dashboardEmployeeB.data.id, branchId: branchB, deviceId: dashboardDeviceB.data.id, timezone: "America/Mexico_City", recordedBy: adminB.userId, closed: true, label: "company B closed" });
+  const companyRecord = async (id) => (await dbPool.query("select id,name,legal_name,rfc,updated_at from public.companies where id=$1", [id])).rows[0];
+  const companyAndDataSnapshot = async (id) => ({ company: await companyRecord(id), data: await snapshot(id) });
+
+  response = await request(`/api/company?companyId=${companyA}`); assert.equal(response.status, 401);
+  response = await request(`/api/company?companyId=${companyA}`, { user: supervisorA }); assert.equal(response.status, 403);
+  response = await request(`/api/company?companyId=${companyA}`, { user: employeeA }); assert.equal(response.status, 403);
+  response = await request(`/api/company?companyId=${companyB}`, { user: adminA }); assert.equal(response.status, 403);
+  response = await request("/api/company", { user: multiAdmin }); assert.equal(response.status, 400, "multiple admin memberships require explicit company selection");
+  response = await request(`/api/company?companyId=${companyB}`, { user: multiAdmin }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.id, companyB, "multi-company admin can select its own second tenant");
+  response = await request("/api/company", { user: adminA }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.id, companyA, "single-company admin resolves its sole active company without a selector");
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal((await response.json()).canManage, true);
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminB }); assert.equal(response.status, 403);
+
+  const validCompanyPayload = { name: `Synthetic Company A Updated ${randomUUID()}`, legalName: "Synthetic Tenant A LLC", rfc: "SYN010101ABC" };
+  const beforeCompanyRoleDenialsA = await companyAndDataSnapshot(companyA);
+  response = await request(`/api/company?companyId=${companyA}`, { method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 401);
+  response = await request(`/api/company?companyId=${companyA}`, { user: supervisorA, method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 403);
+  response = await request(`/api/company?companyId=${companyA}`, { user: employeeA, method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 403);
+  assert.deepEqual(await companyAndDataSnapshot(companyA), beforeCompanyRoleDenialsA, "anonymous and non-admin PATCH denials preserve company and audit snapshots");
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.name, validCompanyPayload.name);
+  const persistedCompanyA = await companyRecord(companyA);
+  assert.deepEqual({ id: persistedCompanyA.id, name: persistedCompanyA.name, legal_name: persistedCompanyA.legal_name, rfc: persistedCompanyA.rfc }, {
+    id: companyA, name: validCompanyPayload.name, legal_name: validCompanyPayload.legalName, rfc: validCompanyPayload.rfc,
+  }, "authorized HTTP PATCH persists through PostgreSQL");
+  const directAllowedCompanyUpdate = await adminA.client.from("companies").update({ legal_name: "Synthetic direct RLS update" }).eq("id", companyA).select("id,legal_name").single();
+  assert.deepEqual(directAllowedCompanyUpdate.data, { id: companyA, legal_name: "Synthetic direct RLS update" }, "authenticated PostgreSQL RLS permits company update when company.manage is effective");
+
+  const beforeInvalidCompanyWritesA = await companyAndDataSnapshot(companyA);
+  for (const [payload, label] of [
+    [{ name: "  ", legalName: null, rfc: null }, "empty name"],
+    [{ name: "x".repeat(181), legalName: null, rfc: null }, "overlong name"],
+    [{ name: "Valid", legalName: "x".repeat(241), rfc: null }, "overlong legal name"],
+    [{ name: "Valid", legalName: null, rfc: "INVALID" }, "invalid RFC"],
+    [{ name: "Valid", legalName: null, rfc: null, companyId: companyB }, "unexpected foreign company field"],
+  ]) {
+    response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: payload });
+    assert.equal(response.status, 422, `company PATCH rejects ${label}`);
+  }
+  assert.deepEqual(await companyAndDataSnapshot(companyA), beforeInvalidCompanyWritesA, "invalid company patches preserve company and audit/data snapshots");
+
+  const companyManageOverride = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "company.manage", allowed: false });
+  if (companyManageOverride.error) throw new Error("could not prepare synthetic company.manage denial");
+  const beforeCompanyPermissionDenialA = await companyAndDataSnapshot(companyA), beforeCompanyPermissionDenialB = await companyAndDataSnapshot(companyB);
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
+  const readOnlyCompany = await response.json();
+  assert.equal(readOnlyCompany.canManage, false, "GET reports company.manage denial without blocking company.read");
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { name: "Unauthorized synthetic mutation", legalName: null, rfc: null } }); assert.equal(response.status, 403);
+  const directDeniedCompanyUpdate = await adminA.client.from("companies").update({ name: "Unauthorized direct mutation" }).eq("id", companyA).select("id");
+  assert.ok(directDeniedCompanyUpdate.error?.code === "42501" || (directDeniedCompanyUpdate.data ?? []).length === 0, "PostgreSQL RLS rejects direct company update without company.manage");
+  response = await request(`/api/company?companyId=${companyB}`, { user: adminA, method: "PATCH", body: { name: "Foreign synthetic mutation", legalName: null, rfc: null } }); assert.equal(response.status, 403);
+  assert.deepEqual(await companyAndDataSnapshot(companyA), beforeCompanyPermissionDenialA, "API and RLS permission denials preserve tenant A snapshot");
+  assert.deepEqual(await companyAndDataSnapshot(companyB), beforeCompanyPermissionDenialB, "foreign company selection cannot modify tenant B");
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "company.manage");
+
+  await service.from("company_memberships").update({ active: false }).eq("id", adminA.memberships[0].id);
+  const beforeInactiveCompanyMembershipA = await companyAndDataSnapshot(companyA);
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 403);
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { name: "Revoked API mutation", legalName: null, rfc: null } }); assert.equal(response.status, 403);
+  const inactiveCompanyMembershipPatch = await adminA.client.from("companies").update({ name: "Revoked direct mutation" }).eq("id", companyA).select("id");
+  assert.ok(inactiveCompanyMembershipPatch.error?.code === "42501" || (inactiveCompanyMembershipPatch.data ?? []).length === 0, "inactive membership cannot directly update company through RLS");
+  assert.deepEqual(await companyAndDataSnapshot(companyA), beforeInactiveCompanyMembershipA, "inactive membership API and RLS denials preserve company and audit snapshots");
+  await service.from("company_memberships").update({ active: true }).eq("id", adminA.memberships[0].id);
+  assert.deepEqual(await companyRecord(companyA), beforeCompanyPermissionDenialA.company, "rejected company operations do not alter target values");
+  process.stdout.write("PASS company GET/PATCH enforce Auth, active admin membership, company selection, company.manage at API and RLS, input validation, no-store, and zero-write rejection snapshots\n");
+
+  const expectedActiveCount = async (companyId, branchId = null) => {
+    let query = service.from("employees").select("id", { count: "exact", head: true }).eq("company_id", companyId).eq("active", true);
+    if (branchId) query = query.eq("branch_id", branchId);
+    const result = await query;
+    if (result.error) throw new Error("failed counting synthetic dashboard employees");
+    return result.count ?? 0;
+  };
+  const expectedDashboardSessionCounts = async (companyId, branchId = null) => {
+    let query = service.from("attendance_sessions").select("employee_id,branch_id,status,local_work_date,timezone").eq("company_id", companyId);
+    if (branchId) query = query.eq("branch_id", branchId);
+    const result = await query;
+    if (result.error) throw new Error("failed reading synthetic dashboard session counts");
+    const sessions = result.data ?? [];
+    return {
+      openShifts: new Set(sessions.filter((session) => session.status === "open").map((session) => session.employee_id)).size,
+      completedToday: sessions.filter((session) => session.status === "closed" && session.local_work_date === dateInZone(new Date(), session.timezone)).length,
+    };
+  };
+  response = await request(`/api/dashboard/summary?companyId=${companyA}`); assert.equal(response.status, 401);
+  response = await request(`/api/dashboard/summary?companyId=${companyA}`, { user: employeeA }); assert.equal(response.status, 403);
+  response = await request(`/api/dashboard/summary?companyId=${companyA}`, { user: supervisorA }); assert.equal(response.status, 403);
+  response = await request(`/api/dashboard/summary?companyId=${companyB}`, { user: adminA }); assert.equal(response.status, 403);
+  response = await request("/api/dashboard/summary", { user: multiAdmin }); assert.equal(response.status, 400);
+  response = await request(`/api/dashboard/summary?companyId=${companyB}`, { user: multiAdmin }); assert.equal(response.status, 200);
+  const dashboardB = await response.json();
+  assert.equal(dashboardB.company.id, companyB);
+  assert.ok(dashboardB.movements.some((movement) => movement.employee === "Synthetic TenantB-SecretMovement"));
+  assert.equal(dashboardB.movements.some((movement) => movement.employee.includes("TenantA-")), false, "tenant B dashboard excludes tenant A movements");
+  response = await request(`/api/dashboard/summary?companyId=${companyA}`, { user: adminB }); assert.equal(response.status, 403);
+  response = await request(`/api/dashboard/summary?companyId=${companyA}&branchId=not-a-uuid`, { user: adminA }); assert.equal(response.status, 400);
+  response = await request(`/api/dashboard/summary?companyId=${companyA}&branchId=${branchB}`, { user: adminA }); assert.equal(response.status, 403);
+  response = await request(`/api/dashboard/summary?companyId=${companyA}&branchId=${inactiveBranchA}`, { user: adminA }); assert.equal(response.status, 403);
+  response = await request(`/api/dashboard/summary?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const dashboardA = await response.json();
+  assert.equal(dashboardA.company.id, companyA);
+  assert.deepEqual(dashboardA.branches.map((branch) => branch.id).sort(), [branchA, otherBranchA, pacificBranchA].sort(), "only active company A branches are returned");
+  assert.equal(dashboardA.stats.activeEmployees, await expectedActiveCount(companyA));
+  const expectedDashboardA = await expectedDashboardSessionCounts(companyA);
+  assert.equal(dashboardA.stats.openShifts, expectedDashboardA.openShifts, "unfiltered open shift count is limited to tenant A");
+  assert.equal(dashboardA.stats.completedToday, expectedDashboardA.completedToday, "completed-today count matches each session's timezone-local work date");
+  assert.ok(dashboardA.movements.some((movement) => movement.employee === "Synthetic employee-a"));
+  assert.ok(dashboardA.movements.some((movement) => movement.employee === "Synthetic TenantA-OtherBranch"));
+  assert.equal(dashboardA.movements.some((movement) => movement.employee.includes("TenantB-")), false, "tenant A recent movements exclude tenant B employee names");
+  assert.equal(dashboardA.movements.some((movement) => [dashboardBClosed.clockInId, dashboardBClosed.clockOutId].includes(movement.id)), false, "tenant A recent movements exclude tenant B event IDs");
+
+  response = await request(`/api/dashboard/summary?companyId=${companyA}&branchId=${branchA}`, { user: adminA }); assert.equal(response.status, 200);
+  const dashboardBranchA = await response.json();
+  assert.equal(dashboardBranchA.stats.activeEmployees, await expectedActiveCount(companyA, branchA));
+  const expectedDashboardBranchA = await expectedDashboardSessionCounts(companyA, branchA);
+  assert.equal(dashboardBranchA.stats.openShifts, expectedDashboardBranchA.openShifts, "branch A open shift count matches the selected branch");
+  assert.equal(dashboardBranchA.stats.completedToday, expectedDashboardBranchA.completedToday, "branch A completed-today count excludes other branches and respects local work dates");
+  assert.ok(dashboardBranchA.movements.some((movement) => movement.id === dashboardAOpen.clockInId));
+  assert.equal(dashboardBranchA.movements.some((movement) => movement.id === dashboardAClosed.clockInId || movement.id === dashboardAClosed.clockOutId), false, "branch A movement list excludes branch A2 events");
+  assert.equal(dashboardBranchA.movements.some((movement) => movement.employee.includes("TenantB-")), false);
+  response = await request(`/api/dashboard/summary?companyId=${companyA}&branchId=${otherBranchA}`, { user: adminA }); assert.equal(response.status, 200);
+  const dashboardBranchA2 = await response.json();
+  assert.equal(dashboardBranchA2.stats.activeEmployees, await expectedActiveCount(companyA, otherBranchA));
+  const expectedDashboardBranchA2 = await expectedDashboardSessionCounts(companyA, otherBranchA);
+  assert.equal(dashboardBranchA2.stats.openShifts, expectedDashboardBranchA2.openShifts);
+  assert.equal(dashboardBranchA2.stats.completedToday, expectedDashboardBranchA2.completedToday, "branch A2 completed count matches its timezone-local sessions only");
+  assert.ok(dashboardBranchA2.movements.some((movement) => movement.id === dashboardAClosed.clockOutId));
+  assert.equal(dashboardBranchA2.movements.some((movement) => movement.id === dashboardAOpen.clockInId), false, "branch A2 movement list excludes branch A events");
+  response = await request(`/api/dashboard/summary?companyId=${companyA}&branchId=${pacificBranchA}`, { user: adminA }); assert.equal(response.status, 200);
+  const dashboardPacific = await response.json();
+  assert.equal(dashboardPacific.dateReference, "Pacific/Kiritimati");
+  assert.equal(dashboardPacific.operatingDate, dateInZone(new Date(), "Pacific/Kiritimati"), "dashboard presents the operating date in the selected branch timezone");
+  assert.equal(dashboardPacific.stats.completedToday, 1, "Pacific branch date filter counts its local-date session across UTC boundary");
+  assert.ok(dashboardPacific.movements.some((movement) => movement.id === dashboardAPacificClosed.clockOutId));
+  assert.equal(dashboardPacific.movements.some((movement) => movement.id === dashboardAClosed.clockOutId || movement.id === dashboardAOpen.clockInId), false, "Pacific branch filter excludes other branch events");
+
+  await service.from("company_memberships").update({ active: false }).eq("id", adminA.memberships[0].id);
+  response = await request(`/api/dashboard/summary?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 403);
+  await service.from("company_memberships").update({ active: true }).eq("id", adminA.memberships[0].id);
+  const directTenantRead = await adminA.client.from("attendance_events").select("id,company_id").eq("company_id", companyB);
+  assert.equal(directTenantRead.error, null);
+  assert.deepEqual(directTenantRead.data, [], "authenticated company A user cannot read company B events through PostgreSQL RLS");
+  const directOwnTenantRead = await adminA.client.from("attendance_events").select("id,company_id").eq("company_id", companyA);
+  assert.equal(directOwnTenantRead.error, null);
+  assert.ok(directOwnTenantRead.data.some((event) => event.id === dashboardAOpen.clockInId), "authorized tenant A PostgreSQL query can read its own event");
+  for (const table of ["employees", "attendance_sessions", "attendance_events"]) {
+    const foreignRows = await adminA.client.from(table).select("id,company_id").eq("company_id", companyB);
+    assert.equal(foreignRows.error, null, `${table} foreign-tenant read query succeeds without exposing rows`);
+    assert.deepEqual(foreignRows.data, [], `PostgreSQL RLS hides company B ${table} from company A user`);
+  }
+  assert.equal(dashboardA.movements.some((movement) => movement.id === dashboardBClosed.clockInId), false, "HTTP summary excludes tenant B event identifiers");
+  assert.equal(JSON.stringify(dashboardA).includes(dashboardBClosed.sessionId), false, "HTTP summary does not expose tenant B session identifiers");
+  assert.equal(JSON.stringify(dashboardA).includes(dashboardEmployeeB.data.id), false, "HTTP summary does not expose tenant B employee identifiers");
+  process.stdout.write("PASS dashboard HTTP/Auth and direct PostgreSQL RLS isolate two tenants, active/inactive/foreign branches, synthetic employees/sessions/events, date-local counts and no-store responses\n");
+
   // Attendance read APIs, scanner device gate, correction RLS, and rejected
   // operation snapshots. Scanner requests use a dummy well-shaped QR and PIN,
   // but an invalid device is rejected before QR/PIN validation in the RPC.
