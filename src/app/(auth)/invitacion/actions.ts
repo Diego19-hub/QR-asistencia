@@ -41,10 +41,10 @@ export async function setInvitationPassword(formData: FormData) {
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) redirect("/login");
   if (!auth.user.invited_at || auth.user.app_metadata?.access_setup_completed_at) redirect("/invitacion?error=invalid");
-  const { error: passwordError } = await supabase.auth.updateUser({ password });
-  if (passwordError) redirect("/invitacion?error=password");
   const admin = createAuthAdminClient();
   if (!admin) redirect("/login?error=service");
+  const { error: passwordError } = await supabase.auth.updateUser({ password });
+  if (passwordError) redirect("/invitacion?error=password");
   const { error } = await admin.auth.admin.updateUserById(auth.user.id, {
     app_metadata: { ...auth.user.app_metadata, access_setup_completed_at: new Date().toISOString() },
   });

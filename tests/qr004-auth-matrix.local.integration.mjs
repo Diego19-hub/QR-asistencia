@@ -393,18 +393,22 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
 `, { mode: 0o600 });
   for (const file of ["package.json", "next.config.ts", "postcss.config.mjs", "tsconfig.json"]) await cp(join(root, file), join(appRoot, file));
   await symlink(join(root, "node_modules"), join(appRoot, "node_modules"), "dir");
-  appServer = spawn(process.execPath, [join(root, "node_modules/next/dist/bin/next"), "dev", "--webpack", "--hostname", "127.0.0.1", "--port", String(nextPort)], {
-    cwd: appRoot,
-    env: {
-      PATH: process.env.PATH, NODE_ENV: "development", NEXT_TELEMETRY_DISABLED: "1",
-      NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey,
-      SUPABASE_SERVICE_ROLE_KEY: serviceKey, APP_BASE_URL: appUrl,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  appServer.stdout.on("data", (chunk) => { appOutput = (appOutput + chunk.toString()).slice(-12_000); });
-  appServer.stderr.on("data", (chunk) => { appOutput = (appOutput + chunk.toString()).slice(-12_000); });
-  await waitForNext(`${appUrl}/login`);
+  const startNext = async (adminServiceKey = serviceKey) => {
+    appOutput = "";
+    appServer = spawn(process.execPath, [join(root, "node_modules/next/dist/bin/next"), "dev", "--webpack", "--hostname", "127.0.0.1", "--port", String(nextPort)], {
+      cwd: appRoot,
+      env: {
+        PATH: process.env.PATH, NODE_ENV: "development", NEXT_TELEMETRY_DISABLED: "1",
+        NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey,
+        SUPABASE_SERVICE_ROLE_KEY: adminServiceKey, APP_BASE_URL: appUrl,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    appServer.stdout.on("data", (chunk) => { appOutput = (appOutput + chunk.toString()).slice(-12_000); });
+    appServer.stderr.on("data", (chunk) => { appOutput = (appOutput + chunk.toString()).slice(-12_000); });
+    await waitForNext(`${appUrl}/login`);
+  };
+  await startNext();
   process.stdout.write("PASS local Auth users and temporary Next.js server use only the disposable Supabase loopback endpoints\n");
 
   // Exercise real Server Actions through forms rendered and submitted by
@@ -1395,6 +1399,55 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     return { response: linkResponse, body: linkResponse.status === 201 ? await linkResponse.json() : null };
   };
 
+  // Baseline reproduction for the review finding: both granted RPC paths used
+  // to accept an invited Auth identity with no server-controlled setup marker.
+  const bypassEmail = `setup-bypass-${randomUUID()}@qr-asistencia.invalid`;
+  const bypassIdentity = await createHttpIdentity(bypassEmail);
+  const bypassClient = bypassIdentity.client;
+  const bypassUser = await bypassClient.auth.getUser(); assert.ok(bypassUser.data.user);
+  await dbPool.query("update auth.users set invited_at=clock_timestamp(), raw_app_meta_data=raw_app_meta_data-'access_setup_completed_at' where id=$1", [bypassUser.data.user.id]);
+  assert.equal((await bypassClient.auth.updateUser({ data: { access_setup_completed_at: new Date().toISOString() } })).error, null, "identity can forge only user_metadata");
+  assert.equal((await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [bypassUser.data.user.id])).rows[0].marker, null, "forged user_metadata does not create the protected app_metadata marker");
+  const bypassInviteId = await createPendingInvite(bypassEmail);
+  const beforeDirectSetupDenial = await snapshot(companyA);
+  const bypassDirectResult = await bypassClient.rpc("accept_company_user_invitation", { p_invitation_id: bypassInviteId });
+  assert.equal(bypassDirectResult.error?.code, "42501", "direct Data API RPC rejects invited identity without server-owned setup marker");
+  assert.doesNotMatch(bypassDirectResult.error?.message ?? "", /access_setup_completed_at|raw_app_meta_data|SQLSTATE/i, "direct RPC error does not expose Auth metadata internals");
+  assert.deepEqual(await snapshot(companyA), beforeDirectSetupDenial, "direct RPC setup denial leaves invitation, memberships and audit unchanged");
+  assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships where company_id=$1 and user_id=$2", [companyA, bypassIdentity.userId])).rows[0].n), 0);
+  await dbPool.query("update auth.users set raw_app_meta_data=jsonb_set(raw_app_meta_data,'{access_setup_completed_at}',to_jsonb('not-a-timestamp'::text),true) where id=$1", [bypassIdentity.userId]);
+  assert.equal((await bypassClient.rpc("accept_company_user_invitation", { p_invitation_id: bypassInviteId })).error?.code, "42501", "malformed server metadata cannot satisfy setup");
+  await dbPool.query("update auth.users set raw_app_meta_data=jsonb_set(raw_app_meta_data,'{access_setup_completed_at}',to_jsonb((clock_timestamp()+interval '1 day')::text),true) where id=$1", [bypassIdentity.userId]);
+  assert.equal((await bypassClient.rpc("accept_company_user_invitation", { p_invitation_id: bypassInviteId })).error?.code, "42501", "future setup metadata cannot satisfy setup");
+  await dbPool.query("update auth.users set raw_app_meta_data=jsonb_set(raw_app_meta_data,'{access_setup_completed_at}',to_jsonb('-infinity'::text),true) where id=$1", [bypassIdentity.userId]);
+  assert.equal((await bypassClient.rpc("accept_company_user_invitation", { p_invitation_id: bypassInviteId })).error?.code, "42501", "non-finite setup timestamps cannot satisfy setup");
+  assert.deepEqual(await snapshot(companyA), beforeDirectSetupDenial, "malformed and future marker denials also have no side effects");
+
+  const bypassShareEmail = `setup-share-bypass-${randomUUID()}@qr-asistencia.invalid`;
+  const bypassShareIdentity = await createHttpIdentity(bypassShareEmail);
+  const bypassShareClient = bypassShareIdentity.client;
+  const bypassShareUser = await bypassShareClient.auth.getUser(); assert.ok(bypassShareUser.data.user);
+  await dbPool.query("update auth.users set invited_at=clock_timestamp(), raw_app_meta_data=raw_app_meta_data-'access_setup_completed_at' where id=$1", [bypassShareUser.data.user.id]);
+  assert.equal((await bypassShareClient.auth.updateUser({ data: { access_setup_completed_at: new Date().toISOString() } })).error, null);
+  assert.equal((await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [bypassShareUser.data.user.id])).rows[0].marker, null);
+  const bypassShareInviteId = await createPendingInvite(bypassShareEmail);
+  const bypassShareToken = randomBytes(32).toString("base64url");
+  const bypassShareTokenHash = createHash("sha256").update(bypassShareToken).digest("hex");
+  const bypassShareIssued = await adminA.client.rpc("set_company_user_invitation_share_link", { p_company_id: companyA, p_invitation_id: bypassShareInviteId, p_token_hash: bypassShareTokenHash });
+  assert.ok(!bypassShareIssued.error);
+  const beforeShareSetupDenial = await snapshot(companyA);
+  const shareRouteDenial = await request("/api/invitations/share/accept", { user: bypassShareIdentity, method: "POST", body: { token: bypassShareToken } });
+  assert.equal(shareRouteDenial.status, 403, "shared invitation HTTP route maps SQL authorization denial to 403");
+  const shareRouteDenialBody = await shareRouteDenial.json();
+  assert.equal(shareRouteDenialBody.error.code, "invitation_forbidden");
+  assert.doesNotMatch(JSON.stringify(shareRouteDenialBody), /setup_completed|raw_app_meta_data|42501|SQLSTATE/i, "shared invitation route does not expose SQL internals");
+  assert.deepEqual(await snapshot(companyA), beforeShareSetupDenial, "shared route denial preserves invitation token, memberships and audit");
+  const bypassShareResult = await bypassShareClient.rpc("accept_company_user_share_invitation", { p_token_hash: bypassShareTokenHash });
+  assert.equal(bypassShareResult.error?.code, "42501", "shared-link RPC rejects invited identity without server-owned setup marker");
+  assert.deepEqual(await snapshot(companyA), beforeShareSetupDenial, "shared RPC denial rolls back token clearing and leaves no audit or membership");
+  assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships where company_id=$1 and user_id=$2", [companyA, bypassShareIdentity.userId])).rows[0].n), 0);
+  process.stdout.write("PASS email/share invitation RPCs deny setup bypass; HTTP denial is sanitized and rejected attempts have no side effects\n");
+
   // Invitation actions run through the actual invitation page or a temporary
   // rendered native-action form, never by fabricating Next's action protocol.
   const actionInviteEmail = `server-action-invite-${randomUUID()}@qr-asistencia.invalid`;
@@ -1489,6 +1542,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.ok(setupUser.data.user?.app_metadata?.access_setup_completed_at, `real password action must persist server metadata before redirect (path=${setupActionUrl.pathname}${setupActionUrl.search}; invited=${Boolean(setupUser.data.user?.invited_at)}; appMarker=${Boolean(setupUser.data.user?.app_metadata?.access_setup_completed_at)})`);
   await actionBrowser.waitForPath("password=updated");
   assert.ok(setupUser.data.user?.app_metadata?.access_setup_completed_at, "only the server action writes the protected app_metadata completion marker");
+  const persistedSetupMarker = await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [forgedSetupIdentity.userId]);
+  assert.equal(persistedSetupMarker.rows[0].marker, setupUser.data.user.app_metadata.access_setup_completed_at, "the marker checked by PostgreSQL is the server-written raw_app_meta_data value");
   assert.ok(setupUser.data.user?.user_metadata?.access_setup_completed_at, "the forgery remains in user_metadata but is not trusted");
   const repeatedPasswordSetupBefore = setupUser.data.user.app_metadata.access_setup_completed_at;
   await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(forgedSetupInviteId)}`);
@@ -1503,6 +1558,69 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_ACCEPTED'", [companyA, forgedSetupInviteId])).rows[0].n, 1);
   const passwordLogin = createClient(apiUrl, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
   assert.equal((await passwordLogin.auth.signInWithPassword({ email: forgedSetupEmail, password: "synthetic-new-password-123" })).error, null, "password saved by the real Server Action authenticates successfully");
+
+  // Exercise SQLSTATE 42501 mapping through the real Server Action after it
+  // passes the app_metadata gate; the inviter loses company.manage meanwhile.
+  const sqlDeniedActionEmail = `server-action-sql-denied-${randomUUID()}@qr-asistencia.invalid`;
+  const sqlDeniedActionIdentity = await createHttpIdentity(sqlDeniedActionEmail);
+  const sqlDeniedActionInvite = await createPendingInvite(sqlDeniedActionEmail, companyA, "employee");
+  const revokeInviterPermission = await service.from("membership_permission_overrides").insert({
+    company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "company.manage", allowed: false,
+  });
+  assert.equal(revokeInviterPermission.error, null, "synthetic permission override makes the SQL inviter check fail");
+  const beforeSqlDeniedAction = await snapshot(companyA);
+  await actionBrowser.clickButtonText("Cerrar sesión");
+  await actionBrowser.waitForPath("/login");
+  await actionBrowser.navigate("/login");
+  await actionBrowser.runForm("form", { email: sqlDeniedActionEmail, password: sqlDeniedActionIdentity.password });
+  await actionBrowser.waitForPath("/invitacion");
+  await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(sqlDeniedActionInvite)}`);
+  await actionBrowser.runForm("#accept-invitation");
+  await actionBrowser.waitForPath("error=forbidden");
+  const sqlDeniedActionBody = await actionBrowser.bodyText();
+  assert.match(sqlDeniedActionBody, /La invitación ya no puede aceptarse/);
+  assert.doesNotMatch(sqlDeniedActionBody, /42501|SQLSTATE|company\.manage|raw_app_meta_data/i, "Server Action renders a generic authorization error");
+  assert.deepEqual(await snapshot(companyA), beforeSqlDeniedAction, "SQL authorization error through Server Action has no side effects");
+  assert.equal((await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "company.manage")).error, null);
+
+  // Simulate the second Auth call failing: password update succeeds through the
+  // user's session, but an invalid local service key cannot write app_metadata.
+  const partialSetupEmail = `server-action-partial-setup-${randomUUID()}@qr-asistencia.invalid`;
+  const partialSetupIdentity = await createHttpIdentity(partialSetupEmail);
+  await dbPool.query("update auth.users set invited_at=clock_timestamp() where id=$1", [partialSetupIdentity.userId]);
+  const partialSetupInvite = await createPendingInvite(partialSetupEmail, companyA, "employee");
+  const beforePartialSetup = await snapshot(companyA);
+  // This error page has no logout control. Start a fresh disposable browser
+  // profile instead of inventing a Server Action request or reusing its cookie.
+  await actionBrowser.close();
+  actionBrowser = await launchServerActionBrowser(appUrl);
+  await stopNext();
+  await startNext(anonKey);
+  await actionBrowser.navigate("/login");
+  await actionBrowser.runForm("form", { email: partialSetupEmail, password: partialSetupIdentity.password });
+  await actionBrowser.waitForPath("/invitacion");
+  await actionBrowser.runForm("form:has(input[name='password'])", { password: "synthetic-first-password-123", confirmation: "synthetic-first-password-123" });
+  await actionBrowser.waitForPath("error=password");
+  assert.equal((await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [partialSetupIdentity.userId])).rows[0].marker, null, "failed administrative marker write leaves protected marker absent");
+  assert.deepEqual(await snapshot(companyA), beforePartialSetup, "partial password setup does not accept or mutate the invitation");
+  const firstPasswordLogin = await partialSetupIdentity.client.auth.signInWithPassword({ email: partialSetupEmail, password: "synthetic-first-password-123" });
+  assert.equal(firstPasswordLogin.error, null, "the first Auth call did persist the new password before the admin metadata call failed");
+  const partialSetupRpc = await partialSetupIdentity.client.rpc("accept_company_user_invitation", { p_invitation_id: partialSetupInvite });
+  assert.equal(partialSetupRpc.error?.code, "42501", "direct RPC still denies acceptance after only the password call succeeded");
+  assert.deepEqual(await snapshot(companyA), beforePartialSetup, "direct RPC denial after partial setup has no side effects");
+
+  await stopNext();
+  await startNext(serviceKey);
+  await actionBrowser.navigate("/invitacion");
+  await actionBrowser.runForm("form:has(input[name='password'])", { password: "synthetic-retry-password-456", confirmation: "synthetic-retry-password-456" });
+  await actionBrowser.waitForPath("password=updated");
+  const retriedSetupUser = await service.auth.admin.getUserById(partialSetupIdentity.userId);
+  assert.ok(retriedSetupUser.data.user?.app_metadata?.access_setup_completed_at, "retry writes the server-controlled marker after the password call succeeds");
+  await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(partialSetupInvite)}`);
+  await actionBrowser.runForm("#accept-invitation");
+  await actionBrowser.waitForPath("/mi-qr");
+  assert.equal((await dbPool.query("select count(*)::int n from public.company_memberships where company_id=$1 and user_id=$2 and active", [companyA, partialSetupIdentity.userId])).rows[0].n, 1, "retry completes the setup and accepts exactly one membership");
+  assert.equal((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_ACCEPTED'", [companyA, partialSetupInvite])).rows[0].n, 1);
   process.stdout.write("PASS invitation Server Actions: anonymous/wrong identity, valid/multi-company selection, replay, mutable user_metadata denial, protected app_metadata password setup, and zero-side-effect rejects\n");
   await actionBrowser.clickButtonText("Cerrar sesión");
   await actionBrowser.waitForPath("/login");
@@ -1729,10 +1847,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/admin/permissions?companyId=${companyB}`, { user: adminA }); assert.equal(response.status, 403);
   process.stdout.write("PASS audit is company.manage-gated; permission catalog is available to active admins even when company.manage is overridden off\n");
 
-  // Invite acceptance belongs to the authenticated RPC, while invite/password
-  // Server Actions remain covered by auth-email-flow unit tests. Exercise the
-  // RPC with genuine local Auth JWTs, including recipient, expiry, revocation,
-  // replay and audit side effects.
+  // Exercise invitation RPC lifecycle and existing-account compatibility with
+  // genuine local Auth JWTs, including recipient, expiry, revocation and replay.
   const lifecycleEmail = `lifecycle-${randomUUID()}@qr-asistencia.invalid`;
   const createdInvite = await adminA.client.rpc("create_company_user_invitation", { p_company_id: companyA, p_email: lifecycleEmail, p_role: "employee", p_employee_id: null });
   assert.ok(!createdInvite.error && createdInvite.data);

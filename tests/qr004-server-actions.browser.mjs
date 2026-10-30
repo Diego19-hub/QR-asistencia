@@ -33,14 +33,6 @@ async function freePort() {
 }
 
 async function stopChrome(child) {
-  const signalGroup = (signal) => {
-    try {
-      if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
-      else if (child.exitCode === null && child.signalCode === null) child.kill(signal);
-    } catch (error) {
-      if (error.code !== "ESRCH") throw error;
-    }
-  };
   const waitForExit = async (timeout) => {
     if (child.exitCode !== null || child.signalCode !== null) return true;
     return Promise.race([
@@ -48,12 +40,15 @@ async function stopChrome(child) {
       new Promise((resolveWait) => setTimeout(() => resolveWait(false), timeout)),
     ]);
   };
-  signalGroup("SIGTERM");
-  let stopped = await waitForExit(3_000);
-  // Chrome forks renderer/utility children. Signal the process group even if
-  // its leader exited so no child can keep writing into the temporary profile.
-  signalGroup("SIGKILL");
-  if (!stopped) stopped = await waitForExit(3_000);
+  let stopped = child.exitCode !== null || child.signalCode !== null;
+  if (!stopped) {
+    child.kill("SIGTERM");
+    stopped = await waitForExit(5_000);
+  }
+  if (!stopped && child.exitCode === null && child.signalCode === null) {
+    child.kill("SIGKILL");
+    stopped = await waitForExit(3_000);
+  }
   if (!stopped) throw new Error("temporary Chrome process did not stop");
 }
 
@@ -114,7 +109,7 @@ export async function launchServerActionBrowser(appUrl) {
   // GitHub's hosted runner may block Chrome's user-namespace sandbox. Keep
   // the sandbox enabled for local runs; CI's ephemeral VM also blocks DNS.
   if (process.env.QR004_CHROME_NO_SANDBOX === "1") chromeArgs.unshift("--no-sandbox");
-  const child = spawn(chrome, chromeArgs, { detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(chrome, chromeArgs, { stdio: ["ignore", "pipe", "pipe"] });
   child.stdout.on("data", (chunk) => output.push(chunk.toString()));
   child.stderr.on("data", (chunk) => output.push(chunk.toString()));
   let browser, page;
@@ -221,17 +216,19 @@ export async function launchServerActionBrowser(appUrl) {
       evaluate,
       currentUrl: () => evaluate("location.href"),
       close: async () => {
+        try { await browser?.call("Browser.close"); } catch {}
         page?.close();
         browser?.close();
         try { await stopChrome(child); }
-        finally { await rm(profile, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+        finally { await rm(profile, { recursive: true, force: true, maxRetries: 30, retryDelay: 250 }); }
       },
     };
   } catch (error) {
+    try { await browser?.call("Browser.close"); } catch {}
     page?.close();
     browser?.close();
     try { await stopChrome(child); } catch {}
-    await rm(profile, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }).catch(() => {});
+    await rm(profile, { recursive: true, force: true, maxRetries: 30, retryDelay: 250 }).catch(() => {});
     throw error;
   }
 }
