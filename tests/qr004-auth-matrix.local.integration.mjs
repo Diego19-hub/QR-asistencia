@@ -567,6 +567,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       }).select("id").single();
       if (clockOut.error || !clockOut.data) throw new Error(`failed creating synthetic ${label} dashboard clock-out`);
       clockOutId = clockOut.data.id;
+      const closedSession = await service.from("attendance_sessions").update({ status: "closed", ended_at: dashboardInstant }).eq("id", session.data.id);
+      if (closedSession.error) throw new Error(`failed closing synthetic ${label} dashboard session`);
     }
     return { sessionId: session.data.id, clockInId: clockIn.data.id, clockOutId };
   };
@@ -734,6 +736,83 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal(JSON.stringify(dashboardA).includes(dashboardBClosed.sessionId), false, "HTTP summary does not expose tenant B session identifiers");
   assert.equal(JSON.stringify(dashboardA).includes(dashboardEmployeeB.data.id), false, "HTTP summary does not expose tenant B employee identifiers");
   process.stdout.write("PASS dashboard HTTP/Auth and direct PostgreSQL RLS isolate two tenants, active/inactive/foreign branches, synthetic employees/sessions/events, date-local counts and no-store responses\n");
+
+  // Reports API matrix: role, selected company, active membership, filters,
+  // tenant isolation and the reports.read boundary are tested independently
+  // from direct attendance.read access through PostgreSQL RLS.
+  const reportDate = dateInZone(dashboardNow, "America/Mexico_City");
+  const reportPath = (companyId, query = "") => `/api/reports?companyId=${companyId}&from=${reportDate}&to=${reportDate}${query}`;
+  response = await request(reportPath(companyA)); assert.equal(response.status, 401, "anonymous reports request is rejected");
+  response = await request(reportPath(companyA), { user: supervisorA }); assert.equal(response.status, 403, "supervisor cannot access administrative reports");
+  response = await request(reportPath(companyA), { user: employeeA }); assert.equal(response.status, 403, "employee cannot access administrative reports");
+  response = await request(reportPath(companyA), { user: adminB }); assert.equal(response.status, 403, "an administrator from company B cannot select company A reports");
+  response = await request(`/api/reports?from=${reportDate}&to=${reportDate}`, { user: multiAdmin });
+  assert.equal(response.status, 400, "multi-company administrators must select a company explicitly");
+  response = await request(reportPath(companyA), { user: multiAdmin }); assert.equal(response.status, 200, "multi-company admin can select its authorized company");
+  assert.equal(response.headers.get("cache-control"), "no-store, private");
+
+  response = await request(reportPath(companyA)); assert.equal(response.status, 401);
+  response = await request(`/api/reports?companyId=${companyA}&from=2026-02-31&to=2026-03-01`, { user: adminA }); assert.equal(response.status, 400, "impossible report date is rejected");
+  response = await request(`/api/reports?companyId=${companyA}&from=2030-01-02&to=2030-01-01`, { user: adminA }); assert.equal(response.status, 400, "reversed date range is rejected");
+  response = await request(`/api/reports?companyId=${companyA}&from=2025-01-01&to=2026-10-30`, { user: adminA }); assert.equal(response.status, 400, "report ranges over 366 days are rejected");
+  response = await request(`/api/reports?companyId=${companyA}&from=${reportDate}&to=${reportDate}&status=secret`, { user: adminA }); assert.equal(response.status, 400, "unknown report status is rejected");
+  response = await request(`/api/reports?companyId=${companyA}&from=${reportDate}&to=${reportDate}&branchId=invalid`, { user: adminA }); assert.equal(response.status, 400, "malformed branch identifier is rejected");
+  response = await request(`/api/reports?companyId=${companyA}&from=${reportDate}&to=${reportDate}&employeeId=invalid`, { user: adminA }); assert.equal(response.status, 400, "malformed employee identifier is rejected");
+  response = await request(reportPath(companyA, `&branchId=${branchB}`), { user: adminA }); assert.equal(response.status, 403, "foreign-company branch filter is rejected");
+  response = await request(reportPath(companyA, `&employeeId=${dashboardEmployeeB.data.id}`), { user: adminA }); assert.equal(response.status, 403, "foreign-company employee filter is rejected");
+
+  response = await request(reportPath(companyA), { user: adminA }); assert.equal(response.status, 200, "authorized admin can read own-company reports");
+  assert.equal(response.headers.get("cache-control"), "no-store, private");
+  const reportA = await response.json();
+  assert.ok(reportA.rows.some((row) => row.sessionId === dashboardAOpen.sessionId), "company A report contains its synthetic open session");
+  assert.ok(reportA.rows.some((row) => row.sessionId === dashboardAClosed.sessionId), "company A report contains its synthetic closed session");
+  assert.equal(JSON.stringify(reportA).includes(dashboardBClosed.sessionId), false, "company A JSON report excludes company B sessions");
+  assert.equal(JSON.stringify(reportA).includes(dashboardEmployeeB.data.id), false, "company A JSON report excludes company B employees");
+  assert.equal(JSON.stringify(reportA).includes(dashboardBClosed.clockInId), false, "company A JSON report excludes company B events");
+  response = await request(reportPath(companyA, `&branchId=${otherBranchA}`), { user: adminA }); assert.equal(response.status, 200);
+  const branchReport = await response.json();
+  assert.ok(branchReport.rows.some((row) => row.sessionId === dashboardAClosed.sessionId));
+  assert.equal(branchReport.rows.some((row) => row.sessionId === dashboardAOpen.sessionId), false, "branch filter excludes other branch sessions");
+  response = await request(reportPath(companyA, `&employeeId=${employeeA.employeeId}`), { user: adminA }); assert.equal(response.status, 200);
+  const employeeReport = await response.json();
+  assert.ok(employeeReport.rows.every((row) => row.employeeId === employeeA.employeeId), "employee filter limits report rows to that employee");
+  response = await request(reportPath(companyA, "&status=closed"), { user: adminA }); assert.equal(response.status, 200);
+  const closedReport = await response.json();
+  assert.ok(closedReport.rows.length > 0 && closedReport.rows.every((row) => row.status === "closed" && !row.incomplete), "closed filter excludes open and incomplete sessions");
+  response = await request(reportPath(companyA, "&status=open"), { user: adminA }); assert.equal(response.status, 200);
+  assert.ok((await response.json()).rows.every((row) => row.status === "open"), "open filter excludes closed sessions");
+  response = await request(reportPath(companyB), { user: adminB }); assert.equal(response.status, 200);
+  const reportB = await response.json();
+  assert.ok(reportB.rows.some((row) => row.sessionId === dashboardBClosed.sessionId));
+  assert.equal(JSON.stringify(reportB).includes(dashboardAOpen.sessionId), false, "company B JSON report excludes company A sessions");
+
+  const wasAdminActive = await service.from("company_memberships").update({ active: false }).eq("id", adminA.memberships[0].id);
+  if (wasAdminActive.error) throw new Error("failed preparing inactive synthetic report membership");
+  response = await request(reportPath(companyA), { user: adminA }); assert.equal(response.status, 403, "inactive admin membership denies reports");
+  await service.from("company_memberships").update({ active: true }).eq("id", adminA.memberships[0].id);
+
+  // Reproduce and then prevent the report-permission bypass: attendance.read
+  // remains effective in RLS, but it must not substitute for reports.read.
+  const reportPermissionDenied = await service.from("membership_permission_overrides").insert({
+    company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "reports.read", allowed: false,
+  });
+  if (reportPermissionDenied.error) throw new Error("failed preparing synthetic reports.read denial");
+  const attendanceReadWithReportsDenied = await adminA.client.from("attendance_session_totals")
+    .select("session_id").eq("company_id", companyA).eq("session_id", dashboardAOpen.sessionId);
+  assert.equal(attendanceReadWithReportsDenied.error, null, "attendance.read remains independently authorized through PostgreSQL RLS");
+  assert.equal(attendanceReadWithReportsDenied.data?.length, 1, "the synthetic admin can read own-tenant attendance under attendance.read");
+  const beforeReportPermissionDenial = await snapshot(companyA);
+  response = await request(reportPath(companyA), { user: adminA });
+  assert.equal(response.status, 403, "explicit reports.read denial blocks HTTP report access");
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const deniedReport = await response.json();
+  assert.equal(deniedReport.error.code, "reports_forbidden");
+  assert.doesNotMatch(JSON.stringify(deniedReport), /SQLSTATE|permission.*override|membership_permission/i, "report denial does not disclose internal authorization details");
+  assert.deepEqual(await snapshot(companyA), beforeReportPermissionDenial, "denied report request has no database side effects");
+  assert.equal(attendanceReadWithReportsDenied.data?.length, 1, "the separate attendance.read RLS permission remains usable");
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA)
+    .eq("membership_id", adminA.memberships[0].id).eq("permission_code", "reports.read");
+  process.stdout.write("PASS reports GET/Auth and PostgreSQL RLS: roles, membership, company selection, filters, tenant/session/event isolation, reports.read enforcement and no-side-effect denials\n");
 
   // Labor-rule validity and overtime authorization permissions. Route reads
   // and writes use Auth sessions; direct table operations use the same
@@ -1278,6 +1357,82 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal(deviceTokenHash, storedChallengeHash, "device token table contains the challenge digest only");
   const scannerContext = await supervisorA.client.rpc("get_supervisor_scanner_context", { p_company_id: companyA, p_device_token: enrollmentChallenge });
   assert.equal(scannerContext.data?.authorized, true, "authorized challenge is the only device token accepted for its active supervisor and branch");
+  const scannerContextPath = `/api/supervisor/scanner/context?companyId=${companyA}`;
+  response = await request(scannerContextPath); assert.equal(response.status, 401, "anonymous scanner context is rejected");
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/i);
+  response = await request(scannerContextPath, { user: adminA }); assert.equal(response.status, 403, "administrator cannot use the supervisor scanner context");
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/i);
+  response = await request(scannerContextPath, { user: employeeA }); assert.equal(response.status, 403, "employee cannot use the supervisor scanner context");
+  response = await request(`/api/supervisor/scanner/context?companyId=${companyB}`, { user: supervisorA }); assert.equal(response.status, 403, "supervisor cannot select a foreign company");
+  response = await request(scannerContextPath, { user: supervisorA }); assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store, private");
+  const unpairedScannerContext = await response.json();
+  assert.equal(unpairedScannerContext.contexts[0].authorized, false, "active supervisor without a device cookie receives an unauthorized context");
+  response = await request(scannerContextPath, { user: supervisorA, cookieExtra: `qr_device_${companyA}=forged-synthetic-device-token` }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).contexts[0].authorized, false, "a manipulated device cookie does not authorize scanning");
+  const beforeInvalidScannerOrigin = await snapshot(companyA);
+  const invalidScannerOrigin = await fetch(new URL(scannerContextPath, appUrl), {
+    method: "POST", headers: { cookie: supervisorA.cookie, origin: "https://attacker.invalid" },
+  });
+  assert.equal(invalidScannerOrigin.status, 403, "scanner context POST rejects a foreign Origin");
+  assert.match(invalidScannerOrigin.headers.get("cache-control") ?? "", /no-store/i, "rejected scanner POST is not cacheable");
+  assert.deepEqual(await snapshot(companyA), beforeInvalidScannerOrigin, "invalid-origin scanner request has no side effects");
+
+  const additionalSupervisorMembership = await service.from("company_memberships")
+    .insert({ company_id: companyB, user_id: supervisorA.userId, role: "supervisor", active: true })
+    .select("id").single();
+  if (additionalSupervisorMembership.error || !additionalSupervisorMembership.data) throw new Error("failed creating multi-company synthetic supervisor membership");
+  response = await request(scannerContextPath, { user: supervisorA }); assert.equal(response.status, 409, "multi-company supervisor must select an active membership");
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/i);
+  response = await request(scannerContextPath, { user: supervisorA, cookieExtra: `qr_active_membership_id=${supervisorA.memberships[0].id}` }); assert.equal(response.status, 200, "selected own supervisor membership restores context access");
+  response = await request(`/api/supervisor/scanner/context?companyId=${companyB}`, { user: supervisorA, cookieExtra: `qr_active_membership_id=${supervisorA.memberships[0].id}` }); assert.equal(response.status, 403, "selected company cannot be overridden by another membership's company ID");
+
+  const httpChallenge = randomBytes(32).toString("base64url");
+  const httpRequest = await supervisorA.client.rpc("request_supervisor_device", {
+    p_company_id: companyA, p_branch_id: branchA, p_label: "Synthetic HTTP context device", p_challenge: httpChallenge,
+  });
+  assert.ok(!httpRequest.error && httpRequest.data?.requestId, "synthetic context device request exists");
+  const httpApproval = await adminA.client.rpc("review_supervisor_device_request", {
+    p_company_id: companyA, p_request_id: httpRequest.data.requestId, p_approve: true,
+  });
+  assert.ok(!httpApproval.error && httpApproval.data?.deviceId, "synthetic context device is approved before HTTP challenge redemption");
+  const httpRedeemResponse = await fetch(new URL(scannerContextPath, appUrl), {
+    method: "POST",
+    headers: {
+      cookie: `${supervisorA.cookie}; qr_active_membership_id=${supervisorA.memberships[0].id}; qr_enroll_${companyA}=${encodeURIComponent(httpChallenge)}`,
+      origin: appUrl, "x-forwarded-proto": "https",
+    },
+  });
+  assert.equal(httpRedeemResponse.status, 200, "approved local enrollment challenge redeems through the actual scanner context route");
+  assert.equal(httpRedeemResponse.headers.get("cache-control"), "no-store, private");
+  const httpRedeemedContext = await httpRedeemResponse.json();
+  assert.equal(httpRedeemedContext.contexts[0].authorized, true);
+  assert.equal(httpRedeemedContext.contexts[0].requestStatus, "authorized");
+  assert.equal(JSON.stringify(httpRedeemedContext).includes(httpChallenge), false, "scanner context response never returns raw device challenge");
+  const httpSetCookie = httpRedeemResponse.headers.get("set-cookie") ?? "";
+  assert.match(httpSetCookie, new RegExp(`qr_device_${companyA}=`), "successful POST stores the device token in its cookie");
+  assert.match(httpSetCookie, /HttpOnly/i);
+  assert.match(httpSetCookie, /Secure/i, "forwarded HTTPS marks the device cookie Secure");
+  assert.match(httpSetCookie, /SameSite=lax/i);
+  assert.match(httpSetCookie, /Path=\/api/i);
+  assert.equal((await dbPool.query("select status,redeemed_at is not null redeemed from private.device_authorization_requests where id=$1", [httpRequest.data.requestId])).rows[0]?.redeemed, true, "HTTP challenge redemption is persisted once");
+  assert.equal(Number((await dbPool.query("select count(*)::int n from private.device_token_hashes where device_id=$1", [httpApproval.data.deviceId])).rows[0].n), 1, "HTTP redemption stores only one device-token hash");
+  const afterHttpRedemption = await snapshot(companyA);
+  const httpDeviceCookie = httpSetCookie.match(new RegExp(`qr_device_${companyA}=([^;,]+)`))?.[1];
+  assert.ok(httpDeviceCookie, "device cookie value is present only in Set-Cookie");
+  response = await request(scannerContextPath, { user: supervisorA, cookieExtra: `qr_active_membership_id=${supervisorA.memberships[0].id}; qr_device_${companyA}=${httpDeviceCookie}` });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).contexts[0].authorized, true, "issued device cookie authorizes only its server-recorded device");
+  const repeatedHttpRedemption = await fetch(new URL(scannerContextPath, appUrl), {
+    method: "POST", headers: {
+      cookie: `${supervisorA.cookie}; qr_active_membership_id=${supervisorA.memberships[0].id}; qr_enroll_${companyA}=${encodeURIComponent(httpChallenge)}`,
+      origin: appUrl, "x-forwarded-proto": "https",
+    },
+  });
+  assert.equal(repeatedHttpRedemption.status, 200, "repeated HTTP redemption is handled without creating another authorization");
+  assert.equal((await repeatedHttpRedemption.json()).contexts[0].authorized, false, "replayed challenge does not mint a second device cookie");
+  assert.deepEqual(await snapshot(companyA), afterHttpRedemption, "replayed HTTP redemption creates no additional request, device or audit changes");
+
   const noDeviceContext = await supervisorA.client.rpc("get_supervisor_scanner_context", { p_company_id: companyA, p_device_token: null });
   assert.equal(noDeviceContext.data?.authorized, false);
   const beforeReplayRedemption = await snapshot(companyA);
@@ -1302,7 +1457,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   ]);
   assert.equal(concurrentReview.filter((result) => !result.error).length, 1, "concurrent device approvals create exactly one authorized device");
   assert.equal(concurrentReview.filter((result) => result.error?.code === "23514").length, 1, "the losing concurrent approval observes the resolved state");
-  assert.equal(Number((await dbPool.query("select count(*)::int n from public.authorized_devices where company_id=$1 and membership_id=$2", [companyA, supervisorA.memberships[0].id])).rows[0].n), 2, "concurrent approval creates no duplicate device");
+  assert.equal(Number((await dbPool.query("select count(*)::int n from public.authorized_devices where company_id=$1 and membership_id=$2", [companyA, supervisorA.memberships[0].id])).rows[0].n), 3, "the first approval, HTTP-context approval and single concurrent winner create exactly three devices");
   assert.equal(Number((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='DEVICE_AUTHORIZATION_APPROVED'", [companyA, raceRequest.data.requestId])).rows[0].n), 1);
 
   const beforeCrossTenantRevokeA = await snapshot(companyA), beforeCrossTenantRevokeB = await snapshot(companyB);
@@ -1319,12 +1474,18 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal(Number((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='SUPERVISOR_DEVICE_REVOKED'", [companyA, approved.deviceId])).rows[0].n), 1);
   const revokedContext = await supervisorA.client.rpc("get_supervisor_scanner_context", { p_company_id: companyA, p_device_token: enrollmentChallenge });
   assert.equal(revokedContext.data?.authorized, false, "revocation immediately removes scanner authorization");
+  response = await request(scannerContextPath, { user: supervisorA, cookieExtra: `qr_active_membership_id=${supervisorA.memberships[0].id}; qr_device_${companyA}=${encodeURIComponent(enrollmentChallenge)}` });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).contexts[0].authorized, false, "revoked device cookie cannot authorize the HTTP scanner context");
   const repeatedRevoke = await adminA.client.rpc("revoke_supervisor_device", { p_company_id: companyA, p_device_id: approved.deviceId });
   assert.equal(repeatedRevoke.error?.code, "P0002");
   assert.deepEqual(await snapshot(companyA), afterDeviceRevoke, "repeated device revocation has no duplicate audit side effects");
 
   const beforeSupervisorDeactivation = await snapshot(companyA);
   response = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { action: "deactivate", membershipId: supervisorA.memberships[0].id } }); assert.equal(response.status, 200);
+  response = await request(scannerContextPath, { user: supervisorA, cookieExtra: `qr_active_membership_id=${supervisorA.memberships[0].id}; qr_device_${companyA}=${encodeURIComponent(enrollmentChallenge)}` });
+  assert.equal(response.status, 403, "revoked supervisor membership blocks the HTTP scanner context despite stale cookies");
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/i);
   assert.deepEqual(await dbPool.query("select active from public.company_memberships where id=$1", [supervisorA.memberships[0].id]).then((result) => result.rows[0]), { active: false });
   const devicesAfterMembershipRevoke = await service.from("authorized_devices").select("id,active,revoked_at").eq("company_id", companyA).eq("membership_id", supervisorA.memberships[0].id);
   assert.ok(!devicesAfterMembershipRevoke.error && devicesAfterMembershipRevoke.data.length > 0);

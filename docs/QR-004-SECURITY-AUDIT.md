@@ -235,3 +235,50 @@ La repetición de `npm run test:security:matrix` pasó con el proyecto aleatorio
 | `npm run build` | PASS, código 0, en copia temporal sin `.env*` y con URL/clave Supabase sintéticas de loopback; Next completó compilación y 41 páginas. Emitió la advertencia de 27 archivos fuera del standalone trace porque `node_modules` se enlazó desde el repositorio. |
 
 Node mostró los avisos existentes `MODULE_TYPELESS_PACKAGE_JSON` durante tests. El build no leyó `.env.local`; la copia temporal se eliminó. El resultado de GitHub Actions debe comprobarse después de subir este cambio.
+
+## Reportes, exportaciones y contexto de escáner (30-oct-2026)
+
+### Hallazgo confirmado y corrección
+
+- **Reproducción local:** en una instancia Supabase desechable, un `admin` sintético conservó `company.read` y `attendance.read`, pero recibió override `reports.read=false`. La consulta Auth directa a `attendance_session_totals` siguió mostrando su propia jornada, como corresponde a `attendance.read`; antes de la corrección, `GET /api/reports` respondió `200` e incluyó esa fila pese al permiso de reporte revocado. Se usaron exclusivamente datos sintéticos.
+- **Causa raíz y severidad:** `resolveAdminScope` validaba rol owner/admin, membresía activa y empresa seleccionada, pero no equivalía a autorizar `reports.read`. `loadReport` omitía ese control. El bypass era de severidad media: un administrador podía leer reportes tras una revocación explícita del permiso; el alcance continuó confinado por empresa/RLS y no se reprodujo cruce de tenants.
+- **Corrección mínima:** `loadReport` consulta `current_user_has_company_permission` para `reports.read`. Denegación: `403 reports_forbidden`, mensaje genérico y `no-store`; fallo de la RPC de permisos: `503 report_permission_unavailable`. No se cambiaron las migraciones, ACL, ni el modelo de permisos.
+- **Regresión:** con `attendance.read` todavía efectivo, el endpoint ahora devuelve `403` y no serializa los datos. El snapshot de datos/auditoría no cambia. La consulta directa RLS a la jornada propia sigue permitida y las consultas de la empresa ajena siguen vacías.
+
+### Cobertura HTTP/Auth y PostgreSQL
+
+- **`GET /api/reports`:** Auth local cubre anónimo (`401`), supervisor/empleado (`403`), membresía inactiva (`403`), admin de empresa ajena (`403`), selección multiempresa omitida (`400`) y empresa propia seleccionada (`200`). Se probaron fechas imposibles, invertidas y mayores de 366 días, estado y UUID inválidos (`400`); sucursal/empleado ajenos (`403`); filtros válidos por sucursal, empleado y estado; `Cache-Control: no-store, private`; contenido JSON A/B y snapshots de rechazo. IDs de sesiones, empleados y eventos del otro tenant no aparecen en el resultado.
+- **`GET /api/reports/export`:** la integración crea jornadas, empleados, sucursales y dispositivos sintéticos A/B y examina archivos reales. ExcelJS carga el XLSX; el texto de los streams Flate del PDF se extrae. Los archivos contienen el marcador de su empresa y excluyen el de la otra; exportar la empresa ajena es `403`. También se probaron `no-store`, autenticación, lease global, concurrencia, expiración, cuota, `Retry-After` y que `reports.read=false` no consuma cuota ni deje lease.
+- **Contexto del escáner:** los errores GET/POST llevan ahora `Cache-Control: no-store, private`, incluidos anónimo, rol/empresa no autorizados, selección requerida y origen inválido.
+- **`GET /api/supervisor/scanner/context`:** Auth local verifica anónimo (`401`), admin/empleado (`403`), empresa ajena (`403`), supervisor multiempresa sin selección (`409`) y selección activa propia. Una cookie ausente o manipulada no autoriza; cookie de dispositivo revocado resulta no autorizada; membresía revocada devuelve `403` incluso con cookies viejas.
+- **`POST /api/supervisor/scanner/context`:** un supervisor sintético solicita un dispositivo, el admin lo aprueba y el POST real canjea el desafío. El resultado se autoriza una vez; la respuesta no incluye el secreto. Cookie emitida: `HttpOnly`, `Secure` con `x-forwarded-proto: https`, `SameSite=lax`, `Path=/api`. Replay no genera una segunda cookie ni modifica snapshots. `Origin` externo recibe `403` no cacheable y sin efectos. No se registró asistencia ni se probaron QR/PIN.
+- **RLS/RPC:** las verificaciones de acceso usaron sesiones SSR/Auth y clientes `authenticated`; `service_role` preparó fixtures sintéticos exclusivamente. La integración de reportes ejecuta 13 aserciones pgTAP sobre tabla privada, RLS/grants y lease, y prueba las RPC `acquire_report_export_lease`, `renew_report_export_lease` y `release_report_export_lease` con JWT, carrera y lease expirado. La matriz ejercita `get_supervisor_scanner_context` y `redeem_supervisor_device` por HTTP; mantiene cobertura previa directa de `request_supervisor_device` y `review_supervisor_device_request`. No se invocaron `scan_employee_attendance` ni `confirm_employee_attendance`.
+
+### Inventario de Route Handlers de esta revisión
+
+El inventario incluye todos los archivos `src/app/api/**/route.ts` existentes en este checkout. “Dinámica” significa peticiones a Next.js local con Auth sintético; no implica cobertura exhaustiva de cada combinación.
+
+| Ruta y métodos | Evidencia | Brecha o nota residual |
+|---|---|---|
+| `/api/admin/access` GET/POST/PATCH; `/api/admin/access/invitations/[id]/resend` POST; `/api/admin/access/invitations/[id]/share-link` POST | HTTP/Auth, permisos, tenant, Mailpit, snapshots y RPC de invitación | Mantener regresiones ante cambios de entrega/carreras |
+| `/api/admin/audit` GET; `/api/admin/permissions` GET | HTTP/Auth: auditoría requiere `company.manage`; catálogo disponible a admin activo con ese permiso revocado | Sin inspección remota |
+| `/api/company` GET/PATCH; `/api/dashboard/summary` GET | HTTP/Auth, RLS directo, empresas/sucursales sintéticas A/B; fase previa | No sustituye revisión remota |
+| `/api/reports` GET; `/api/reports/export` GET | Esta fase: Auth, RLS, filtros, contenido JSON/PDF/XLSX, tenant isolation y lease | No se hizo stress de 5,000 filas en servidor local; límites conservados en unit tests |
+| `/api/supervisor/scanner/context` GET/POST | Esta fase: Auth, selección, dispositivo, origen, cookies, desafío y revocación | Escaneo y registro de asistencia explícitamente fuera de alcance |
+| `/api/supervisor/device-requests` POST; `/api/supervisor-devices` GET/PATCH; `/api/supervisor-devices/[id]` DELETE; `/api/supervisors` GET/PATCH | HTTP/Auth/RPC, sucursal, permisos, carreras y revocación en fases previas | Revisar otra vez al cambiar el modelo de dispositivos |
+| `/api/me` GET; `/api/employee/portal` GET; `/api/invitations/share/accept` POST | HTTP/Auth, portal, invitaciones, sesión y RPC | Pruebas de navegador/Server Actions separadas, documentadas previamente |
+| `/api/employees` GET/POST; `/api/employees/[id]` GET/PATCH; `/api/employees/[id]/qr` GET/POST/DELETE; `/api/employees/[id]/pin` PUT | Auth/RLS de tenant y credenciales; PIN solo configuración | Sin verificar PIN ni lockout; QR-003 pospuesta |
+| `/api/branches` GET/POST/PATCH | HTTP/Auth y snapshots para tenant/sucursal | Faltan combinaciones en operaciones fuera de esta fase |
+| `/api/attendance` GET; `/api/attendance/[id]` GET; `/api/attendance/scan` POST | Guardas/Auth/tenant documentadas en matriz previa | No se registró asistencia. La solicitud sintética de scan se rechazó por dispositivo inválido antes de lookup QR y `private.verify_employee_pin`; no se verificó ni se generó un intento de PIN |
+| `/api/schedules` GET/POST; `/api/schedules/[id]` PATCH/DELETE; `/api/schedules/assignments` GET/POST; `/api/schedules/calendar` GET; `/api/schedules/rules` GET/POST; `/api/schedules/rules/[id]` PATCH/DELETE; `/api/schedules/overtime` GET | HTTP/Auth, permisos y RLS en fases anteriores | No se amplió el alcance funcional |
+| `/api/healthz` | Health check | Sin autorización multiempresa; reevaluar si expone más datos |
+
+El inventario corresponde a Route Handlers; las RPC privilegiadas se enumeran en cada sección histórica y en la cobertura RLS/RPC de arriba. No equivale a un inventario exhaustivo de todas las funciones SQL del esquema.
+
+### Evidencia, riesgos y estado
+
+- **Validaciones locales:** la última matriz local pasó ocho suites pgTAP (201/201), los escenarios HTTP/Auth añadidos y el teardown, preservando recursos Docker preexistentes. `npm run test:reports` pasó 16/16. `npm run test:reports:lease:local` pasó 17/17 checks, incluidos contenido PDF/XLSX y limpieza. `npm test` pasó con 80 pruebas y 1 omitida porque el sandbox bloqueó el socket del agente GnuPG. `npm run lint` y `npm run typecheck` pasaron. `npm run build` pasó en copia temporal con `.env*` excluidos y valores Supabase sintéticos de loopback; Next completó 41 páginas. Aviso conocido: 27 archivos no entraron al standalone trace porque `node_modules` se enlazó fuera de la copia. La copia se eliminó.
+- **GitHub Actions:** pendiente de comprobar en el commit publicado de esta rama; actualizaré esta evidencia cuando exista un resultado remoto verificable.
+- El canje de dispositivo persiste `redeemed_at` y hash del token. El esquema actual registra auditoría al solicitar, aprobar/rechazar y revocar, no al canjear; esta tarea comprobó ese comportamiento y no añadió un requisito funcional nuevo.
+- No se consultaron ni modificaron Testing o Producción, no se aplicaron migraciones remotas, no hubo respaldos ni verificaciones de PIN. QR-003 continúa pospuesta, P0 y NO-GO.
+- **QR-004 permanece En curso.** Faltan otras combinaciones/operaciones API-RPC-Server Actions y una revisión remota segregada; esta ampliación no cierra la auditoría.

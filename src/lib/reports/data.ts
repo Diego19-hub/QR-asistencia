@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { classifyCompanyPermissionCheck } from "@/lib/access/user-management";
 import { resolveAdminScope, type AdminScope } from "@/lib/admin/scope";
 import { fetchAllCursorPages, REPORT_PAGE_SIZE, type CursorPage } from "@/lib/reports/pagination";
 
@@ -82,6 +83,16 @@ export async function loadReport(request: Request): Promise<ReportResult> {
   const scopeResult = await resolveAdminScope(request);
   if (!scopeResult.ok) return scopeResult;
   const scope = scopeResult.scope;
+  const permissionResult = await scope.supabase.rpc("current_user_has_company_permission", {
+    p_company_id: scope.company.companyId,
+    p_permission: "reports.read",
+  });
+  const reportPermission = classifyCompanyPermissionCheck(permissionResult.data, permissionResult.error);
+  if (!reportPermission.allowed) {
+    return reportPermission.reason === "unavailable"
+      ? fail(503, "report_permission_unavailable", "No fue posible validar tus permisos para consultar reportes.")
+      : fail(403, "reports_forbidden", "No tienes permiso para consultar reportes en esta empresa.");
+  }
   const params = new URL(request.url).searchParams;
   const from = params.get("from") ?? "";
   const to = params.get("to") ?? "";
