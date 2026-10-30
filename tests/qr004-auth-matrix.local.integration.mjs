@@ -10,6 +10,7 @@ import net from "node:net";
 import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import pg from "pg";
+import { launchServerActionBrowser } from "./qr004-server-actions.browser.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "node_modules/.bin/supabase");
@@ -28,7 +29,7 @@ const suites = [
 ];
 let temp;
 let startAttempted = false;
-let appServer, dbPool, service, apiUrl, anonKey, serviceKey, dbUrl, appUrl, mailpitUrl, appOutput = "";
+let appServer, actionBrowser, dbPool, service, apiUrl, anonKey, serviceKey, dbUrl, appUrl, mailpitUrl, appOutput = "";
 let attendanceSessionA, attendanceSessionB, foreignBranchSession;
 
 function safeCli(args, timeout = 900_000) {
@@ -126,8 +127,8 @@ async function stopNext() {
     await exited;
   }
 }
-async function createHttpUser(label, role, companyId, { extraMemberships = [], employee = false, branchId } = {}) {
-  const email = `${label}-${randomUUID()}@qr-asistencia.invalid`;
+async function createHttpUser(label, role, companyId, { extraMemberships = [], employee = false, branchId, email: suppliedEmail } = {}) {
+  const email = suppliedEmail ?? `${label}-${randomUUID()}@qr-asistencia.invalid`;
   const password = randomBytes(32).toString("base64url");
   const created = await service.auth.admin.createUser({ email, password, email_confirm: true });
   if (created.error || !created.data.user) throw new Error(`local Auth fixture creation failed (${label})`);
@@ -156,7 +157,7 @@ async function createHttpUser(label, role, companyId, { extraMemberships = [], e
   } });
   const ssrLogin = await ssr.auth.signInWithPassword({ email, password });
   if (ssrLogin.error) throw new Error(`local SSR session creation failed (${label})`);
-  return { userId, email, companyId, employeeId, memberships: membershipRows, client, cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; ") };
+  return { userId, email, password, companyId, employeeId, memberships: membershipRows, client, cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; ") };
 }
 async function createAuthOnly(email) {
   const password = randomBytes(32).toString("base64url");
@@ -365,21 +366,155 @@ try {
   const nextPort = await freePort(base + 20); appUrl = `http://127.0.0.1:${nextPort}`;
   const appRoot = join(temp, "next-app"); await mkdir(appRoot, { recursive: true });
   await cp(join(root, "src"), join(appRoot, "src"), { recursive: true });
+  // This route exists only in the isolated temporary app. It renders actual
+  // Next Server Action forms for actions that otherwise have no standalone form
+  // (notably setAdminMembership); Next generates and validates every action ID.
+  const actionHarnessDir = join(appRoot, "src/app/qr004-action-harness");
+  await mkdir(actionHarnessDir, { recursive: true });
+  await writeFile(join(actionHarnessDir, "page.tsx"), `
+import { signIn, signOut } from "@/app/(auth)/login/actions";
+import { chooseMembership } from "@/app/(auth)/seleccionar-empresa/actions";
+import { acceptInvitation, setInvitationPassword } from "@/app/(auth)/invitacion/actions";
+import { setAdminMembership } from "@/app/(admin)/admin/actions";
+import { signOutEmployee } from "@/app/(employee)/mi-qr/actions";
+export default async function ServerActionHarness({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const query = await searchParams;
+  const value = (name: string) => typeof query[name] === "string" ? query[name] as string : "";
+  return <main>
+    <form id="sign-in" action={signIn}><input name="email" type="email" /><input name="password" type="password" /><input type="hidden" name="next" value={value("next")} /><button type="submit">Sign in</button></form>
+    <form id="sign-out" action={signOut}><button type="submit">Sign out</button></form>
+    <form id="sign-out-employee" action={signOutEmployee}><button type="submit">Sign out employee</button></form>
+    <form id="choose-membership" action={chooseMembership}><input type="hidden" name="membershipId" value={value("membershipId")} /><input type="hidden" name="next" value={value("next")} /><button type="submit">Choose membership</button></form>
+    <form id="accept-invitation" action={acceptInvitation}><input type="hidden" name="invitationId" value={value("invitationId")} /><button type="submit">Accept invitation</button></form>
+    <form id="set-invitation-password" action={setInvitationPassword}><input name="password" type="password" /><input name="confirmation" type="password" /><button type="submit">Set invitation password</button></form>
+    <form id="set-admin-membership" action={setAdminMembership.bind(null, value("adminMembershipId"))}><button type="submit">Set admin membership</button></form>
+  </main>;
+}
+`, { mode: 0o600 });
   for (const file of ["package.json", "next.config.ts", "postcss.config.mjs", "tsconfig.json"]) await cp(join(root, file), join(appRoot, file));
   await symlink(join(root, "node_modules"), join(appRoot, "node_modules"), "dir");
-  appServer = spawn(process.execPath, [join(root, "node_modules/next/dist/bin/next"), "dev", "--webpack", "--hostname", "127.0.0.1", "--port", String(nextPort)], {
-    cwd: appRoot,
-    env: {
-      PATH: process.env.PATH, NODE_ENV: "development", NEXT_TELEMETRY_DISABLED: "1",
-      NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey,
-      SUPABASE_SERVICE_ROLE_KEY: serviceKey, APP_BASE_URL: appUrl,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  appServer.stdout.on("data", (chunk) => { appOutput = (appOutput + chunk.toString()).slice(-12_000); });
-  appServer.stderr.on("data", (chunk) => { appOutput = (appOutput + chunk.toString()).slice(-12_000); });
-  await waitForNext(`${appUrl}/login`);
+  const startNext = async (adminServiceKey = serviceKey) => {
+    appOutput = "";
+    appServer = spawn(process.execPath, [join(root, "node_modules/next/dist/bin/next"), "dev", "--webpack", "--hostname", "127.0.0.1", "--port", String(nextPort)], {
+      cwd: appRoot,
+      env: {
+        PATH: process.env.PATH, NODE_ENV: "development", NEXT_TELEMETRY_DISABLED: "1",
+        NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey,
+        SUPABASE_SERVICE_ROLE_KEY: adminServiceKey, APP_BASE_URL: appUrl,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    appServer.stdout.on("data", (chunk) => { appOutput = (appOutput + chunk.toString()).slice(-12_000); });
+    appServer.stderr.on("data", (chunk) => { appOutput = (appOutput + chunk.toString()).slice(-12_000); });
+    await waitForNext(`${appUrl}/login`);
+  };
+  await startNext();
   process.stdout.write("PASS local Auth users and temporary Next.js server use only the disposable Supabase loopback endpoints\n");
+
+  // Exercise real Server Actions through forms rendered and submitted by
+  // Chrome/React/Next. The action-harness route exists only inside appRoot.
+  const actionAdmin = await createHttpUser("server-action-admin", "admin", companyA);
+  const actionMultiAdmin = await createHttpUser("server-action-multi-admin", "admin", companyA, { extraMemberships: [[companyB, "admin"]] });
+  const actionEmployee = await createHttpUser("server-action-employee", "employee", companyA, { employee: true, branchId: branchA });
+  actionBrowser = await launchServerActionBrowser(appUrl);
+  await actionBrowser.navigate("/login?next=https%3A%2F%2Fattacker.invalid%2Fredirect");
+  await actionBrowser.runForm("form", { email: actionAdmin.email, password: "intentionally-wrong-synthetic-password" });
+  await actionBrowser.waitForPath("error=credentials");
+  assert.equal((await actionBrowser.getCookies()).some((cookie) => cookie.name === "qr_active_membership_id"), false, "failed local sign-in does not create an active-membership cookie");
+  await actionBrowser.navigate("/login?next=https%3A%2F%2Fattacker.invalid%2Fredirect");
+  await actionBrowser.runForm("form", { email: actionAdmin.email, password: actionAdmin.password });
+  const actionAdminUrl = await actionBrowser.waitForPath("/admin");
+  assert.equal(new URL(actionAdminUrl).origin, appUrl, "valid sign-in ignores an external next destination");
+  const activeCookie = (await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id");
+  assert.equal(activeCookie?.value, actionAdmin.memberships[0].id);
+  assert.equal(activeCookie?.httpOnly, true);
+  assert.equal(activeCookie?.sameSite, "Lax");
+  assert.equal(activeCookie?.path, "/");
+  let actionCompany = await actionBrowser.fetchJson(`/api/company?companyId=${companyA}`);
+  assert.equal(actionCompany.status, 200, "real sign-in creates an authenticated SSR session accepted by the API");
+  assert.equal(actionCompany.body.item.id, companyA);
+  await actionBrowser.clickButtonText("Cerrar sesión");
+  await actionBrowser.waitForPath("/login");
+  assert.equal((await actionBrowser.getCookies()).some((cookie) => cookie.name === "qr_active_membership_id"), false, "admin sign-out removes the HttpOnly membership cookie");
+  assert.equal((await actionBrowser.fetchJson(`/api/company?companyId=${companyA}`)).status, 401, "admin sign-out invalidates the Auth session");
+
+  // Even if a client tampers with the membershipId in a native action form,
+  // chooseMembership is bound to the authenticated user and active memberships.
+  await actionBrowser.navigate(`/qr004-action-harness?membershipId=${encodeURIComponent(adminB.memberships[0].id)}`);
+  await actionBrowser.runForm("#choose-membership");
+  await actionBrowser.waitForPath("/login", "unauthenticated membership selection must return to login");
+  assert.equal((await actionBrowser.getCookies()).some((cookie) => cookie.name === "qr_active_membership_id"), false);
+  await actionBrowser.navigate("/login");
+  await actionBrowser.runForm("form", { email: actionMultiAdmin.email, password: actionMultiAdmin.password });
+  await actionBrowser.waitForPath("/seleccionar-empresa");
+  await actionBrowser.runForm("form:has(input[name='membershipId'])", { membershipId: adminB.memberships[0].id });
+  await actionBrowser.waitForPath("error=invalid");
+  assert.equal((await actionBrowser.getCookies()).some((cookie) => cookie.name === "qr_active_membership_id"), false, "foreign membershipId cannot create an administrative session");
+  await actionBrowser.navigate("/seleccionar-empresa");
+  await actionBrowser.runForm("form:nth-of-type(2)");
+  await actionBrowser.waitForPath("/admin");
+  let membershipCookie = (await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id");
+  assert.equal(membershipCookie?.value, actionMultiAdmin.memberships[1].id, "a user can select their own second-company membership");
+  actionCompany = await actionBrowser.fetchJson(`/api/company?companyId=${companyB}`);
+  assert.equal(actionCompany.body.item.id, companyB);
+  await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(actionMultiAdmin.memberships[0].id)}`);
+  await actionBrowser.runForm("#set-admin-membership");
+  membershipCookie = (await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id");
+  assert.equal(membershipCookie?.value, actionMultiAdmin.memberships[0].id, "setAdminMembership switches to the caller's own active admin membership");
+  await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(adminB.memberships[0].id)}`);
+  await actionBrowser.runForm("#set-admin-membership");
+  membershipCookie = (await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id");
+  assert.equal(membershipCookie?.value, actionMultiAdmin.memberships[0].id, "setAdminMembership leaves the active membership unchanged for a foreign ID");
+  await service.from("company_memberships").update({ active: false }).eq("id", actionMultiAdmin.memberships[0].id);
+  actionCompany = await actionBrowser.fetchJson(`/api/company?companyId=${companyA}`);
+  assert.equal(actionCompany.status, 403, "revoking the selected membership removes access despite the stale cookie");
+  await actionBrowser.navigate(`/qr004-action-harness?membershipId=${encodeURIComponent(actionMultiAdmin.memberships[0].id)}`);
+  await actionBrowser.runForm("#choose-membership");
+  await actionBrowser.waitForPath("error=invalid");
+  assert.equal((await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id")?.value, actionMultiAdmin.memberships[0].id, "chooseMembership cannot replace a valid cookie with an inactive/revoked membership");
+  await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(actionMultiAdmin.memberships[1].id)}`);
+  await actionBrowser.runForm("#set-admin-membership");
+  membershipCookie = (await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id");
+  assert.equal(membershipCookie?.value, actionMultiAdmin.memberships[1].id, "a remaining active membership can replace a revoked selection");
+  await service.from("company_memberships").update({ active: true }).eq("id", actionMultiAdmin.memberships[0].id);
+
+  await actionBrowser.clickButtonText("Cerrar sesión").catch(async () => {
+    await actionBrowser.navigate("/admin");
+    await actionBrowser.clickButtonText("Cerrar sesión");
+  });
+  await actionBrowser.waitForPath("/login");
+  await actionBrowser.navigate("/login");
+  await actionBrowser.runForm("form", { email: actionEmployee.email, password: actionEmployee.password });
+  await actionBrowser.waitForPath("/mi-qr");
+  const employeeMembershipCookie = (await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id");
+  assert.equal(employeeMembershipCookie?.value, actionEmployee.memberships[0].id);
+  await actionBrowser.navigate(`/qr004-action-harness?membershipId=${encodeURIComponent(adminA.memberships[0].id)}`);
+  await actionBrowser.runForm("#choose-membership");
+  await actionBrowser.waitForPath("error=invalid");
+  membershipCookie = (await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id");
+  assert.equal(membershipCookie?.value, actionEmployee.memberships[0].id, "employee cannot select another user's administrative membership");
+  await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(adminA.memberships[0].id)}`);
+  await actionBrowser.runForm("#set-admin-membership");
+  membershipCookie = (await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id");
+  assert.equal(membershipCookie?.value, actionEmployee.memberships[0].id, "employee cannot replace their active cookie with an admin membership");
+  await actionBrowser.navigate("/mi-qr");
+  await actionBrowser.clickButtonText("Cerrar sesión");
+  await actionBrowser.waitForPath("/login");
+  assert.equal((await actionBrowser.getCookies()).some((cookie) => cookie.name === "qr_active_membership_id"), false, "employee sign-out removes the active-membership cookie");
+  assert.equal((await actionBrowser.fetchJson("/api/me")).status, 401, "employee sign-out invalidates its Auth session");
+  await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(adminA.memberships[0].id)}`);
+  await actionBrowser.runForm("#set-admin-membership");
+  assert.equal((await actionBrowser.getCookies()).some((cookie) => cookie.name === "qr_active_membership_id"), false, "anonymous setAdminMembership does not create a membership cookie");
+  await actionBrowser.navigate("/login");
+  await actionBrowser.runForm("form", { email: actionAdmin.email, password: actionAdmin.password });
+  await actionBrowser.waitForPath("/admin");
+  await actionBrowser.navigate(`/qr004-action-harness?next=${encodeURIComponent("https://attacker.invalid/redirect")}`);
+  await actionBrowser.runForm("#sign-in", { email: actionAdmin.email, password: actionAdmin.password });
+  const externalNextResult = await actionBrowser.waitForPath("/admin");
+  assert.equal(new URL(externalNextResult).origin, appUrl, "a user-controlled next field cannot redirect outside the local app");
+  await actionBrowser.clickButtonText("Cerrar sesión");
+  await actionBrowser.waitForPath("/login");
+  process.stdout.write("PASS dynamic Server Actions: sign-in/out, closed redirects, cookie attributes, own/foreign/revoked memberships, employee/admin role boundaries, and post-sign-out denial\n");
 
   let response;
   // Company settings and dashboard APIs: real local Auth sessions, company
@@ -1264,6 +1399,232 @@ try {
     return { response: linkResponse, body: linkResponse.status === 201 ? await linkResponse.json() : null };
   };
 
+  // Baseline reproduction for the review finding: both granted RPC paths used
+  // to accept an invited Auth identity with no server-controlled setup marker.
+  const bypassEmail = `setup-bypass-${randomUUID()}@qr-asistencia.invalid`;
+  const bypassIdentity = await createHttpIdentity(bypassEmail);
+  const bypassClient = bypassIdentity.client;
+  const bypassUser = await bypassClient.auth.getUser(); assert.ok(bypassUser.data.user);
+  await dbPool.query("update auth.users set invited_at=clock_timestamp(), raw_app_meta_data=raw_app_meta_data-'access_setup_completed_at' where id=$1", [bypassUser.data.user.id]);
+  assert.equal((await bypassClient.auth.updateUser({ data: { access_setup_completed_at: new Date().toISOString() } })).error, null, "identity can forge only user_metadata");
+  assert.equal((await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [bypassUser.data.user.id])).rows[0].marker, null, "forged user_metadata does not create the protected app_metadata marker");
+  const bypassInviteId = await createPendingInvite(bypassEmail);
+  const beforeDirectSetupDenial = await snapshot(companyA);
+  const bypassDirectResult = await bypassClient.rpc("accept_company_user_invitation", { p_invitation_id: bypassInviteId });
+  assert.equal(bypassDirectResult.error?.code, "42501", "direct Data API RPC rejects invited identity without server-owned setup marker");
+  assert.doesNotMatch(bypassDirectResult.error?.message ?? "", /access_setup_completed_at|raw_app_meta_data|SQLSTATE/i, "direct RPC error does not expose Auth metadata internals");
+  assert.deepEqual(await snapshot(companyA), beforeDirectSetupDenial, "direct RPC setup denial leaves invitation, memberships and audit unchanged");
+  assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships where company_id=$1 and user_id=$2", [companyA, bypassIdentity.userId])).rows[0].n), 0);
+  await dbPool.query("update auth.users set raw_app_meta_data=jsonb_set(raw_app_meta_data,'{access_setup_completed_at}',to_jsonb('not-a-timestamp'::text),true) where id=$1", [bypassIdentity.userId]);
+  assert.equal((await bypassClient.rpc("accept_company_user_invitation", { p_invitation_id: bypassInviteId })).error?.code, "42501", "malformed server metadata cannot satisfy setup");
+  await dbPool.query("update auth.users set raw_app_meta_data=jsonb_set(raw_app_meta_data,'{access_setup_completed_at}',to_jsonb((clock_timestamp()+interval '1 day')::text),true) where id=$1", [bypassIdentity.userId]);
+  assert.equal((await bypassClient.rpc("accept_company_user_invitation", { p_invitation_id: bypassInviteId })).error?.code, "42501", "future setup metadata cannot satisfy setup");
+  await dbPool.query("update auth.users set raw_app_meta_data=jsonb_set(raw_app_meta_data,'{access_setup_completed_at}',to_jsonb('-infinity'::text),true) where id=$1", [bypassIdentity.userId]);
+  assert.equal((await bypassClient.rpc("accept_company_user_invitation", { p_invitation_id: bypassInviteId })).error?.code, "42501", "non-finite setup timestamps cannot satisfy setup");
+  assert.deepEqual(await snapshot(companyA), beforeDirectSetupDenial, "malformed and future marker denials also have no side effects");
+
+  const bypassShareEmail = `setup-share-bypass-${randomUUID()}@qr-asistencia.invalid`;
+  const bypassShareIdentity = await createHttpIdentity(bypassShareEmail);
+  const bypassShareClient = bypassShareIdentity.client;
+  const bypassShareUser = await bypassShareClient.auth.getUser(); assert.ok(bypassShareUser.data.user);
+  await dbPool.query("update auth.users set invited_at=clock_timestamp(), raw_app_meta_data=raw_app_meta_data-'access_setup_completed_at' where id=$1", [bypassShareUser.data.user.id]);
+  assert.equal((await bypassShareClient.auth.updateUser({ data: { access_setup_completed_at: new Date().toISOString() } })).error, null);
+  assert.equal((await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [bypassShareUser.data.user.id])).rows[0].marker, null);
+  const bypassShareInviteId = await createPendingInvite(bypassShareEmail);
+  const bypassShareToken = randomBytes(32).toString("base64url");
+  const bypassShareTokenHash = createHash("sha256").update(bypassShareToken).digest("hex");
+  const bypassShareIssued = await adminA.client.rpc("set_company_user_invitation_share_link", { p_company_id: companyA, p_invitation_id: bypassShareInviteId, p_token_hash: bypassShareTokenHash });
+  assert.ok(!bypassShareIssued.error);
+  const beforeShareSetupDenial = await snapshot(companyA);
+  const shareRouteDenial = await request("/api/invitations/share/accept", { user: bypassShareIdentity, method: "POST", body: { token: bypassShareToken } });
+  assert.equal(shareRouteDenial.status, 403, "shared invitation HTTP route maps SQL authorization denial to 403");
+  const shareRouteDenialBody = await shareRouteDenial.json();
+  assert.equal(shareRouteDenialBody.error.code, "invitation_forbidden");
+  assert.doesNotMatch(JSON.stringify(shareRouteDenialBody), /setup_completed|raw_app_meta_data|42501|SQLSTATE/i, "shared invitation route does not expose SQL internals");
+  assert.deepEqual(await snapshot(companyA), beforeShareSetupDenial, "shared route denial preserves invitation token, memberships and audit");
+  const bypassShareResult = await bypassShareClient.rpc("accept_company_user_share_invitation", { p_token_hash: bypassShareTokenHash });
+  assert.equal(bypassShareResult.error?.code, "42501", "shared-link RPC rejects invited identity without server-owned setup marker");
+  assert.deepEqual(await snapshot(companyA), beforeShareSetupDenial, "shared RPC denial rolls back token clearing and leaves no audit or membership");
+  assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships where company_id=$1 and user_id=$2", [companyA, bypassShareIdentity.userId])).rows[0].n), 0);
+  process.stdout.write("PASS email/share invitation RPCs deny setup bypass; HTTP denial is sanitized and rejected attempts have no side effects\n");
+
+  // Invitation actions run through the actual invitation page or a temporary
+  // rendered native-action form, never by fabricating Next's action protocol.
+  const actionInviteEmail = `server-action-invite-${randomUUID()}@qr-asistencia.invalid`;
+  const actionInvitee = await createHttpUser("server-action-invitee", "employee", companyB, {
+    email: actionInviteEmail, employee: true, branchId: branchB,
+  });
+  const actionInviteId = await createPendingInvite(actionInviteEmail, companyA, "employee");
+  const beforeWrongActionAcceptance = await snapshot(companyA);
+  await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(actionInviteId)}`);
+  await actionBrowser.runForm("#accept-invitation");
+  await actionBrowser.waitForPath("/login", "anonymous acceptInvitation must return to login");
+  assert.deepEqual(await snapshot(companyA), beforeWrongActionAcceptance, "anonymous acceptInvitation leaves invitation, membership, and audit snapshots unchanged");
+  await actionBrowser.navigate("/login");
+  await actionBrowser.runForm("form", { email: actionAdmin.email, password: actionAdmin.password });
+  await actionBrowser.waitForPath("/admin");
+  await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(actionInviteId)}`);
+  await actionBrowser.runForm("#accept-invitation");
+  await actionBrowser.waitForPath("/admin");
+  assert.deepEqual(await snapshot(companyA), beforeWrongActionAcceptance, "another authenticated identity cannot accept an invite or create audit/membership side effects");
+  await actionBrowser.clickButtonText("Cerrar sesión");
+  await actionBrowser.waitForPath("/login");
+
+  await actionBrowser.navigate("/login");
+  await actionBrowser.runForm("form", { email: actionInvitee.email, password: actionInvitee.password });
+  await actionBrowser.waitForPath("/invitacion");
+  assert.match(await actionBrowser.bodyText(), /Acepta únicamente una invitación destinada a tu cuenta/);
+  await actionBrowser.runForm("form:has(input[name='invitationId'])");
+  await actionBrowser.waitForPath("/seleccionar-empresa");
+  const acceptedActionMembership = await dbPool.query("select id from public.company_memberships where company_id=$1 and user_id=$2 and active", [companyA, actionInvitee.userId]);
+  assert.equal(acceptedActionMembership.rowCount, 1, "valid invited identity accepts through the actual invitation page");
+  const acceptedActionMembershipId = acceptedActionMembership.rows[0].id;
+  const acceptedActionAudit = await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_ACCEPTED'", [companyA, actionInviteId]);
+  assert.equal(acceptedActionAudit.rows[0].n, 1, "valid Server Action acceptance records exactly one audit event");
+  await actionBrowser.navigate(`/qr004-action-harness?membershipId=${encodeURIComponent(acceptedActionMembershipId)}`);
+  await actionBrowser.runForm("#choose-membership");
+  await actionBrowser.waitForPath("/mi-qr");
+  assert.equal((await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id")?.value, acceptedActionMembershipId, "invite acceptance leads to an explicit valid membership selection");
+  await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(actionInviteId)}`);
+  await actionBrowser.runForm("#accept-invitation");
+  await actionBrowser.waitForPath("/seleccionar-empresa");
+  assert.equal((await dbPool.query("select count(*)::int n from public.company_memberships where company_id=$1 and user_id=$2 and active", [companyA, actionInvitee.userId])).rows[0].n, 1, "replaying acceptInvitation does not duplicate membership");
+  assert.equal((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_ACCEPTED'", [companyA, actionInviteId])).rows[0].n, 1, "replaying acceptInvitation does not duplicate audit entries");
+  await actionBrowser.navigate("/mi-qr");
+  await actionBrowser.clickButtonText("Cerrar sesión");
+  await actionBrowser.waitForPath("/login");
+
+  for (const state of ["expired", "revoked"]) {
+    const email = `server-action-${state}-${randomUUID()}@qr-asistencia.invalid`;
+    const identity = await createHttpIdentity(email);
+    const invitationId = await createPendingInvite(email, companyA, "employee");
+    if (state === "expired") {
+      await dbPool.query("update public.company_user_invitations set expires_at=clock_timestamp()-interval '1 minute' where id=$1", [invitationId]);
+    } else {
+      const revoked = await adminA.client.rpc("revoke_company_user_invitation", { p_company_id: companyA, p_invitation_id: invitationId });
+      assert.equal(revoked.data, true, "synthetic invitation revocation succeeds before the denied action");
+    }
+    const beforeRejectedState = await snapshot(companyA);
+    await actionBrowser.navigate("/login");
+    await actionBrowser.runForm("form", { email, password: identity.password });
+    await actionBrowser.waitForPath("error=no-company");
+    await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(invitationId)}`);
+    await actionBrowser.runForm("#accept-invitation");
+    await actionBrowser.waitForPath("error=no-company");
+    assert.deepEqual(await snapshot(companyA), beforeRejectedState, `${state} Server Action rejection preserves invitation, membership and audit snapshots`);
+    assert.equal((await dbPool.query("select count(*)::int n from public.company_memberships where company_id=$1 and user_id=$2", [companyA, identity.userId])).rows[0].n, 0, `${state} invitation cannot create membership`);
+  }
+
+  // Reproduce user_metadata tampering, then verify that the server-controlled
+  // app_metadata marker and server-side accept guard prevent bypassing setup.
+  const forgedSetupEmail = `server-action-setup-${randomUUID()}@qr-asistencia.invalid`;
+  const forgedSetupIdentity = await createHttpIdentity(forgedSetupEmail);
+  await dbPool.query("update auth.users set invited_at=clock_timestamp() where id=$1", [forgedSetupIdentity.userId]);
+  const forgedMetadata = await forgedSetupIdentity.client.auth.updateUser({ data: { access_setup_completed_at: new Date().toISOString() } });
+  assert.equal(forgedMetadata.error, null, "synthetic Auth user can modify user_metadata");
+  const forgedSetupInviteId = await createPendingInvite(forgedSetupEmail, companyA, "employee");
+  await actionBrowser.navigate("/login");
+  await actionBrowser.runForm("form", { email: forgedSetupEmail, password: forgedSetupIdentity.password });
+  await actionBrowser.waitForPath("/invitacion");
+  const forgedSetupPage = await actionBrowser.bodyText();
+  assert.match(forgedSetupPage, /Configura tu contraseña/, "user-controlled user_metadata cannot hide the required setup form");
+  const beforeSetupGuard = await snapshot(companyA);
+  await actionBrowser.runForm("form:has(input[name='invitationId'])", { invitationId: forgedSetupInviteId });
+  await actionBrowser.waitForPath("error=password");
+  assert.deepEqual(await snapshot(companyA), beforeSetupGuard, "server-side accept guard rejects a forged metadata marker without side effects");
+  assert.equal((await dbPool.query("select count(*)::int n from public.company_memberships where company_id=$1 and user_id=$2 and active", [companyA, forgedSetupIdentity.userId])).rows[0].n, 0);
+  await actionBrowser.runForm("form:has(input[name='password'])", { password: "synthetic-invalid-password", confirmation: "synthetic-mismatch-password" });
+  await actionBrowser.waitForPath("error=password");
+  assert.deepEqual(await snapshot(companyA), beforeSetupGuard, "mismatched password submissions do not mutate invitation state");
+  await actionBrowser.runForm("form:has(input[name='password'])", { password: "synthetic-new-password-123", confirmation: "synthetic-new-password-123" });
+  const setupUser = await service.auth.admin.getUserById(forgedSetupIdentity.userId);
+  const setupActionUrl = new URL(await actionBrowser.currentUrl());
+  assert.ok(setupUser.data.user?.app_metadata?.access_setup_completed_at, `real password action must persist server metadata before redirect (path=${setupActionUrl.pathname}${setupActionUrl.search}; invited=${Boolean(setupUser.data.user?.invited_at)}; appMarker=${Boolean(setupUser.data.user?.app_metadata?.access_setup_completed_at)})`);
+  await actionBrowser.waitForPath("password=updated");
+  assert.ok(setupUser.data.user?.app_metadata?.access_setup_completed_at, "only the server action writes the protected app_metadata completion marker");
+  const persistedSetupMarker = await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [forgedSetupIdentity.userId]);
+  assert.equal(persistedSetupMarker.rows[0].marker, setupUser.data.user.app_metadata.access_setup_completed_at, "the marker checked by PostgreSQL is the server-written raw_app_meta_data value");
+  assert.ok(setupUser.data.user?.user_metadata?.access_setup_completed_at, "the forgery remains in user_metadata but is not trusted");
+  const repeatedPasswordSetupBefore = setupUser.data.user.app_metadata.access_setup_completed_at;
+  await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(forgedSetupInviteId)}`);
+  await actionBrowser.runForm("#set-invitation-password", { password: "another-synthetic-password-456", confirmation: "another-synthetic-password-456" });
+  await actionBrowser.waitForPath("error=invalid");
+  const repeatedPasswordSetupAfter = await service.auth.admin.getUserById(forgedSetupIdentity.userId);
+  assert.equal(repeatedPasswordSetupAfter.data.user?.app_metadata?.access_setup_completed_at, repeatedPasswordSetupBefore, "completed setup cannot be rewritten through a repeated Server Action");
+  await actionBrowser.navigate("/invitacion");
+  await actionBrowser.runForm("form:has(input[name='invitationId'])");
+  await actionBrowser.waitForPath("/mi-qr");
+  assert.equal((await dbPool.query("select count(*)::int n from public.company_memberships where company_id=$1 and user_id=$2 and active", [companyA, forgedSetupIdentity.userId])).rows[0].n, 1, "valid setup then accepts the matching invitation exactly once");
+  assert.equal((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_ACCEPTED'", [companyA, forgedSetupInviteId])).rows[0].n, 1);
+  const passwordLogin = createClient(apiUrl, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
+  assert.equal((await passwordLogin.auth.signInWithPassword({ email: forgedSetupEmail, password: "synthetic-new-password-123" })).error, null, "password saved by the real Server Action authenticates successfully");
+
+  // Exercise SQLSTATE 42501 mapping through the real Server Action after it
+  // passes the app_metadata gate; the inviter loses company.manage meanwhile.
+  const sqlDeniedActionEmail = `server-action-sql-denied-${randomUUID()}@qr-asistencia.invalid`;
+  const sqlDeniedActionIdentity = await createHttpIdentity(sqlDeniedActionEmail);
+  const sqlDeniedActionInvite = await createPendingInvite(sqlDeniedActionEmail, companyA, "employee");
+  const revokeInviterPermission = await service.from("membership_permission_overrides").insert({
+    company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "company.manage", allowed: false,
+  });
+  assert.equal(revokeInviterPermission.error, null, "synthetic permission override makes the SQL inviter check fail");
+  const beforeSqlDeniedAction = await snapshot(companyA);
+  await actionBrowser.clickButtonText("Cerrar sesión");
+  await actionBrowser.waitForPath("/login");
+  await actionBrowser.navigate("/login");
+  await actionBrowser.runForm("form", { email: sqlDeniedActionEmail, password: sqlDeniedActionIdentity.password });
+  await actionBrowser.waitForPath("/invitacion");
+  await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(sqlDeniedActionInvite)}`);
+  await actionBrowser.runForm("#accept-invitation");
+  await actionBrowser.waitForPath("error=forbidden");
+  const sqlDeniedActionBody = await actionBrowser.bodyText();
+  assert.match(sqlDeniedActionBody, /La invitación ya no puede aceptarse/);
+  assert.doesNotMatch(sqlDeniedActionBody, /42501|SQLSTATE|company\.manage|raw_app_meta_data/i, "Server Action renders a generic authorization error");
+  assert.deepEqual(await snapshot(companyA), beforeSqlDeniedAction, "SQL authorization error through Server Action has no side effects");
+  assert.equal((await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "company.manage")).error, null);
+
+  // Simulate the second Auth call failing: password update succeeds through the
+  // user's session, but an invalid local service key cannot write app_metadata.
+  const partialSetupEmail = `server-action-partial-setup-${randomUUID()}@qr-asistencia.invalid`;
+  const partialSetupIdentity = await createHttpIdentity(partialSetupEmail);
+  await dbPool.query("update auth.users set invited_at=clock_timestamp() where id=$1", [partialSetupIdentity.userId]);
+  const partialSetupInvite = await createPendingInvite(partialSetupEmail, companyA, "employee");
+  const beforePartialSetup = await snapshot(companyA);
+  // This error page has no logout control. Start a fresh disposable browser
+  // profile instead of inventing a Server Action request or reusing its cookie.
+  await actionBrowser.close();
+  actionBrowser = await launchServerActionBrowser(appUrl);
+  await stopNext();
+  await startNext(anonKey);
+  await actionBrowser.navigate("/login");
+  await actionBrowser.runForm("form", { email: partialSetupEmail, password: partialSetupIdentity.password });
+  await actionBrowser.waitForPath("/invitacion");
+  await actionBrowser.runForm("form:has(input[name='password'])", { password: "synthetic-first-password-123", confirmation: "synthetic-first-password-123" });
+  await actionBrowser.waitForPath("error=password");
+  assert.equal((await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [partialSetupIdentity.userId])).rows[0].marker, null, "failed administrative marker write leaves protected marker absent");
+  assert.deepEqual(await snapshot(companyA), beforePartialSetup, "partial password setup does not accept or mutate the invitation");
+  const firstPasswordLogin = await partialSetupIdentity.client.auth.signInWithPassword({ email: partialSetupEmail, password: "synthetic-first-password-123" });
+  assert.equal(firstPasswordLogin.error, null, "the first Auth call did persist the new password before the admin metadata call failed");
+  const partialSetupRpc = await partialSetupIdentity.client.rpc("accept_company_user_invitation", { p_invitation_id: partialSetupInvite });
+  assert.equal(partialSetupRpc.error?.code, "42501", "direct RPC still denies acceptance after only the password call succeeded");
+  assert.deepEqual(await snapshot(companyA), beforePartialSetup, "direct RPC denial after partial setup has no side effects");
+
+  await stopNext();
+  await startNext(serviceKey);
+  await actionBrowser.navigate("/invitacion");
+  await actionBrowser.runForm("form:has(input[name='password'])", { password: "synthetic-retry-password-456", confirmation: "synthetic-retry-password-456" });
+  await actionBrowser.waitForPath("password=updated");
+  const retriedSetupUser = await service.auth.admin.getUserById(partialSetupIdentity.userId);
+  assert.ok(retriedSetupUser.data.user?.app_metadata?.access_setup_completed_at, "retry writes the server-controlled marker after the password call succeeds");
+  await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(partialSetupInvite)}`);
+  await actionBrowser.runForm("#accept-invitation");
+  await actionBrowser.waitForPath("/mi-qr");
+  assert.equal((await dbPool.query("select count(*)::int n from public.company_memberships where company_id=$1 and user_id=$2 and active", [companyA, partialSetupIdentity.userId])).rows[0].n, 1, "retry completes the setup and accepts exactly one membership");
+  assert.equal((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_ACCEPTED'", [companyA, partialSetupInvite])).rows[0].n, 1);
+  process.stdout.write("PASS invitation Server Actions: anonymous/wrong identity, valid/multi-company selection, replay, mutable user_metadata denial, protected app_metadata password setup, and zero-side-effect rejects\n");
+  await actionBrowser.clickButtonText("Cerrar sesión");
+  await actionBrowser.waitForPath("/login");
+
   // Individual WhatsApp links: admin scope, token secrecy, verified identity,
   // lifecycle, concurrency, and no side effects for rejected requests.
   const shareEmail = `share-${randomUUID()}@qr-asistencia.invalid`;
@@ -1486,10 +1847,8 @@ try {
   response = await request(`/api/admin/permissions?companyId=${companyB}`, { user: adminA }); assert.equal(response.status, 403);
   process.stdout.write("PASS audit is company.manage-gated; permission catalog is available to active admins even when company.manage is overridden off\n");
 
-  // Invite acceptance belongs to the authenticated RPC, while invite/password
-  // Server Actions remain covered by auth-email-flow unit tests. Exercise the
-  // RPC with genuine local Auth JWTs, including recipient, expiry, revocation,
-  // replay and audit side effects.
+  // Exercise invitation RPC lifecycle and existing-account compatibility with
+  // genuine local Auth JWTs, including recipient, expiry, revocation and replay.
   const lifecycleEmail = `lifecycle-${randomUUID()}@qr-asistencia.invalid`;
   const createdInvite = await adminA.client.rpc("create_company_user_invitation", { p_company_id: companyA, p_email: lifecycleEmail, p_role: "employee", p_employee_id: null });
   assert.ok(!createdInvite.error && createdInvite.data);
@@ -1518,6 +1877,7 @@ try {
 } catch (error) {
   primaryError = error;
 } finally {
+  try { await actionBrowser?.close(); } catch (error) { cleanupErrors.push(error); }
   try { await stopNext(); } catch (error) { cleanupErrors.push(error); }
   try { await dbPool?.end(); } catch (error) { cleanupErrors.push(error); }
   if (startAttempted) {

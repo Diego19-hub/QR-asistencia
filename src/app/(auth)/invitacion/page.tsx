@@ -25,7 +25,7 @@ export default async function InvitationPage({ searchParams }: { searchParams: P
     expired: "La invitación venció o fue revocada. Solicita una nueva.",
     password: "La contraseña no cumple los requisitos o las dos entradas no coinciden.",
   };
-  const needsPasswordSetup = Boolean(auth.user.invited_at && !auth.user.user_metadata?.access_setup_completed_at);
+  const needsPasswordSetup = Boolean(auth.user.invited_at && !auth.user.app_metadata?.access_setup_completed_at);
   return <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-10">
     <section className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-900/5 sm:p-9">
       <p className="text-xs font-semibold uppercase tracking-[.15em] text-blue-700">Asistencia QR</p>

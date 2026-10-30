@@ -21,6 +21,10 @@ jobs:
         with:
           node-version: 24.21.0
           cache: npm
+      - uses: browser-actions/setup-chrome@v2
+        id: setup-chrome
+        with:
+          install-dependencies: true
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
@@ -28,6 +32,9 @@ jobs:
       - run: npm run test:backup-tool:restore-local
       - run: npm run test:reports:lease:local
       - run: npm run test:security:matrix:local
+        env:
+          QR004_CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
+          QR004_CHROME_NO_SANDBOX: "1"
       - run: npm run build
         env:
           NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co

@@ -1,20 +1,20 @@
 # QR-004 — Auditoría de seguridad multiempresa
 
-Fecha: 29 de octubre de 2026<br>
-Base de trabajo: `b3b1263e137742d2c210779e3f648451782a1e9b` (`main`, PR #16 integrado); esta actualización registra pruebas locales para reglas laborales y horas extra en `test/qr-004-rules-overtime-matrix`.
+Fecha: 30 de octubre de 2026<br>
+Base de trabajo: `f48a189a92cbff7d0a822a05a3fcc242469cf2f2` (`main`, PR #17 integrado); esta actualización registra pruebas dinámicas locales de Server Actions y sesiones en `test/qr-004-server-actions-session-matrix`.
 
 ## Resumen ejecutivo
 
-Las fases anteriores confirmaron y corrigieron dos brechas en políticas SQL de sucursal y permisos. Esta extensión cubre las rutas de reglas laborales/horas extra y el acceso directo a sus tablas con sesiones Auth locales. No confirmó una vulnerabilidad adicional; los rechazos conservaron snapshots de las dos empresas sintéticas.
+Las fases anteriores confirmaron y corrigieron brechas de alcance en políticas SQL. La auditoría dinámica del PR #18 demostró una segunda brecha: aunque la UI y `acceptInvitation` comprobaban `app_metadata`, ambas RPC de aceptación permitían eludir esa barrera llamándolas directamente con un JWT Auth válido. La cuenta seguía requiriendo correo confirmado y ser el destinatario exacto; no se observó escalada de rol ni acceso entre empresas. La validación ahora reside también dentro de PostgreSQL antes de cualquier efecto.
 
-QR-004 **permanece en curso**. La matriz local actual pasó 201/201 aserciones pgTAP y sus pruebas HTTP/Auth con Supabase desechable, Auth local y Next.js en loopback. Incluye solapamientos y baja segura de reglas, lectura de horas extra y escrituras directas autorizadas/denegadas en autorizaciones. No se consultó ni modificó Testing o Producción. Siguen pendientes el harness dinámico de Server Actions y la revisión remota segregada; esta evidencia no certifica todas las rutas ni los catálogos remotos.
+QR-004 **permanece en curso**. La matriz local pasó 201/201 aserciones pgTAP, pruebas HTTP/Auth y acciones dinámicas Next.js con Auth y PostgreSQL desechables. Esta extensión añade intentos RPC autenticados sobre cuentas invitadas, denegaciones sin efectos, aceptación después del flujo real de contraseña y reintento tras fallo simulado del API administrativo Auth. No se consultó ni modificó Testing o Producción. Siguen pendientes combinaciones de otras rutas/RPC y la revisión remota segregada; esta evidencia no certifica catálogos ni configuración desplegados.
 
 ## Alcance y método
 
 - Inspección estática de `src/app/api/**`, rutas protegidas, helpers Auth, alcance administrativo/de empleado, migraciones, RLS, grants, funciones privilegiadas y pruebas existentes.
 - Ejecución local de lint, TypeScript, suite Node, integración Supabase/PostgreSQL aislada para report-export lease y build.
 - La integración SQL creó un proyecto local con identificador aleatorio, puertos libres y servicios limitados a loopback. Sus propias guardas rechazaban los refs de Testing y Producción. El resultado informó el borrado de contenedores, red y volúmenes de prueba; el stack preexistente `codigo_QR` permaneció intacto.
-- La fase HTTP reutilizó ese proyecto desechable, creó Auth users, empresas, membresías y expedientes sintéticos, e inició una copia temporal de Next.js con una lista permitida de variables. Los endpoints recibieron cookies SSR emitidas por Auth local. El runner conservó Mailpit local para correos de invitación; no configuró Resend ni credenciales SMTP externas. `.env.local` no se copió al servidor de prueba ni al build aislado.
+- La fase HTTP reutilizó ese proyecto desechable, creó Auth users, empresas, membresías y expedientes sintéticos, e inició una copia temporal de Next.js con una lista permitida de variables. Los endpoints recibieron cookies SSR emitidas por Auth local. El runner conservó Mailpit local para correos de invitación; no configuró Resend ni credenciales SMTP externas. `.env.local` se excluyó del servidor local de pruebas y de la copia aislada del build. Un primer intento de build en el repo se canceló al detectar Next.js que cargaría `.env.local`; no llegó a compilar páginas y se repitió correctamente en la copia temporal limpia.
 - Las solicitudes denegadas se contrastaron con snapshots PostgreSQL de invitaciones, auditoría, membresías y dispositivos. La pila temporal, los usuarios/datos sintéticos, el servidor Next.js y el directorio temporal se eliminan al finalizar incluso si falla la matriz.
 - Para esta fase, los snapshots también incluyen sesiones, eventos, ajustes de asistencia, plantillas/días/descansos/asignaciones y reglas de descansos. El escáner se probó solo hasta el rechazo de dispositivo: el RPC valida primero el dispositivo, por lo que no se evaluó QR ni PIN y no se generaron intentos fallidos.
 - No se ejecutó `tests/security-jwt-matrix.integration.mjs`: `docs/TESTING.md` especifica que apunta a Testing. No se ejecutaron operaciones, consultas, intentos PIN, migraciones ni pruebas de ataque en proyectos remotos.
@@ -124,12 +124,12 @@ Los rechazos del resto de escenarios cubiertos pasaron en el stack local. Estos 
 | `npm run test:pin-lockout:db` | No ejecutado: requiere un workdir y URL PostgreSQL locales configurados como proyecto QR PIN desechable. No se reutilizó una instancia compartida ni se imprimieron variables. La prueba Node de PIN sí pasó dentro de `npm test`. |
 | Matriz `tests/security-jwt-matrix.integration.mjs` | Omitida intencionalmente: su configuración apunta a Testing; no se ejecutaron pruebas remotas. |
 
-La fase HTTP ejercita Route Handlers y páginas protegidas con Auth local real. La aceptación/expiración/revocación de invitaciones se prueba por RPC autenticada; no se fabricaron peticiones a Server Actions. Las solicitudes de corrección no tienen Route Handler en `src/app/api`; se validó la inserción directa por PostgREST bajo RLS y la RPC de revisión con permisos. `tests/auth-email-flow.test.mjs` conserva comprobaciones unitarias/estáticas, pero `chooseMembership`, `setAdminMembership`, `signIn` y otras Server Actions todavía no tienen matriz dinámica con sesión. Las rutas `/api/company` y `/api/dashboard/summary` se añadieron a la matriz local en la extensión del 30-oct-2026; siguen fuera de cobertura exhaustiva todas las combinaciones de cada API, operaciones restantes de solicitudes/dispositivos y flujos de navegador. Esto no constituye una matriz completa de cada RPC, tabla y ruta.
+La fase HTTP ejercita Route Handlers y páginas protegidas con Auth local real. La extensión del 30-oct-2026 también ejecuta formularios renderizados y procesados por Next.js para `signIn`, `signOut`, `signOutEmployee`, `chooseMembership`, `setAdminMembership`, `acceptInvitation` y `setInvitationPassword`. No se inventaron IDs internos ni se fabricaron peticiones HTTP al protocolo de acciones: Chrome headless usa formularios nativos de las páginas; una ruta auxiliar generada exclusivamente dentro de la copia temporal renderiza las acciones que no tienen un formulario independiente. Las solicitudes de corrección no tienen Route Handler en `src/app/api`; se validó la inserción directa por PostgREST bajo RLS y la RPC de revisión con permisos. `tests/auth-email-flow.test.mjs` conserva sus pruebas unitarias. Las rutas `/api/company` y `/api/dashboard/summary` se añadieron a la matriz local en la extensión del 30-oct-2026; siguen fuera de cobertura exhaustiva otras combinaciones de cada API, operaciones restantes de solicitudes/dispositivos y flujos de navegador. Esto no constituye una matriz completa de cada RPC, tabla y ruta.
 
 ## Recomendaciones priorizadas
 
 1. **P0 de seguridad pendiente:** QR-003 está pospuesta por decisión del propietario; no se considera corregida ni aplicada en Testing. No continuar respaldos, autorizaciones ni despliegues de esa tarea hasta que se retome expresamente.
-2. **P1 evidencia:** extender casos locales a las APIs restantes y validar Server Actions mediante un harness estable; conservar la prohibición de peticiones inventadas a Server Actions.
+2. **P1 evidencia:** ampliar de manera priorizada las combinaciones que faltan en APIs/RPC locales; conservar el harness de Next para Server Actions y no usar el protocolo de acciones como petición manual.
 3. **P1 entorno:** si se autoriza una auditoría remota de solo lectura, comparar por separado Testing y Producción; revisar refs, historial, cuerpos SQL, ACL, RLS y configuración Auth sin tratar snapshots anteriores como actuales.
 4. **P2 mantenimiento:** mantener el runner SQL/HTTP en CI con fixtures efímeras; nunca inyectar secretos o datos personales en logs/artefactos.
 5. **P2 revisiones futuras:** para cada RPC privilegiada, conservar una lista de funciones/ACL esperadas y comprobar cambios de `search_path`, owner, `EXECUTE`, identidad y alcance tenant.
@@ -140,13 +140,13 @@ La implementación y las regresiones de los canales correo/WhatsApp están integ
 
 ## Condiciones para cerrar QR-004
 
-- Completar la matriz HTTP/Auth en las rutas API que sigan pendientes y documentar resultados negativos y positivos con datos sintéticos. Reglas laborales y horas extra quedan cubiertas por esta extensión local.
-- Disponer de un mecanismo verificable para Server Actions o acotar formalmente qué controles se validan por pruebas unitarias y cuáles quedan pendientes.
+- Completar la matriz Auth/HTTP/RLS para las rutas API/RPC y combinaciones de rol/sucursal que sigan pendientes, con datos sintéticos y evidencia reproducible.
+- Mantener cobertura dinámica de las Server Actions con el runtime real de Next.js; las acciones listadas en la sección de esta fase ya se ejecutaron localmente.
 - No declarar la auditoría completa mientras falte la revisión remota segregada requerida por el plan o haya hallazgos altos sin resolver. Esa revisión no se realizó en esta tarea.
 
 ## Estado
 
-**QR-004: en curso.** La matriz histórica del PR #14 pasó 187/187 pgTAP; las extensiones integradas de credenciales/dispositivos y empresa/dashboard pasaron 192/192 cada una. Esta extensión pasó 201/201, con ocho suites en el runner desechable. Quedan pendientes el harness dinámico de Server Actions y la revisión remota segregada; no se declara cerrada la auditoría. Testing y Producción no se consultaron ni modificaron. QR-003 sigue pospuesta, P0 y NO-GO; no se llamó a la verificación de PIN ni se enviaron intentos incorrectos.
+**QR-004: en curso.** La matriz histórica del PR #14 pasó 187/187 pgTAP; extensiones anteriores pasaron 192/192 y esta pasó 201/201 en ocho suites. Esta fase añadió acciones dinámicas de Next.js y corrigió el uso de `user_metadata` controlable por el usuario para omitir la preparación de contraseña. Quedan pendientes otras combinaciones Auth/HTTP/RPC y la revisión remota segregada; no se declara cerrada la auditoría. Testing y Producción no se consultaron ni modificaron. QR-003 sigue pospuesta, P0 y NO-GO; no se llamó a la verificación de PIN ni se enviaron intentos incorrectos.
 
 ## Empresa y dashboard — matriz Auth/HTTP y PostgreSQL (30-oct-2026)
 
@@ -196,3 +196,42 @@ La implementación y las regresiones de los canales correo/WhatsApp están integ
 - **Dispositivos:** se probaron solicitud del supervisor, desafío ligado al navegador, branch/tenant, duplicado del mismo desafío, listado, `devices.manage`, aprobación/rechazo, repetición, carreras de aprobación, canje único, revocación, membresía revocada y llamadas directas a RPC. La carrera de aprobación produjo exactamente un dispositivo y un evento de auditoría. La revocación impidió que el contexto de escáner siguiera autorizando el dispositivo; no se llamó a RPC de asistencia.
 - **PostgreSQL:** pgTAP pasó 192/192 en ocho suites. Las aserciones añadidas comprueban RLS/grants de `private.device_authorization_requests` y que solo `authenticated` tenga `EXECUTE` en RPC de ciclo de vida; `anon` no puede invocarlas. Las pruebas dinámicas directas confirmaron que el cuerpo RPC también aplica tenant, rama, membresía y permiso, no solo ACL.
 - **Resultado:** no se confirmó una vulnerabilidad adicional en estas rutas. La inspección y pruebas son del estado local versionado; no demuestran que un proyecto remoto tenga los mismos grants, funciones o historial. QR-004 sigue en curso por los pendientes enumerados arriba.
+
+## Server Actions y sesiones Auth — matriz dinámica local (30-oct-2026)
+
+- **Mecanismo:** `tests/qr004-auth-matrix.local.integration.mjs` crea una copia temporal de `src`, un stack Supabase aleatorio y un servidor Next.js ligado a loopback. Chrome headless usa un perfil efímero, navegación DNS bloqueada para destinos externos y formularios renderizados por Next. En GitHub Actions se instala Chrome for Testing y se desactiva el sandbox interno del navegador porque el runner puede bloquear user namespaces; la ejecución ocurre en una VM efímera, el DNS externo sigue bloqueado y los datos son sintéticos. Las páginas existentes `/login`, `/seleccionar-empresa`, `/invitacion` y `/mi-qr` ejercitan sus formularios reales; una ruta auxiliar se genera solo en la copia temporal para probar acciones sin un formulario independiente. Next crea las referencias de Server Actions; no se codifican IDs internos ni se fabrican peticiones de protocolo.
+- **Autenticación y redirecciones:** `signIn` rechazó contraseña incorrecta sin emitir cookie de membresía; el acceso válido creó sesión SSR local. Una `next` externa fue descartada y el resultado permaneció en el origen de loopback. `signOut` y `signOutEmployee` invalidaron sesión y cookie de membresía; después, `/api/company` y `/api/me` respondieron 401. La cookie `qr_active_membership_id` se observó como `HttpOnly`, `SameSite=Lax` y `Path=/`.
+- **Selección de membresía:** `chooseMembership` aceptó la membresía propia en una cuenta multiempresa y rechazó IDs de otro usuario, de empleado→administrador y de membresía revocada/inactiva; los intentos denegados no sustituyeron la cookie. `setAdminMembership` cambió entre membresías owner/admin propias y activas; devolvió sin cambio ante ID ajeno, rol empleado o falta de sesión. Después de revocar la membresía seleccionada, la API rechazó el acceso a esa empresa pese a la cookie obsoleta y permitió seleccionar la otra membresía activa.
+- **Aceptación de invitaciones:** la acción rechazó anónimo, identidad destinataria incorrecta, invitación caducada/revocada y repetición. El destinatario correcto aceptó desde la página real; al tener dos empresas, la acción llevó a seleccionar explícitamente una membresía propia. Los snapshots y consultas sintéticas confirmaron una sola membresía y un evento `USER_INVITATION_ACCEPTED`, sin efectos ante rechazos.
+- **Hallazgo confirmado — severidad media, bypass por Data API:** en la base local del commit `f9e5672`, una identidad sintética con `invited_at`, email confirmado, sesión válida y sin `raw_app_meta_data.access_setup_completed_at` falsificó una marca en `user_metadata`. `supabase.rpc("accept_company_user_invitation", ...)` aceptó la invitación. Repetir con una invitación compartida y llamar `accept_company_user_share_invitation(text)` también la aceptó, porque esta RPC invoca la función anterior. Se observó la aceptación y sus filas/auditoría en la instancia desechable antes de limpiar el stack.
+- **Causa raíz:** los controles de `app_metadata` existían solo en la página y Server Action. Ambas RPC tenían `EXECUTE` para `authenticated` y la función SQL no comprobaba `invited_at` ni una marca administrada por servidor. El flujo compartido delegaba a la misma función y heredaba el bypass.
+- **Corrección:** la migración aditiva `supabase/migrations/20261030220000_require_invitation_password_setup.sql` reemplaza la función de aceptación sin editar migraciones históricas ni alterar sus grants/contrato. Antes de leer/modificar la invitación consulta `auth.users`; para cuentas con `invited_at`, exige que `raw_app_meta_data.access_setup_completed_at` sea un timestamp válido, finito y no futuro. Faltante, vacío, malformado, infinito o futuro devuelve SQLSTATE `42501`. La función compartida no duplica la regla: su llamada a la función corregida aborta su transacción completa, incluido el borrado previo del hash. Las cuentas sin `invited_at` conservan el flujo anterior.
+- **Regresiones dinámicas:** con JWT Auth sintéticos, las dos RPC rechazan `user_metadata` falsificado y la identidad sin marca. Se prueban también valor malformado, futuro y `-infinity`; snapshots verifican que invitación, hash compartido, membresía y auditoría no cambian. La ruta HTTP de WhatsApp mapea `42501` a `403 invitation_forbidden` sin revelar SQL/metadata; `acceptInvitation` mapea el rechazo SQL a `error=forbidden` con mensaje genérico. El flujo real `setInvitationPassword` guarda la marca en `raw_app_meta_data` y luego acepta; una cuenta no invitada sigue aceptando en la prueba de ciclo de vida.
+- **Falla parcial Auth:** `setInvitationPassword` comprueba que el cliente administrativo esté configurado antes de cambiar la contraseña. Después, la contraseña se actualiza con sesión SSR y la marca se escribe con credencial administrativa. Una prueba local inicia Next con clave administrativa sintética no privilegiada: la contraseña se cambia, falla la marca, la invitación sigue pendiente y SQL deniega aceptación. Reiniciado Next con la clave local correcta, la persona reintenta, completa la marca y acepta una sola vez. Las dos llamadas no son transaccionales; una falla parcial no concede acceso.
+
+### Validaciones de Server Actions
+
+| Comando | Resultado |
+|---|---|
+| `npm run test:security:matrix:local` | PASS: ocho suites pgTAP, 201/201; matriz HTTP/Auth existente y acciones dinámicas; el runner eliminó el stack y el perfil Chrome temporal y preservó recursos Docker preexistentes. |
+| `npm test` | PASS: 80 pasaron, 1 omitida porque el sandbox bloqueó el socket local del agente GnuPG; persisten avisos existentes `MODULE_TYPELESS_PACKAGE_JSON`. |
+| `npm run lint` | PASS, código 0. |
+| `npm run typecheck` | PASS, código 0. |
+| `npm run build` | PASS en copia temporal con `.env*` excluidos y variables Supabase sintéticas de loopback; compilación y 41 páginas estáticas completadas. Se conserva la advertencia conocida de 27 archivos fuera del standalone trace por el symlink a `node_modules`. Un intento inicial en el repo se canceló al indicar Next que cargaría `.env.local`; el build final se ejecutó aislado y no se conectó a una base alojada. |
+
+- **Entornos alojados:** no se consultó ni modificó Supabase Testing o Producción, no se aplicaron migraciones, no se hicieron respaldos y no se enviaron correos externos. QR-003 permanece pospuesta, P0 y NO-GO.
+
+### Revalidación del PR #18 — ejecución final
+
+La repetición de `npm run test:security:matrix` pasó con el proyecto aleatorio `qr004_disposable_bf1391ee40e8`: ocho suites pgTAP, 201/201; pruebas Auth/HTTP y Server Actions; denegaciones de RPC email/share sin efectos; aceptación legítima y compatibilidad de cuentas existentes; teardown eliminó el stack temporal y preservó recursos Docker anteriores. No se conectó a Testing ni Producción.
+
+| Comando | Resultado |
+|---|---|
+| `npm run test:security:matrix` | PASS; matriz dinámica local y 201/201 pgTAP; limpieza verificada. |
+| `npm run test` | PASS, código 0: 80 pruebas pasaron y 1 quedó omitida porque el sandbox bloqueó el socket local de GnuPG. |
+| `npm test` | PASS, código 0: mismo script y resultado (80 pasaron, 1 omitida por el socket GnuPG). |
+| `npm run lint` | PASS, código 0. |
+| `npm run typecheck` | PASS, código 0. |
+| `npm run build` | PASS, código 0, en copia temporal sin `.env*` y con URL/clave Supabase sintéticas de loopback; Next completó compilación y 41 páginas. Emitió la advertencia de 27 archivos fuera del standalone trace porque `node_modules` se enlazó desde el repositorio. |
+
+Node mostró los avisos existentes `MODULE_TYPELESS_PACKAGE_JSON` durante tests. El build no leyó `.env.local`; la copia temporal se eliminó. El resultado de GitHub Actions debe comprobarse después de subir este cambio.

@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { destinationForRole, type MembershipRole } from "@/lib/access/user-management";
 import { setActiveMembershipCookie } from "@/lib/access/active-membership-cookie";
 import { isValidInvitationPassword } from "@/lib/access/invitation-password";
+import { createAuthAdminClient } from "@/lib/supabase/auth-admin";
 
 export async function acceptInvitation(formData: FormData) {
   const invitationId = formData.get("invitationId");
@@ -13,6 +14,9 @@ export async function acceptInvitation(formData: FormData) {
   const supabase = await createClient();
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) redirect("/login");
+  if (auth.user.invited_at && !auth.user.app_metadata?.access_setup_completed_at) {
+    redirect("/invitacion?error=password");
+  }
   const { error } = await supabase.rpc("accept_company_user_invitation", { p_invitation_id: invitationId });
   if (error) redirect(`/invitacion?error=${error.code === "42501" ? "forbidden" : "expired"}`);
   const { data: remaining, error: pendingError } = await supabase.rpc("list_my_pending_company_invitations");
@@ -36,10 +40,13 @@ export async function setInvitationPassword(formData: FormData) {
   const supabase = await createClient();
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) redirect("/login");
-  if (!auth.user.invited_at || auth.user.user_metadata?.access_setup_completed_at) redirect("/invitacion?error=invalid");
-  const { error } = await supabase.auth.updateUser({
-    password,
-    data: { ...auth.user.user_metadata, access_setup_completed_at: new Date().toISOString() },
+  if (!auth.user.invited_at || auth.user.app_metadata?.access_setup_completed_at) redirect("/invitacion?error=invalid");
+  const admin = createAuthAdminClient();
+  if (!admin) redirect("/login?error=service");
+  const { error: passwordError } = await supabase.auth.updateUser({ password });
+  if (passwordError) redirect("/invitacion?error=password");
+  const { error } = await admin.auth.admin.updateUserById(auth.user.id, {
+    app_metadata: { ...auth.user.app_metadata, access_setup_completed_at: new Date().toISOString() },
   });
   if (error) redirect("/invitacion?error=password");
   redirect("/invitacion?password=updated");
