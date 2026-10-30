@@ -1,7 +1,23 @@
 -- Synthetic, transactional QR/device authorization checks for QR-004.
 -- Run only with the isolated local Supabase matrix runner.
 BEGIN;
-SELECT plan(10);
+SELECT plan(15);
+
+SELECT has_table('private','device_authorization_requests','device enrollment requests stay in the private schema');
+SELECT ok((SELECT relrowsecurity FROM pg_class WHERE oid='private.device_authorization_requests'::regclass),'device enrollment requests require RLS');
+SELECT ok(NOT has_table_privilege('authenticated','private.device_authorization_requests','SELECT')
+  AND NOT has_table_privilege('service_role','private.device_authorization_requests','SELECT'),
+  'API roles cannot read device challenge hashes or request rows directly');
+SELECT ok(has_function_privilege('authenticated','public.request_supervisor_device(uuid,uuid,text,text)','EXECUTE')
+  AND has_function_privilege('authenticated','public.review_supervisor_device_request(uuid,uuid,boolean)','EXECUTE')
+  AND has_function_privilege('authenticated','public.redeem_supervisor_device(uuid,text)','EXECUTE')
+  AND has_function_privilege('authenticated','public.revoke_supervisor_device(uuid,uuid)','EXECUTE'),
+  'authenticated device lifecycle is exposed only through checked RPCs');
+SELECT ok(NOT has_function_privilege('anon','public.request_supervisor_device(uuid,uuid,text,text)','EXECUTE')
+  AND NOT has_function_privilege('anon','public.review_supervisor_device_request(uuid,uuid,boolean)','EXECUTE')
+  AND NOT has_function_privilege('anon','public.redeem_supervisor_device(uuid,text)','EXECUTE')
+  AND NOT has_function_privilege('anon','public.revoke_supervisor_device(uuid,uuid)','EXECUTE'),
+  'anonymous role cannot invoke device lifecycle RPCs');
 
 INSERT INTO public.companies(id,name) VALUES
  ('a2000000-0000-4000-8000-000000000001','QR004 synthetic A'),
