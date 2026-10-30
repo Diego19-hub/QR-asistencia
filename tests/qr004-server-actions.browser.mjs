@@ -33,22 +33,28 @@ async function freePort() {
 }
 
 async function stopChrome(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  let exited = new Promise((resolveExit) => child.once("exit", resolveExit));
-  child.kill("SIGTERM");
-  let stopped = await Promise.race([
-    exited.then(() => true),
-    new Promise((resolveWait) => setTimeout(() => resolveWait(false), 3_000)),
-  ]);
-  if (!stopped && child.exitCode === null && child.signalCode === null) {
-    exited = new Promise((resolveExit) => child.once("exit", resolveExit));
-    child.kill("SIGKILL");
-    stopped = await Promise.race([
-      exited.then(() => true),
-      new Promise((resolveWait) => setTimeout(() => resolveWait(false), 3_000)),
+  const signalGroup = (signal) => {
+    try {
+      if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
+      else if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+  };
+  const waitForExit = async (timeout) => {
+    if (child.exitCode !== null || child.signalCode !== null) return true;
+    return Promise.race([
+      new Promise((resolveExit) => child.once("exit", () => resolveExit(true))),
+      new Promise((resolveWait) => setTimeout(() => resolveWait(false), timeout)),
     ]);
-  }
-  if (!stopped && child.exitCode === null && child.signalCode === null) throw new Error("temporary Chrome process did not stop");
+  };
+  signalGroup("SIGTERM");
+  let stopped = await waitForExit(3_000);
+  // Chrome forks renderer/utility children. Signal the process group even if
+  // its leader exited so no child can keep writing into the temporary profile.
+  signalGroup("SIGKILL");
+  if (!stopped) stopped = await waitForExit(3_000);
+  if (!stopped) throw new Error("temporary Chrome process did not stop");
 }
 
 function connect(url) {
@@ -97,14 +103,18 @@ export async function launchServerActionBrowser(appUrl) {
   const debugPort = await freePort();
   const profile = await mkdtemp(join(tmpdir(), "qr004-actions-chrome-"));
   const output = [];
-  const child = spawn(chrome, [
+  const chromeArgs = [
     "--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
     "--disable-component-update", "--disable-sync", "--disable-extensions", "--disable-default-apps",
-    "--disable-features=MediaRouter", "--no-zygote", "--remote-allow-origins=*",
+    "--disable-features=MediaRouter", "--disable-dev-shm-usage", "--no-zygote", "--remote-allow-origins=*",
     `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`,
     "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1, EXCLUDE ::1",
     "about:blank",
-  ], { stdio: ["ignore", "pipe", "pipe"] });
+  ];
+  // GitHub's hosted runner may block Chrome's user-namespace sandbox. Keep
+  // the sandbox enabled for local runs; CI's ephemeral VM also blocks DNS.
+  if (process.env.QR004_CHROME_NO_SANDBOX === "1") chromeArgs.unshift("--no-sandbox");
+  const child = spawn(chrome, chromeArgs, { detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
   child.stdout.on("data", (chunk) => output.push(chunk.toString()));
   child.stderr.on("data", (chunk) => output.push(chunk.toString()));
   let browser, page;
@@ -112,7 +122,10 @@ export async function launchServerActionBrowser(appUrl) {
     const deadline = Date.now() + 20_000;
     let version;
     while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error("Chrome exited before the local browser session started");
+      if (child.exitCode !== null) {
+        const diagnostic = output.join("").split("\n").slice(-8).join(" ").replace(/\s+/g, " ").slice(0, 500);
+        throw new Error(`Chrome exited before the local browser session started${diagnostic ? `: ${diagnostic}` : ""}`);
+      }
       try {
         const response = await fetch(`http://127.0.0.1:${debugPort}/json/version`);
         if (response.ok) { version = await response.json(); break; }
@@ -211,14 +224,14 @@ export async function launchServerActionBrowser(appUrl) {
         page?.close();
         browser?.close();
         try { await stopChrome(child); }
-        finally { await rm(profile, { recursive: true, force: true }); }
+        finally { await rm(profile, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
       },
     };
   } catch (error) {
     page?.close();
     browser?.close();
     try { await stopChrome(child); } catch {}
-    await rm(profile, { recursive: true, force: true }).catch(() => {});
+    await rm(profile, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }).catch(() => {});
     throw error;
   }
 }
