@@ -7,8 +7,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import net from "node:net";
+import { inflateSync } from "node:zlib";
 import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
+import ExcelJS from "exceljs";
 import pg from "pg";
 
 const root = resolve(import.meta.dirname, "..");
@@ -106,11 +108,32 @@ async function quotaCount(companyId, userId) {
   const result = await pool.query("select coalesce(sum(request_count),0)::int n from private.report_export_rate_limits where company_id=$1 and user_id=$2 and window_started_at >= to_timestamp(floor(extract(epoch from clock_timestamp())/300)*300)", [companyId, userId]);
   return result.rows[0].n;
 }
+function extractPdfHexText(bytes) {
+  const source = bytes.toString("latin1");
+  const chunks = [];
+  for (const match of source.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)) {
+    try {
+      const inflated = inflateSync(Buffer.from(match[1], "latin1")).toString("latin1");
+      for (const hex of inflated.matchAll(/<([a-f\d]{4,})>/gi)) chunks.push(Buffer.from(hex[1], "hex").toString("latin1"));
+    } catch { /* Non-Flate streams carry no text used by this synthetic-content assertion. */ }
+  }
+  return chunks.join("");
+}
 async function deleteFixtures() {
   if (!service) return;
   const companyIds = [...fixtures.companies];
   const userIds = [...fixtures.users];
   for (const companyId of [...companyIds].reverse()) {
+    // Remove the synthetic attendance/report and device rows in FK order
+    // before deleting their supervisor memberships.
+    for (const table of [
+      "attendance_events", "attendance_breaks", "attendance_adjustments", "overtime_authorizations", "overtime_assessments",
+      "attendance_sessions", "schedule_assignments", "schedule_template_breaks", "schedule_template_days", "schedule_templates",
+      "break_rules", "authorized_devices", "supervisor_branches", "supervisors", "employees", "branches",
+    ]) {
+      const removed = await service.from(table).delete().eq("company_id", companyId);
+      if (removed.error) throw new Error(`failed deleting synthetic ${table} fixtures`);
+    }
     const memberships = await service.from("company_memberships").delete().eq("company_id", companyId);
     if (memberships.error) throw new Error("failed deleting synthetic membership");
   }
@@ -224,6 +247,92 @@ try {
   await waitForApp(`${appUrl}/login`);
   pass("temporary Next.js development server targets only the local Supabase stack");
 
+  const createReportFixture = async (user, marker, branchName) => {
+    const branch = await service.from("branches").insert({ company_id: user.companyId, name: branchName, timezone: "UTC" }).select("id").single();
+    if (branch.error || !branch.data) throw new Error("synthetic report branch creation failed");
+    const employee = await service.from("employees").insert({
+      company_id: user.companyId, branch_id: branch.data.id, employee_number: `SYN-${marker}`, first_name: marker, last_name: "S", active: true,
+    }).select("id").single();
+    if (employee.error || !employee.data) throw new Error("synthetic report employee creation failed");
+    const membership = await pool.query("select id from public.company_memberships where company_id=$1 and user_id=$2 and active", [user.companyId, user.userId]);
+    if (!membership.rows[0]) throw new Error("synthetic report admin membership is missing");
+    const supervisor = await service.from("supervisors").insert({ company_id: user.companyId, membership_id: membership.rows[0].id });
+    if (supervisor.error) throw new Error("synthetic report device membership setup failed");
+    const device = await service.from("authorized_devices").insert({
+      company_id: user.companyId, branch_id: branch.data.id, membership_id: membership.rows[0].id, label: `Synthetic report device ${marker}`,
+    }).select("id").single();
+    if (device.error || !device.data) throw new Error("synthetic report device creation failed");
+    const session = await service.from("attendance_sessions").insert({
+      company_id: user.companyId, employee_id: employee.data.id, branch_id: branch.data.id, local_work_date: "2026-10-10", timezone: "UTC",
+      status: "open", started_at: "2026-10-10T09:00:00Z", scheduled_minutes: 480,
+    }).select("id").single();
+    if (session.error || !session.data) throw new Error("synthetic report session creation failed");
+    const event = await service.from("attendance_events").insert({
+      company_id: user.companyId, session_id: session.data.id, event_type: "clock_in", sequence_no: 1,
+      occurred_at: "2026-10-10T09:00:00Z", recorded_by: user.userId, device_id: device.data.id, idempotency_key: randomUUID(),
+      metadata: { fixture: "qr004-report-export-synthetic" },
+    });
+    if (event.error) throw new Error("synthetic report event creation failed");
+    return { ...user, branchId: branch.data.id, employeeId: employee.data.id, sessionId: session.data.id, marker };
+  };
+  const reportFixtureA = await createReportFixture(adminA, "TENANTA", "Synthetic report branch A");
+  const reportFixtureB = await createReportFixture(adminB, "TENANTB", "Synthetic report branch B");
+  const jsonReport = async (fixture) => {
+    const response = await fetch(new URL(`/api/reports?companyId=${fixture.companyId}&from=2026-10-10&to=2026-10-10`, appUrl), { headers: { cookie: fixture.cookie }, redirect: "manual" });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store, private");
+    return response.json();
+  };
+  const jsonA = await jsonReport(reportFixtureA);
+  const jsonB = await jsonReport(reportFixtureB);
+  assert.ok(jsonA.rows.some((row) => row.employeeName.includes(reportFixtureA.marker)));
+  assert.ok(!JSON.stringify(jsonA).includes(reportFixtureB.marker), "company A JSON report excludes company B employee sentinel");
+  assert.ok(jsonB.rows.some((row) => row.employeeName.includes(reportFixtureB.marker)));
+  assert.ok(!JSON.stringify(jsonB).includes(reportFixtureA.marker), "company B JSON report excludes company A employee sentinel");
+  pass("HTTP report JSON includes each tenant's synthetic session and excludes the other tenant's employee/session data");
+
+  for (const fixture of [reportFixtureA, reportFixtureB]) {
+    for (const format of ["xlsx", "pdf"]) {
+      const response = await fetch(new URL(`/api/reports/export?companyId=${fixture.companyId}&from=2026-10-10&to=2026-10-10&format=${format}`, appUrl), { headers: { cookie: fixture.cookie }, redirect: "manual" });
+      assert.equal(response.status, 200, `${format} export is generated for an authorized synthetic company`);
+      assert.equal(response.headers.get("cache-control"), "no-store, private");
+      assert.match(response.headers.get("content-disposition") ?? "", new RegExp(`\\.${format}`));
+      const bytes = Buffer.from(await response.arrayBuffer());
+      assert.ok(bytes.length > 100);
+      const otherMarker = fixture.companyId === reportFixtureA.companyId ? reportFixtureB.marker : reportFixtureA.marker;
+      if (format === "xlsx") {
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(bytes);
+        const text = workbook.worksheets.flatMap((sheet) => sheet.getSheetValues().flat()).join(" ");
+        assert.ok(text.includes(fixture.marker), "Excel export contains its own synthetic employee marker");
+        assert.ok(!text.includes(otherMarker), "Excel export excludes the other tenant's synthetic employee marker");
+      } else {
+        assert.equal(bytes.subarray(0, 5).toString("ascii"), "%PDF-");
+        const text = extractPdfHexText(bytes);
+        assert.ok(text.includes(fixture.marker), "PDF text streams contain their own synthetic employee marker");
+        assert.ok(!text.includes(otherMarker), "PDF text streams exclude the other tenant's synthetic employee marker");
+      }
+      const foreignCompanyId = fixture.companyId === reportFixtureA.companyId ? reportFixtureB.companyId : reportFixtureA.companyId;
+      const denied = await fetch(new URL(`/api/reports/export?companyId=${foreignCompanyId}&from=2026-10-10&to=2026-10-10&format=${format}`, appUrl), { headers: { cookie: fixture.cookie }, redirect: "manual" });
+      assert.equal(denied.status, 403, "foreign-company export is denied before returning a file");
+    }
+  }
+  pass("PDF and XLSX bytes contain own-tenant synthetic report rows, omit foreign sentinels, and reject foreign exports");
+
+  const adminAMembershipId = (await pool.query("select id from public.company_memberships where company_id=$1 and user_id=$2", [adminA.companyId, adminA.userId])).rows[0].id;
+  const override = await service.from("membership_permission_overrides").insert({
+    company_id: adminA.companyId, membership_id: adminAMembershipId,
+    permission_code: "reports.read", allowed: false,
+  });
+  if (override.error) throw new Error("could not prepare synthetic reports.read denial for export API");
+  const quotaBeforePermissionDenial = await quotaCount(adminA.companyId, adminA.userId);
+  const deniedExport = await fetch(new URL(`/api/reports/export?companyId=${adminA.companyId}&from=2026-10-10&to=2026-10-10&format=xlsx`, appUrl), { headers: { cookie: adminA.cookie }, redirect: "manual" });
+  assert.equal(deniedExport.status, 403, "export endpoint enforces reports.read before returning a file");
+  assert.equal(await quotaCount(adminA.companyId, adminA.userId), quotaBeforePermissionDenial, "denied export does not consume quota");
+  assert.equal(Number((await pool.query("select count(*) n from private.report_export_leases")).rows[0].n), 0, "denied export releases its lease");
+  await service.from("membership_permission_overrides").delete().eq("company_id", adminA.companyId).eq("membership_id", adminAMembershipId).eq("permission_code", "reports.read");
+  pass("reports.read denial blocks export without consuming quota or retaining the global lease");
+
   const foreignHttp = await fetch(new URL(`/api/reports/export?companyId=${adminA.companyId}&from=2026-10-01&to=2026-10-11&format=xlsx`, appUrl), { headers: { cookie: adminB.cookie }, redirect: "manual" });
   assert.equal(foreignHttp.status, 403);
   assert.equal(Number((await pool.query("select count(*) n from private.report_export_leases")).rows[0].n), 0);
@@ -262,7 +371,7 @@ try {
     assert.ok(lookup.error || !lookup.data.user, "synthetic Auth user was removed individually");
   }
   pass("synthetic memberships and Auth identities removed; company fixtures remain only in the disposable DB volume");
-  assert.equal(checks.length, 13, "all mandatory local integration checks must execute");
+  assert.equal(checks.length, 16, "all mandatory local integration checks must execute");
 } catch (error) {
   process.stderr.write(`FAIL local export lease integration: ${error instanceof Error ? error.message : "unknown error"}\n`);
   process.exitCode = 1;
@@ -288,5 +397,5 @@ try {
     }
     await rm(temp, { recursive: true, force: true });
   }
-  if (process.exitCode === undefined || process.exitCode === 0) process.stdout.write(`RESULT ${checks.length}/14 checks passed; remote projects untouched\n`);
+  if (process.exitCode === undefined || process.exitCode === 0) process.stdout.write(`RESULT ${checks.length}/17 checks passed; remote projects untouched\n`);
 }
