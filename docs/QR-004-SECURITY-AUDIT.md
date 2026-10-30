@@ -1,13 +1,13 @@
 # QR-004 — Auditoría de seguridad multiempresa
 
 Fecha: 29 de octubre de 2026<br>
-Base de trabajo: `3afd3407f9cc68e03b4c9072084e5eb3c7c7bad4` (`main`, PR #14 integrado); esta actualización registra la ampliación de credenciales QR y dispositivos autorizados en `test/qr-004-credentials-devices-matrix`.
+Base de trabajo: `b3b1263e137742d2c210779e3f648451782a1e9b` (`main`, PR #16 integrado); esta actualización registra pruebas locales para reglas laborales y horas extra en `test/qr-004-rules-overtime-matrix`.
 
 ## Resumen ejecutivo
 
-La revisión confirmó dos brechas de autorización en políticas SQL de sucursal y permisos. Se corrigieron mediante una migración aditiva y se añadieron regresiones directas de RLS/RPC y HTTP/Auth. Los rechazos quedaron sin cambios de estado en snapshots de ambas empresas.
+Las fases anteriores confirmaron y corrigieron dos brechas en políticas SQL de sucursal y permisos. Esta extensión cubre las rutas de reglas laborales/horas extra y el acceso directo a sus tablas con sesiones Auth locales. No confirmó una vulnerabilidad adicional; los rechazos conservaron snapshots de las dos empresas sintéticas.
 
-QR-004 **permanece en curso**. Esta fase cubrió asistencia, correcciones RLS/RPC y horarios en un stack Supabase desechable, con Auth local y Next.js en loopback: 187/187 aserciones pgTAP y todos los checks HTTP/Auth del runner pasaron, incluida la prueba directa de inserción y actualización en las cuatro tablas de horario. No se consultó ni modificó Testing o Producción. No se certifican todavía todas las rutas API, Server Actions, E2E de navegador ni configuraciones remotas.
+QR-004 **permanece en curso**. La matriz local actual pasó 201/201 aserciones pgTAP y sus pruebas HTTP/Auth con Supabase desechable, Auth local y Next.js en loopback. Incluye solapamientos y baja segura de reglas, lectura de horas extra y escrituras directas autorizadas/denegadas en autorizaciones. No se consultó ni modificó Testing o Producción. Siguen pendientes el harness dinámico de Server Actions y la revisión remota segregada; esta evidencia no certifica todas las rutas ni los catálogos remotos.
 
 ## Alcance y método
 
@@ -140,13 +140,13 @@ La implementación y las regresiones de los canales correo/WhatsApp están integ
 
 ## Condiciones para cerrar QR-004
 
-- Completar la matriz HTTP/Auth en las rutas API enumeradas como pendientes y documentar resultados negativos y positivos con datos sintéticos.
+- Completar la matriz HTTP/Auth en las rutas API que sigan pendientes y documentar resultados negativos y positivos con datos sintéticos. Reglas laborales y horas extra quedan cubiertas por esta extensión local.
 - Disponer de un mecanismo verificable para Server Actions o acotar formalmente qué controles se validan por pruebas unitarias y cuáles quedan pendientes.
 - No declarar la auditoría completa mientras falte la revisión remota segregada requerida por el plan o haya hallazgos altos sin resolver. Esa revisión no se realizó en esta tarea.
 
 ## Estado
 
-**QR-004: en curso.** La matriz del PR #14 pasó 187/187 aserciones pgTAP; la extensión integrada de credenciales/dispositivos pasó 192/192. La siguiente extensión añade cobertura Auth/HTTP y RLS para empresa y dashboard; resultados detallados más abajo. El runner verifica teardown y preservación de recursos Docker preexistentes. Faltan operaciones restantes de reglas/horas extra, harness dinámico de Server Actions y revisión remota segregada; por ello la auditoría no se cierra. Testing y Producción no se consultaron ni modificaron. QR-003 queda pospuesta, P0 y NO-GO; no se ejecutó el flujo de verificación ni se enviaron intentos incorrectos de PIN.
+**QR-004: en curso.** La matriz histórica del PR #14 pasó 187/187 pgTAP; las extensiones integradas de credenciales/dispositivos y empresa/dashboard pasaron 192/192 cada una. Esta extensión pasó 201/201, con ocho suites en el runner desechable. Quedan pendientes el harness dinámico de Server Actions y la revisión remota segregada; no se declara cerrada la auditoría. Testing y Producción no se consultaron ni modificaron. QR-003 sigue pospuesta, P0 y NO-GO; no se llamó a la verificación de PIN ni se enviaron intentos incorrectos.
 
 ## Empresa y dashboard — matriz Auth/HTTP y PostgreSQL (30-oct-2026)
 
@@ -167,6 +167,26 @@ La implementación y las regresiones de los canales correo/WhatsApp están integ
 | `npm run lint` | Aprobado, código 0, sin errores ni advertencias. |
 | `npm run typecheck` | Aprobado, código 0. |
 | `npm run build` | Aprobado en copia temporal sin `.env*`, con Supabase loopback sintético. Next.js reportó la advertencia conocida de 27 archivos fuera del standalone trace por `node_modules` enlazado desde el repositorio; compilación, TypeScript, páginas y trazado finalizaron con código 0; temporal eliminado. |
+
+## Reglas laborales y tiempo extra — matriz Auth/HTTP y RLS (29-oct-2026)
+
+- **Ambiente:** `npm run test:security:matrix:local` usó el proyecto desechable `qr004_disposable_ea216ec568f6`, dos empresas, sucursales, membresías y sesiones/Auth sintéticas, Mailpit local y Next.js en loopback. El runner informó que eliminó el stack/datos temporales y preservó recursos Docker preexistentes. No se consultaron Testing ni Producción.
+- **`GET/POST /api/schedules/rules`:** anónimo `401`, supervisor/empleado `403`, tenant ajeno `403`; multiempresa sin selector `400`. Administradores de A/B solo leyeron sus propias reglas, con `Cache-Control: no-store`. Alta válida `201`; entrada inválida `422`; un rango solapado `409` sin fila/auditoría adicional. La tabla es RLS-protegida y solo su política permisiva `labor_rules_manage` permite escrituras, exigiendo `company.manage` en `USING` y `WITH CHECK`.
+- **`PATCH/DELETE /api/schedules/rules/[id]`:** cerrar una regla sin solapamiento devolvió `200`; extensión solapada `409`; fecha menor al inicio `422`. IDs ajenos responden `404` sin mutar el tenant objetivo. `DELETE` directo sobre `labor_rule_sets` no tiene grant para `authenticated`; la RPC `delete_labor_rule_set` exige membresía activa owner/admin y `company.manage`, bloquea la baja con referencias en `attendance_sessions` o `overtime_assessments` (`409`) y permite eliminar por la RPC una regla sin referencias (`200`). Los rechazos no alteraron los snapshots/auditoría. Con `company.manage=false` manteniendo `company.read`, el GET responde `200` con lista vacía por RLS, POST devuelve `403`, PATCH sobre ID oculto devuelve `404` y DELETE por la RPC `403`; no se filtra el contenido de las reglas.
+- **`GET /api/schedules/overtime`:** anónimo `401`, supervisor/empleado y membresía inactiva `403`, empresa ajena `403`, selección multiempresa omitida `400`, rango inválido/invertido `400`; respuestas exitosas llevan `Cache-Control: no-store`. Los datos sintéticos se limitaron a la empresa seleccionada. Un admin activo con `company.read` pudo consultar métricas detectadas, pero sin `overtime.manage` RLS ocultó los detalles de autorización: la API devolvió lista `authorizations: []`. Owner con `overtime.manage` vio minutos pendientes/aprobados y el cálculo de minutos reconocidos.
+- **`overtime_authorizations` directo:** owner autorizado pudo insertar, aprobar y borrar una autorización sintética. Admin sin `overtime.manage` no pudo INSERT/UPDATE/DELETE; un owner con override explícito `overtime.manage=false` también fue rechazado en las tres operaciones. El empleado pudo leer solo su autorización vinculada a su propia sesión mediante la política SELECT-only `employee_own_overtime_authorizations_read`. Un owner A no pudo insertar en B. Todos los rechazos preservaron los snapshots de autorización/auditoría.
+- **Inspección de políticas/grants:** la inspección de migraciones y la nueva pgTAP confirman RLS en reglas y autorizaciones; existe exactamente una política permisiva de escritura en cada tabla (`labor_rules_manage` y `overtime_authorizations_manage`) y sus condiciones requieren respectivamente `company.manage` y `overtime.manage` tanto al modificar filas como al insertar. La política de lectura del empleado es exclusivamente SELECT. No se halló otra política permisiva de escritura que eluda esos permisos.
+- **Diagnóstico:** no se reprodujo acceso entre empresas ni bypass de permiso. La diferencia observada para reglas con `company.manage` revocado es el resultado de RLS/cero filas y del mapeo HTTP existente; no se cambió comportamiento funcional. El acceso al catálogo de reglas requiere en la práctica `company.manage`, mientras las métricas de asistencia del endpoint de overtime se pueden consultar por un admin activo aunque no tenga `overtime.manage`; la autorización detallada sigue filtrada por PostgreSQL. No hay endpoint HTTP de mutación de horas extra en este alcance.
+
+### Validaciones de reglas y horas extra
+
+| Comando | Resultado |
+|---|---|
+| `npm run test:security:matrix:local` | PASS: ocho suites pgTAP, 201/201; pruebas HTTP/Auth de reglas/horas extra y matriz previa pasaron; teardown local limpio. |
+| `npm test` | PASS: 80 pasaron, 1 omitida por bloqueo del socket local de GnuPG; Node mostró avisos `MODULE_TYPELESS_PACKAGE_JSON`. |
+| `npm run lint` | PASS, código 0. |
+| `npm run typecheck` | PASS, código 0. |
+| `npm run build` | PASS con Supabase loopback sintético en una copia temporal sin `.env*`; se conserva la advertencia conocida de 27 archivos de trazado standalone por el symlink de `node_modules`. |
 
 ## Extensión de credenciales QR y dispositivos (30-oct-2026)
 

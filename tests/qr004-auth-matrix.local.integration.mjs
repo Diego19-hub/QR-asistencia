@@ -206,7 +206,12 @@ async function snapshot(companyId) {
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'template_day_id',template_day_id,'break_rule_id',break_rule_id,'planned_start_local',planned_start_local,'planned_end_local',planned_end_local) order by id),'[]'::jsonb) from public.schedule_template_breaks where company_id=$1) schedule_template_breaks,
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'code',code,'name',name,'effective_from',effective_from,'effective_to',effective_to) order by id),'[]'::jsonb) from public.break_rules where company_id=$1) break_rules,
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'employee_id',employee_id,'template_id',template_id,'branch_id',branch_id,'starts_on',starts_on,'ends_on',ends_on) order by id),'[]'::jsonb) from public.schedule_assignments where company_id=$1) schedule_assignments`, [companyId]);
+  const scheduleFinance = await dbPool.query(`select
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'name',name,'effective_from',effective_from,'effective_to',effective_to,'settings',settings) order by id),'[]'::jsonb) from public.labor_rule_sets where company_id=$1) labor_rule_sets,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'session_id',session_id,'detected_minutes',detected_minutes,'rule_set_id',rule_set_id,'detail',detail) order by id),'[]'::jsonb) from public.overtime_assessments where company_id=$1) overtime_assessments,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'session_id',session_id,'minutes',minutes,'status',status,'requested_by',requested_by,'decided_by',decided_by,'reason',reason) order by id),'[]'::jsonb) from public.overtime_authorizations where company_id=$1) overtime_authorizations`, [companyId]);
   Object.assign(rows[0], expanded.rows[0]);
+  Object.assign(rows[0], scheduleFinance.rows[0]);
   return rows[0];
 }
 async function request(path, { user, method = "GET", body, cookieExtra = "" } = {}) {
@@ -594,6 +599,172 @@ try {
   assert.equal(JSON.stringify(dashboardA).includes(dashboardBClosed.sessionId), false, "HTTP summary does not expose tenant B session identifiers");
   assert.equal(JSON.stringify(dashboardA).includes(dashboardEmployeeB.data.id), false, "HTTP summary does not expose tenant B employee identifiers");
   process.stdout.write("PASS dashboard HTTP/Auth and direct PostgreSQL RLS isolate two tenants, active/inactive/foreign branches, synthetic employees/sessions/events, date-local counts and no-store responses\n");
+
+  // Labor-rule validity and overtime authorization permissions. Route reads
+  // and writes use Auth sessions; direct table operations use the same
+  // authenticated clients to exercise PostgreSQL grants and RLS independently.
+  const rulePayload = (name, effectiveFrom, effectiveTo) => ({
+    name, effectiveFrom, effectiveTo, lateGraceMinutes: 5, earlyDepartureGraceMinutes: 5,
+    restWeekdays: [7], dayStartsAt: "06:00", nightStartsAt: "20:00",
+    overtimeDetection: true, overtimeThresholdMinutes: 15, overtimeRecognition: "authorization_only",
+  });
+  const beforeRuleDenialsA = await snapshot(companyA), beforeRuleDenialsB = await snapshot(companyB);
+  response = await request(`/api/schedules/rules?companyId=${companyA}`); assert.equal(response.status, 401);
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: supervisorA }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: employeeA }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules/rules?companyId=${companyB}`, { user: adminA }); assert.equal(response.status, 403);
+  response = await request("/api/schedules/rules", { user: multiAdmin }); assert.equal(response.status, 400);
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual((await response.json()).items, [], "empty baseline exposes no rules before synthetic setup");
+
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { method: "POST", body: rulePayload("Anonymous rule", "2090-01-01", "2090-12-31") }); assert.equal(response.status, 401);
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: supervisorA, method: "POST", body: rulePayload("Supervisor rule", "2090-01-01", "2090-12-31") }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: employeeA, method: "POST", body: rulePayload("Employee rule", "2090-01-01", "2090-12-31") }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: adminA, method: "POST", body: { name: "Invalid synthetic rule", effectiveFrom: "2090-01-01" } }); assert.equal(response.status, 422);
+  response = await request(`/api/schedules/rules?companyId=${companyB}`, { user: adminA, method: "POST", body: rulePayload("Cross-company synthetic rule", "2090-01-01", "2090-12-31") }); assert.equal(response.status, 403);
+  assert.deepEqual(await snapshot(companyA), beforeRuleDenialsA, "anonymous, wrong-role and invalid rule requests have no side effects");
+  assert.deepEqual(await snapshot(companyB), beforeRuleDenialsB, "denied labor-rule requests do not alter the other company");
+
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: adminA, method: "POST", body: rulePayload(`Synthetic labor rule A ${randomUUID()}`, "2020-01-01", "2040-12-31") }); assert.equal(response.status, 201);
+  const laborRuleA = (await response.json()).item;
+  assert.equal(laborRuleA.settings.overtime.thresholdMinutes, 15);
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: adminA, method: "POST", body: rulePayload(`Synthetic later labor rule A ${randomUUID()}`, "2041-01-01", "2090-12-31") }); assert.equal(response.status, 201);
+  const laterLaborRuleA = (await response.json()).item;
+  response = await request(`/api/schedules/rules?companyId=${companyB}`, { user: adminB, method: "POST", body: rulePayload(`Synthetic labor rule B ${randomUUID()}`, "2020-01-01", "2040-12-31") }); assert.equal(response.status, 201);
+  const laborRuleB = (await response.json()).item;
+  const beforeForeignRuleOpsB = await snapshot(companyB);
+  response = await request(`/api/schedules/rules?companyId=${companyB}`, { user: adminB }); assert.equal(response.status, 200);
+  const rulesB = await response.json();
+  assert.ok(rulesB.items.some((item) => item.id === laborRuleB.id));
+  assert.equal(rulesB.items.some((item) => item.id === laborRuleA.id), false, "company B rules API excludes company A rules");
+  const directRulesA = await adminA.client.from("labor_rule_sets").select("id,company_id");
+  assert.equal(directRulesA.error, null);
+  assert.deepEqual(directRulesA.data.map((item) => item.id).sort(), [laborRuleA.id, laterLaborRuleA.id].sort(), "PostgreSQL RLS exposes only company A rules to its admin");
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: adminA, method: "POST", body: rulePayload("Synthetic overlapping rule", "2035-01-01", "2045-12-31") }); assert.equal(response.status, 409);
+  const companyARulesBeforeOverlap = await snapshot(companyA);
+  assert.deepEqual(companyARulesBeforeOverlap.labor_rule_sets.map((rule) => rule.id).sort(), [laborRuleA.id, laterLaborRuleA.id].sort(), "overlapping labor-rule creation creates no row");
+  assert.equal((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_table='labor_rule_sets'", [companyA])).rows[0].n, 2, "overlap rejection creates no labor-rule audit event");
+
+  response = await request(`/api/schedules/rules/${laborRuleA.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { effectiveTo: "2030-12-31" } }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.effective_to, "2030-12-31");
+  response = await request(`/api/schedules/rules/${laborRuleA.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { effectiveTo: "2045-12-31" } }); assert.equal(response.status, 409);
+  response = await request(`/api/schedules/rules/${laborRuleA.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { effectiveTo: "2019-12-31" } }); assert.equal(response.status, 422);
+  const deniedDirectRuleDelete = await adminA.client.from("labor_rule_sets").delete().eq("id", laborRuleA.id).select("id");
+  assert.ok(deniedDirectRuleDelete.error?.code === "42501" || (deniedDirectRuleDelete.data ?? []).length === 0, "direct labor-rule DELETE cannot bypass the guarded deletion RPC");
+  const companyARulesAfterPatch = await snapshot(companyA);
+  assert.deepEqual(companyARulesAfterPatch.labor_rule_sets.map(({ id, effective_to }) => ({ id, effective_to })).sort((a, b) => a.id.localeCompare(b.id)), [
+    { id: laborRuleA.id, effective_to: "2030-12-31" }, { id: laterLaborRuleA.id, effective_to: "2090-12-31" },
+  ].sort((a, b) => a.id.localeCompare(b.id)), "overlap, invalid date, and direct-delete denials preserve labor-rule state");
+  assert.equal((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_table='labor_rule_sets'", [companyA])).rows[0].n, 3, "only successful rule creates and patch produce labor-rule audit rows");
+  response = await request(`/api/schedules/rules/${laborRuleB.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { effectiveTo: "2030-12-31" } }); assert.equal(response.status, 404);
+  response = await request(`/api/schedules/rules/${laborRuleB.id}?companyId=${companyA}`, { user: adminA, method: "DELETE" }); assert.equal(response.status, 404);
+  assert.deepEqual(await snapshot(companyB), beforeForeignRuleOpsB, "foreign rule IDs cannot modify another company's rules or audit log");
+
+  const ruleManageOverride = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "company.manage", allowed: false });
+  if (ruleManageOverride.error) throw new Error("could not prepare synthetic company.manage denial for labor rules");
+  const companyReadDuringRuleOverride = await adminA.client.rpc("current_user_has_company_permission", { p_company_id: companyA, p_permission: "company.read" });
+  assert.equal(companyReadDuringRuleOverride.data, true, "company.read stays allowed while company.manage is explicitly revoked");
+  const beforeRulePermissionDenial = await snapshot(companyA);
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).items, [], "RLS does not expose labor rules to an admin lacking company.manage");
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: adminA, method: "POST", body: rulePayload("Denied synthetic rule", "2050-01-01", "2060-12-31") }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules/rules/${laborRuleA.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { effectiveTo: "2030-12-31" } }); assert.equal(response.status, 404, "RLS-hidden PATCH target is reported as not found");
+  response = await request(`/api/schedules/rules/${laborRuleA.id}?companyId=${companyA}`, { user: adminA, method: "DELETE" }); assert.equal(response.status, 403);
+  assert.deepEqual(await snapshot(companyA), beforeRulePermissionDenial, "company.manage-denied rule operations preserve rows and audit events");
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "company.manage");
+
+  const inactiveRulesAdmin = await createHttpUser("inactive-rules-admin", "admin", companyA);
+  await service.from("company_memberships").update({ active: false }).eq("id", inactiveRulesAdmin.memberships[0].id);
+  const beforeInactiveRuleAdmin = await snapshot(companyA);
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: inactiveRulesAdmin }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules/rules?companyId=${companyA}`, { user: inactiveRulesAdmin, method: "POST", body: rulePayload("Inactive HTTP rule", "2050-01-01", "2060-12-31") }); assert.equal(response.status, 403);
+  const inactiveRuleWrite = await inactiveRulesAdmin.client.from("labor_rule_sets").insert({ company_id: companyA, name: "Inactive synthetic rule", effective_from: "2050-01-01", settings: {} }).select("id");
+  assert.ok(inactiveRuleWrite.error?.code === "42501" || (inactiveRuleWrite.data ?? []).length === 0, "inactive admin membership cannot write labor rules directly");
+  assert.deepEqual(await snapshot(companyA), beforeInactiveRuleAdmin, "inactive admin requests and direct RLS denial preserve company data and audit");
+
+  const assessmentFixture = await service.from("overtime_assessments").insert({ company_id: companyA, session_id: attendanceSessionA, detected_minutes: 75, rule_set_id: laborRuleA.id, detail: { fixture: "qr004-synthetic-overtime" } }).select("id").single();
+  if (assessmentFixture.error || !assessmentFixture.data) throw new Error("failed creating a synthetic overtime assessment");
+  const authFixture = await ownerA.client.from("overtime_authorizations").insert({ company_id: companyA, session_id: attendanceSessionA, minutes: 30, status: "pending", requested_by: employeeA.userId, reason: "Synthetic overtime approval test" }).select("id").single();
+  if (authFixture.error || !authFixture.data) throw new Error(`authorized owner could not insert synthetic overtime authorization (${authFixture.error?.code ?? "unknown"})`);
+  const overtimeLocalDateResult = await service.from("attendance_sessions").select("local_work_date").eq("id", attendanceSessionA).single();
+  if (overtimeLocalDateResult.error || !overtimeLocalDateResult.data) throw new Error("failed reading synthetic overtime session local date");
+  const rulesToday = overtimeLocalDateResult.data.local_work_date;
+  const beforeOvertimeAdminDenialsA = await snapshot(companyA), beforeOvertimeAdminDenialsB = await snapshot(companyB);
+  const deniedOvertimeInsert = await adminA.client.from("overtime_authorizations").insert({ company_id: companyA, session_id: attendanceSessionA, minutes: 12, status: "pending", requested_by: adminA.userId, reason: "Denied synthetic request" }).select("id");
+  assert.ok(deniedOvertimeInsert.error?.code === "42501" || (deniedOvertimeInsert.data ?? []).length === 0, "admin without overtime.manage cannot insert an authorization directly");
+  const deniedOvertimeUpdate = await adminA.client.from("overtime_authorizations").update({ minutes: 29 }).eq("id", authFixture.data.id).select("id");
+  assert.ok(deniedOvertimeUpdate.error?.code === "42501" || (deniedOvertimeUpdate.data ?? []).length === 0, "admin without overtime.manage cannot update an authorization directly");
+  const deniedOvertimeDelete = await adminA.client.from("overtime_authorizations").delete().eq("id", authFixture.data.id).select("id");
+  assert.ok(deniedOvertimeDelete.error?.code === "42501" || (deniedOvertimeDelete.data ?? []).length === 0, "admin without overtime.manage cannot delete an authorization directly");
+  const deniedForeignOvertimeInsert = await ownerA.client.from("overtime_authorizations").insert({ company_id: companyB, session_id: dashboardBClosed.sessionId, minutes: 10, status: "pending", requested_by: ownerA.userId, reason: "Foreign synthetic request" }).select("id");
+  assert.ok(deniedForeignOvertimeInsert.error?.code === "42501" || (deniedForeignOvertimeInsert.data ?? []).length === 0, "owner of company A cannot write an authorization for company B");
+  assert.deepEqual(await snapshot(companyA), beforeOvertimeAdminDenialsA, "denied direct overtime writes leave authorization and audit snapshots unchanged");
+  assert.deepEqual(await snapshot(companyB), beforeOvertimeAdminDenialsB, "cross-company overtime denial leaves the target tenant unchanged");
+
+  const employeeOwnOvertime = await employeeA.client.from("overtime_authorizations").select("id,company_id,session_id").eq("id", authFixture.data.id);
+  assert.equal(employeeOwnOvertime.error, null);
+  assert.deepEqual(employeeOwnOvertime.data, [{ id: authFixture.data.id, company_id: companyA, session_id: attendanceSessionA }], "employee read policy exposes only authorizations on the employee's own session");
+  const adminOvertimeHidden = await adminA.client.from("overtime_authorizations").select("id").eq("id", authFixture.data.id);
+  assert.equal(adminOvertimeHidden.error, null);
+  assert.deepEqual(adminOvertimeHidden.data, [], "admin role without overtime.manage cannot read overtime authorization details through Postgres");
+
+  response = await request("/api/schedules/overtime"); assert.equal(response.status, 401);
+  response = await request(`/api/schedules/overtime?from=${rulesToday}&to=${rulesToday}`, { user: employeeA }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules/overtime?from=${rulesToday}&to=${rulesToday}`, { user: supervisorA }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules/overtime?from=${rulesToday}&to=${rulesToday}&companyId=${companyB}`, { user: adminA }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules/overtime?from=${rulesToday}&to=${rulesToday}`, { user: multiAdmin }); assert.equal(response.status, 400);
+  response = await request(`/api/schedules/overtime?from=${rulesToday}&to=${rulesToday}&companyId=${companyA}`, { user: inactiveRulesAdmin }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules/overtime?from=${rulesToday}&to=${rulesToday}&companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const adminOvertime = await response.json();
+  const adminOvertimeItem = adminOvertime.items.find((item) => item.session_id === attendanceSessionA);
+  assert.ok(adminOvertimeItem, "company admin can read company-scoped attendance overtime metrics");
+  assert.equal(adminOvertimeItem.detectedMinutes, 60, "admin sees detected overtime after the effective labor-rule threshold");
+  assert.deepEqual(adminOvertimeItem.authorizations, [], "API does not expose authorization details that RLS hides from this admin role");
+  assert.equal(adminOvertime.items.some((item) => item.session_id === dashboardBClosed.sessionId), false, "overtime API does not disclose another company's sessions");
+  response = await request(`/api/schedules/overtime?from=${rulesToday}&to=${rulesToday}&companyId=${companyB}`, { user: adminB }); assert.equal(response.status, 200);
+  const overtimeB = await response.json();
+  assert.equal(overtimeB.items.some((item) => item.session_id === dashboardAClosed.sessionId), false, "company B overtime response excludes company A sessions");
+  response = await request(`/api/schedules/overtime?from=not-a-date&to=${rulesToday}&companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 400);
+  response = await request(`/api/schedules/overtime?from=${rulesToday}&to=2020-01-01&companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 400);
+
+  const beforeOvertimeApproval = await snapshot(companyA);
+  const allowedOvertimeUpdate = await ownerA.client.from("overtime_authorizations").update({ status: "approved", decided_by: ownerA.userId, decided_at: new Date().toISOString() }).eq("id", authFixture.data.id).select("id,status,minutes").single();
+  assert.deepEqual(allowedOvertimeUpdate.data, { id: authFixture.data.id, status: "approved", minutes: 30 }, "owner with overtime.manage can directly approve a synthetic authorization");
+  const overtimeAfterApproval = await snapshot(companyA);
+  assert.notDeepEqual(overtimeAfterApproval.overtime_authorizations, beforeOvertimeApproval.overtime_authorizations);
+  response = await request(`/api/schedules/overtime?from=${rulesToday}&to=${rulesToday}&companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 200);
+  const ownerOvertimeItem = (await response.json()).items.find((item) => item.session_id === attendanceSessionA);
+  assert.equal(ownerOvertimeItem.approvedMinutes, 30);
+  assert.equal(ownerOvertimeItem.recognizedMinutes, 30);
+
+  const overtimeManageOverride = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: ownerA.memberships[0].id, permission_code: "overtime.manage", allowed: false });
+  if (overtimeManageOverride.error) throw new Error("could not prepare explicit synthetic overtime.manage denial");
+  const beforeRevokedOvertimePermission = await snapshot(companyA);
+  const overrideOvertimeInsert = await ownerA.client.from("overtime_authorizations").insert({ company_id: companyA, session_id: attendanceSessionA, minutes: 9, status: "pending", requested_by: ownerA.userId, reason: "Explicitly denied synthetic request" }).select("id");
+  assert.ok(overrideOvertimeInsert.error?.code === "42501" || (overrideOvertimeInsert.data ?? []).length === 0, "explicit overtime.manage denial blocks owner direct INSERT");
+  const overrideOvertimeUpdate = await ownerA.client.from("overtime_authorizations").update({ minutes: 31 }).eq("id", authFixture.data.id).select("id");
+  assert.ok(overrideOvertimeUpdate.error?.code === "42501" || (overrideOvertimeUpdate.data ?? []).length === 0, "explicit overtime.manage denial blocks owner direct UPDATE");
+  const overrideOvertimeDelete = await ownerA.client.from("overtime_authorizations").delete().eq("id", authFixture.data.id).select("id");
+  assert.ok(overrideOvertimeDelete.error?.code === "42501" || (overrideOvertimeDelete.data ?? []).length === 0, "explicit overtime.manage denial blocks owner direct DELETE");
+  assert.deepEqual(await snapshot(companyA), beforeRevokedOvertimePermission, "explicit overtime.manage denial has no authorization or audit side effects");
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", ownerA.memberships[0].id).eq("permission_code", "overtime.manage");
+
+  const beforeBlockedRuleDeletion = await snapshot(companyA);
+  response = await request(`/api/schedules/rules/${laborRuleA.id}?companyId=${companyA}`, { user: adminA, method: "DELETE" }); assert.equal(response.status, 409);
+  assert.deepEqual(await snapshot(companyA), beforeBlockedRuleDeletion, "a rule referenced by overtime history cannot be deleted or generate a denial audit event");
+  const directDeleteRule = await ownerA.client.from("labor_rule_sets").delete().eq("id", laborRuleB.id).select("id");
+  assert.ok(directDeleteRule.error?.code === "42501" || (directDeleteRule.data ?? []).length === 0, "even owner cannot directly delete labor rules around the guarded RPC");
+  response = await request(`/api/schedules/rules/${laborRuleB.id}?companyId=${companyB}`, { user: adminB, method: "DELETE" }); assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()), { status: "deleted" }, "authorized unused rule can be deleted through guarded RPC");
+  const remainingRuleA = await service.from("labor_rule_sets").select("id").eq("id", laborRuleA.id).single();
+  assert.equal(remainingRuleA.data.id, laborRuleA.id, "blocked historical rule remains available");
+  const beforeAuthorizedOvertimeDelete = await snapshot(companyA);
+  const authorizedOvertimeDelete = await ownerA.client.from("overtime_authorizations").delete().eq("id", authFixture.data.id).select("id").single();
+  assert.equal(authorizedOvertimeDelete.data.id, authFixture.data.id, "owner with overtime.manage can directly delete an authorization");
+  assert.equal((await snapshot(companyA)).overtime_authorizations.length, beforeAuthorizedOvertimeDelete.overtime_authorizations.length - 1, "authorized direct delete removes only its own synthetic authorization");
+  process.stdout.write("PASS labor-rule Auth/RLS, effective-date overlap, guarded historical deletion, overtime read scope, direct overtime.manage writes, tenant isolation and snapshots\n");
 
   // Attendance read APIs, scanner device gate, correction RLS, and rejected
   // operation snapshots. Scanner requests use a dummy well-shaped QR and PIN,

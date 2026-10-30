@@ -1,5 +1,5 @@
 BEGIN;
-SELECT plan(31);
+SELECT plan(40);
 
 SELECT has_table('public', 'schedule_template_breaks', 'planned breaks are linked to schedule days');
 SELECT has_column('public', 'schedule_templates', 'workday_type', 'shift classification is configurable');
@@ -32,6 +32,16 @@ SELECT ok((SELECT prosecdef AND 'search_path=""'=ANY(proconfig) FROM pg_proc WHE
 SELECT ok(has_function_privilege('authenticated','private.can_manage_branch(uuid,uuid,text)','EXECUTE') AND NOT has_function_privilege('anon','private.can_manage_branch(uuid,uuid,text)','EXECUTE'), 'only authenticated clients can invoke the branch permission guard');
 SELECT is((SELECT count(*)::integer FROM pg_policy WHERE polrelid IN ('public.schedule_templates'::regclass,'public.schedule_template_days'::regclass,'public.schedule_assignments'::regclass,'public.schedule_template_breaks'::regclass,'public.attendance_adjustments'::regclass) AND polpermissive AND polcmd IN ('*','a','w','d')), 7, 'schedule and correction tables have only the expected permissive write policies');
 SELECT ok(NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid IN ('public.schedule_templates'::regclass,'public.schedule_template_days'::regclass,'public.schedule_assignments'::regclass,'public.schedule_template_breaks'::regclass,'public.attendance_adjustments'::regclass) AND polpermissive AND polcmd IN ('*','a','w','d') AND (coalesce(pg_get_expr(polqual,polrelid),'') || coalesce(pg_get_expr(polwithcheck,polrelid),'')) NOT LIKE '%can_manage_branch%'), 'every permissive schedule/correction write policy delegates to the permission-and-branch guard');
+
+SELECT ok((SELECT relrowsecurity FROM pg_class WHERE oid='public.labor_rule_sets'::regclass), 'labor rules require RLS');
+SELECT ok((SELECT relrowsecurity FROM pg_class WHERE oid='public.overtime_authorizations'::regclass), 'overtime authorizations require RLS');
+SELECT is((SELECT count(*)::integer FROM pg_policy WHERE polrelid='public.labor_rule_sets'::regclass AND polpermissive AND polcmd IN ('*','a','w','d')), 1, 'labor rules have exactly one permissive write policy');
+SELECT ok((SELECT polname='labor_rules_manage' AND polcmd='*' AND position('company.manage' in pg_get_expr(polqual,polrelid))>0 AND position('company.manage' in pg_get_expr(polwithcheck,polrelid))>0 FROM pg_policy WHERE polrelid='public.labor_rule_sets'::regclass AND polpermissive AND polcmd IN ('*','a','w','d')), 'all labor-rule writes require company.manage in USING and WITH CHECK');
+SELECT is((SELECT count(*)::integer FROM pg_policy WHERE polrelid='public.overtime_authorizations'::regclass AND polpermissive AND polcmd IN ('*','a','w','d')), 1, 'overtime authorizations have exactly one permissive write policy');
+SELECT ok((SELECT polname='overtime_authorizations_manage' AND polcmd='*' AND position('overtime.manage' in pg_get_expr(polqual,polrelid))>0 AND position('overtime.manage' in pg_get_expr(polwithcheck,polrelid))>0 FROM pg_policy WHERE polrelid='public.overtime_authorizations'::regclass AND polpermissive AND polcmd IN ('*','a','w','d')), 'all overtime authorization writes require overtime.manage in USING and WITH CHECK');
+SELECT ok(EXISTS (SELECT 1 FROM pg_policy WHERE polrelid='public.overtime_authorizations'::regclass AND polname='employee_own_overtime_authorizations_read' AND polcmd='r') AND NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid='public.overtime_authorizations'::regclass AND polname='employee_own_overtime_authorizations_read' AND polcmd<>'r'), 'employee overtime policy is read-only and does not add a write path');
+SELECT ok(NOT has_table_privilege('authenticated','public.labor_rule_sets','DELETE'), 'direct labor-rule DELETE privilege stays revoked in favor of guarded RPC');
+SELECT ok((SELECT prosecdef AND 'search_path=""'=ANY(proconfig) AND position('company.manage' in pg_get_functiondef(oid))>0 AND position('overtime_assessments' in pg_get_functiondef(oid))>0 FROM pg_proc WHERE oid='public.delete_labor_rule_set(uuid,uuid)'::regprocedure), 'labor-rule deletion RPC is isolated and checks authorization history');
 
 SELECT * FROM finish();
 ROLLBACK;
