@@ -193,7 +193,10 @@ async function snapshot(companyId) {
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'name',name,'active',active) order by id),'[]'::jsonb) from public.branches where company_id=$1) branches,
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'employee_number',employee_number,'branch_id',branch_id,'active',active) order by id),'[]'::jsonb) from public.employees where company_id=$1) employees,
     (select coalesce(jsonb_agg(jsonb_build_object('membership_id',membership_id,'employee_id',employee_id) order by membership_id),'[]'::jsonb) from public.supervisors where company_id=$1) supervisors,
-    (select coalesce(jsonb_agg(jsonb_build_object('membership_id',membership_id,'branch_id',branch_id) order by membership_id,branch_id),'[]'::jsonb) from public.supervisor_branches where company_id=$1) supervisor_branches`, [companyId]);
+    (select coalesce(jsonb_agg(jsonb_build_object('membership_id',membership_id,'branch_id',branch_id) order by membership_id,branch_id),'[]'::jsonb) from public.supervisor_branches where company_id=$1) supervisor_branches,
+    (select coalesce(jsonb_agg(jsonb_build_object('employee_id',q.employee_id,'issued_at',q.issued_at,'revoked_at',q.revoked_at) order by q.employee_id),'[]'::jsonb) from private.employee_qr_tokens q join public.employees e on e.id=q.employee_id where e.company_id=$1) employee_qr_credentials,
+    (select coalesce(jsonb_agg(jsonb_build_object('employee_id',p.employee_id,'failed_attempts',p.failed_attempts,'locked_until',p.locked_until) order by p.employee_id),'[]'::jsonb) from private.employee_pin_credentials p where p.company_id=$1) employee_pin_state,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',r.id,'branch_id',r.branch_id,'membership_id',r.membership_id,'status',r.status,'device_id',r.device_id,'redeemed_at',r.redeemed_at) order by r.id),'[]'::jsonb) from private.device_authorization_requests r where r.company_id=$1) device_requests`, [companyId]);
   const expanded = await dbPool.query(`select
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'employee_id',employee_id,'branch_id',branch_id,'assignment_id',assignment_id,'local_work_date',local_work_date,'status',status,'started_at',started_at,'ended_at',ended_at) order by id),'[]'::jsonb) from public.attendance_sessions where company_id=$1) attendance_sessions,
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'session_id',session_id,'event_type',event_type,'sequence_no',sequence_no,'idempotency_key',idempotency_key) order by id),'[]'::jsonb) from public.attendance_events where company_id=$1) attendance_events,
@@ -615,7 +618,203 @@ try {
   if (noDeviceManage.error) throw new Error("could not prepare synthetic device-management denial");
   response = await request("/api/supervisor-devices", { user: adminA }); assert.equal(response.status, 403);
   await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "devices.manage");
-  process.stdout.write("PASS supervisor assignment and device APIs enforce tenant scoping, role and devices.manage checks\n");
+
+  // Employee QR credentials and PIN administration: use only synthetic
+  // employees, never verify a wrong PIN or modify lockout state.
+  const qrPath = `/api/employees/${employeeA.employeeId}/qr?companyId=${companyA}`;
+  const pinPath = `/api/employees/${employeeA.employeeId}/pin?companyId=${companyA}`;
+  const beforeCredentialDenialsA = await snapshot(companyA), beforeCredentialDenialsB = await snapshot(companyB);
+  response = await request(qrPath); assert.equal(response.status, 401);
+  response = await request(qrPath, { user: employeeA }); assert.equal(response.status, 403);
+  response = await request(qrPath, { user: inactiveAdmin }); assert.equal(response.status, 403, "inactive admin membership cannot read credential status");
+  response = await request(`/api/employees/${employeeA.employeeId}/qr?companyId=${companyA}`, { user: adminB }); assert.equal(response.status, 403);
+  response = await request(`/api/employees/${employeeB.employeeId}/qr?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 404);
+  response = await request(pinPath, { method: "PUT", body: { pin: "123456" } }); assert.equal(response.status, 401);
+  response = await request(pinPath, { user: employeeA, method: "PUT", body: { pin: "123456" } }); assert.equal(response.status, 403);
+  response = await request(`/api/employees/${employeeB.employeeId}/pin?companyId=${companyA}`, { user: adminA, method: "PUT", body: { pin: "123456" } }); assert.equal(response.status, 404);
+  response = await request(pinPath, { user: adminA, method: "PUT", body: { pin: "123" } }); assert.equal(response.status, 422);
+  assert.deepEqual(await snapshot(companyA), beforeCredentialDenialsA, "anonymous, wrong-role, foreign-tenant, and malformed PIN/QR requests have no credential, lockout, or audit side effects");
+  assert.deepEqual(await snapshot(companyB), beforeCredentialDenialsB, "cross-company credential requests do not alter the target tenant");
+
+  const noEmployeeManage = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "employees.manage", allowed: false });
+  if (noEmployeeManage.error) throw new Error("could not prepare synthetic employees.manage denial");
+  const beforeCredentialPermissionDenial = await snapshot(companyA);
+  response = await request(qrPath, { user: adminA, method: "POST", body: {} }); assert.equal(response.status, 403);
+  response = await request(pinPath, { user: adminA, method: "PUT", body: { pin: "123456" } }); assert.equal(response.status, 403);
+  const directCredentialDenied = await adminA.client.rpc("issue_employee_qr_token", { p_company_id: companyA, p_employee_id: employeeA.employeeId, p_token_hash_hex: createHash("sha256").update(randomBytes(32)).digest("hex"), p_replace: false });
+  assert.equal(directCredentialDenied.error?.code, "42501", "direct QR issue RPC enforces employees.manage independently of the API");
+  assert.deepEqual(await snapshot(companyA), beforeCredentialPermissionDenial, "employees.manage denial leaves QR/PIN credentials, lockout and audit unchanged");
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "employees.manage");
+
+  const inactiveEmployee = await service.from("employees").insert({ company_id: companyA, branch_id: branchA, employee_number: `INACTIVE-${randomUUID()}`, first_name: "Synthetic", last_name: "Inactive", active: false }).select("id").single();
+  if (inactiveEmployee.error || !inactiveEmployee.data) throw new Error("failed to create synthetic inactive employee");
+  const beforeInactiveCredential = await snapshot(companyA);
+  response = await request(`/api/employees/${inactiveEmployee.data.id}/qr?companyId=${companyA}`, { user: adminA, method: "POST", body: {} }); assert.equal(response.status, 409);
+  response = await request(`/api/employees/${inactiveEmployee.data.id}/pin?companyId=${companyA}`, { user: adminA, method: "PUT", body: { pin: "123456" } }); assert.equal(response.status, 409);
+  assert.deepEqual(await snapshot(companyA), beforeInactiveCredential, "inactive employees cannot receive QR credentials");
+
+  response = await request(qrPath, { user: adminA }); assert.equal(response.status, 200);
+  const qrStatus = await response.json();
+  assert.deepEqual(qrStatus.credential, { employeeActive: true, qrStatus: "not_issued", issuedAt: null, revokedAt: null, pinConfigured: false });
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(JSON.stringify(qrStatus).includes("token_hash"), false);
+  const issuedQrResponse = await request(qrPath, { user: adminA, method: "POST", body: {} }); assert.equal(issuedQrResponse.status, 200);
+  assert.equal(issuedQrResponse.headers.get("cache-control"), "no-store, private");
+  const issuedQr = await issuedQrResponse.json(); assert.match(issuedQr.token, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(JSON.stringify(issuedQr.credential).includes(issuedQr.token), false, "QR status payload does not repeat the one-time token");
+  const issuedQrHash = createHash("sha256").update(issuedQr.token).digest("hex");
+  const storedQrHash = (await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash;
+  assert.equal(storedQrHash, issuedQrHash, "database stores only the SHA-256 QR token hash");
+  assert.notEqual(storedQrHash, issuedQr.token);
+  const beforeDuplicateQr = await snapshot(companyA);
+  response = await request(qrPath, { user: adminA, method: "POST", body: {} }); assert.equal(response.status, 409);
+  assert.deepEqual(await snapshot(companyA), beforeDuplicateQr, "duplicate QR issue without replace has no side effects");
+  const regeneratedQrResponse = await request(qrPath, { user: adminA, method: "POST", body: { replace: true } }); assert.equal(regeneratedQrResponse.status, 200);
+  const regeneratedQr = await regeneratedQrResponse.json(); assert.notEqual(regeneratedQr.token, issuedQr.token);
+  const regeneratedHash = createHash("sha256").update(regeneratedQr.token).digest("hex");
+  assert.equal((await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].hash, regeneratedHash);
+  assert.equal(Number((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action in ('EMPLOYEE_QR_ISSUED','EMPLOYEE_QR_REGENERATED')", [companyA, employeeA.employeeId])).rows[0].n), 2);
+  const repeatedQrHash = (await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].hash;
+  response = await request(qrPath, { user: adminA, method: "DELETE" }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).credential.qrStatus, "revoked");
+  assert.equal((await dbPool.query("select revoked_at is not null revoked from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].revoked, true);
+  const afterQrRevoke = await snapshot(companyA);
+  response = await request(qrPath, { user: adminA, method: "DELETE" }); assert.equal(response.status, 200, "repeated QR revoke is an idempotent no-op");
+  assert.deepEqual(await snapshot(companyA), afterQrRevoke, "repeated QR revoke creates no duplicate audit event");
+  assert.equal((await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].hash, repeatedQrHash, "revocation preserves only the digest, never a raw token");
+  process.stdout.write("PASS employee QR credential APIs enforce Auth/role/tenant/permission, one-time no-store token disclosure, replacement, revocation and hash-only persistence; PIN endpoint denials preserve lockout state\n");
+
+  // Supervisor enrollment lifecycle with real local Auth cookies and direct
+  // RPC checks. No attendance scan or PIN verification is performed here.
+  const deviceRequestBody = { companyId: companyA, branchId: branchA, label: "Synthetic supervisor browser" };
+  const beforeDeviceDenialsA = await snapshot(companyA), beforeDeviceDenialsB = await snapshot(companyB);
+  response = await request("/api/supervisor/device-requests", { method: "POST", body: deviceRequestBody }); assert.equal(response.status, 401);
+  response = await request("/api/supervisor/device-requests", { user: employeeA, method: "POST", body: deviceRequestBody }); assert.equal(response.status, 403);
+  response = await request("/api/supervisor/device-requests", { user: adminA, method: "POST", body: deviceRequestBody }); assert.equal(response.status, 403);
+  response = await request("/api/supervisor/device-requests", { user: supervisorA, method: "POST", body: { ...deviceRequestBody, branchId: branchB } }); assert.equal(response.status, 403);
+  response = await request("/api/supervisor/device-requests", { user: supervisorA, method: "POST", body: { ...deviceRequestBody, label: "   " } }); assert.equal(response.status, 422);
+  const forbiddenDeviceRequest = await supervisorA.client.rpc("request_supervisor_device", { p_company_id: companyB, p_branch_id: branchB, p_label: "Cross tenant synthetic", p_challenge: randomBytes(32).toString("base64url") });
+  assert.equal(forbiddenDeviceRequest.error?.code, "42501", "direct request RPC rejects a foreign company and branch");
+  const forbiddenDeviceReview = await employeeA.client.rpc("review_supervisor_device_request", { p_company_id: companyA, p_request_id: randomUUID(), p_approve: true });
+  assert.equal(forbiddenDeviceReview.error?.code, "42501", "direct review RPC rejects an employee without devices.manage");
+  assert.deepEqual(await snapshot(companyA), beforeDeviceDenialsA, "anonymous, wrong-role, wrong-branch and malformed device requests create no request, device, or audit rows");
+  assert.deepEqual(await snapshot(companyB), beforeDeviceDenialsB, "foreign-company device request has no cross-tenant side effects");
+
+  const deviceRequestResponse = await request("/api/supervisor/device-requests", { user: supervisorA, method: "POST", body: deviceRequestBody });
+  assert.equal(deviceRequestResponse.status, 200);
+  const deviceRequestPayload = await deviceRequestResponse.json();
+  const deviceRequestId = deviceRequestPayload.request?.requestId;
+  assert.ok(deviceRequestId); assert.equal(deviceRequestPayload.request.status, "pending");
+  assert.equal(JSON.stringify(deviceRequestPayload).includes("challenge"), false, "device enrollment response omits the raw challenge");
+  const challengeCookieMatch = deviceRequestResponse.headers.get("set-cookie")?.match(new RegExp(`qr_enroll_${companyA}=([^;]+)`));
+  assert.ok(challengeCookieMatch, "device enrollment challenge is returned only as an HttpOnly cookie");
+  const challengeCookieHeader = deviceRequestResponse.headers.get("set-cookie") ?? "";
+  assert.match(challengeCookieHeader, /HttpOnly/i); assert.match(challengeCookieHeader, /SameSite=Lax/i); assert.match(challengeCookieHeader, /Path=\/api/i);
+  const enrollmentChallenge = decodeURIComponent(challengeCookieMatch[1]);
+  assert.match(enrollmentChallenge, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(deviceRequestResponse.headers.get("cache-control"), "no-store");
+  const storedChallengeHash = (await dbPool.query("select encode(challenge_hash,'hex') hash from private.device_authorization_requests where id=$1", [deviceRequestId])).rows[0].hash;
+  assert.equal(storedChallengeHash, createHash("sha256").update(enrollmentChallenge).digest("hex"), "database stores only the device challenge hash");
+  assert.notEqual(storedChallengeHash, enrollmentChallenge);
+  const duplicateDeviceRequest = await request("/api/supervisor/device-requests", { user: supervisorA, method: "POST", cookieExtra: `qr_enroll_${companyA}=${encodeURIComponent(enrollmentChallenge)}`, body: deviceRequestBody });
+  assert.equal(duplicateDeviceRequest.status, 200);
+  assert.equal((await duplicateDeviceRequest.json()).request.requestId, deviceRequestId, "same browser challenge returns the existing pending request");
+  assert.equal(Number((await dbPool.query("select count(*)::int n from private.device_authorization_requests where membership_id=$1 and challenge_hash=decode($2,'hex')", [supervisorA.memberships[0].id, storedChallengeHash])).rows[0].n), 1);
+
+  const noDevicesManage = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "devices.manage", allowed: false });
+  if (noDevicesManage.error) throw new Error("could not prepare synthetic devices.manage denial");
+  const beforeDevicePermissionDenial = await snapshot(companyA);
+  response = await request("/api/supervisor-devices?companyId=" + companyA, { user: adminA }); assert.equal(response.status, 403);
+  response = await request("/api/supervisor-devices?companyId=" + companyA, { user: adminA, method: "PATCH", body: { requestId: deviceRequestId, approve: true } }); assert.equal(response.status, 403);
+  const directReviewDenied = await adminA.client.rpc("review_supervisor_device_request", { p_company_id: companyA, p_request_id: deviceRequestId, p_approve: true });
+  assert.equal(directReviewDenied.error?.code, "42501", "direct device review RPC enforces devices.manage");
+  assert.deepEqual(await snapshot(companyA), beforeDevicePermissionDenial, "devices.manage denial leaves the pending request, device and audit unchanged");
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "devices.manage");
+
+  const beforeForeignReviewA = await snapshot(companyA), beforeForeignReviewB = await snapshot(companyB);
+  const foreignReview = await adminB.client.rpc("review_supervisor_device_request", { p_company_id: companyB, p_request_id: deviceRequestId, p_approve: true });
+  assert.equal(foreignReview.error?.code, "P0002", "another tenant cannot resolve a request by foreign request ID");
+  assert.deepEqual(await snapshot(companyA), beforeForeignReviewA);
+  assert.deepEqual(await snapshot(companyB), beforeForeignReviewB);
+  response = await request("/api/supervisor-devices?companyId=" + companyA, { user: adminA }); assert.equal(response.status, 200);
+  const beforeDeviceApproval = await snapshot(companyA);
+  response = await request("/api/supervisor-devices?companyId=" + companyA, { user: adminA, method: "PATCH", body: { requestId: deviceRequestId, approve: true } }); assert.equal(response.status, 200);
+  const approved = (await response.json()).request; assert.equal(approved.status, "approved"); assert.ok(approved.deviceId);
+  assert.equal(Number((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='DEVICE_AUTHORIZATION_APPROVED'", [companyA, deviceRequestId])).rows[0].n), 1);
+  const afterDeviceApproval = await snapshot(companyA);
+  assert.notDeepEqual(afterDeviceApproval.devices, beforeDeviceApproval.devices, "approved request creates one authorized device");
+  const repeatedReview = await adminA.client.rpc("review_supervisor_device_request", { p_company_id: companyA, p_request_id: deviceRequestId, p_approve: true });
+  assert.equal(repeatedReview.error?.code, "23514", "reviewing an already resolved device request is rejected");
+  assert.deepEqual(await snapshot(companyA), afterDeviceApproval, "repeated review creates no duplicate device or audit event");
+
+  const redemption = await supervisorA.client.rpc("redeem_supervisor_device", { p_company_id: companyA, p_challenge: enrollmentChallenge });
+  assert.equal(redemption.data?.status, "authorized");
+  assert.equal(JSON.stringify(redemption.data).includes(enrollmentChallenge), false, "redemption does not return the device token");
+  const deviceTokenHash = (await dbPool.query("select encode(token_hash,'hex') hash from private.device_token_hashes where device_id=$1", [approved.deviceId])).rows[0]?.hash;
+  assert.equal(deviceTokenHash, storedChallengeHash, "device token table contains the challenge digest only");
+  const scannerContext = await supervisorA.client.rpc("get_supervisor_scanner_context", { p_company_id: companyA, p_device_token: enrollmentChallenge });
+  assert.equal(scannerContext.data?.authorized, true, "authorized challenge is the only device token accepted for its active supervisor and branch");
+  const noDeviceContext = await supervisorA.client.rpc("get_supervisor_scanner_context", { p_company_id: companyA, p_device_token: null });
+  assert.equal(noDeviceContext.data?.authorized, false);
+  const beforeReplayRedemption = await snapshot(companyA);
+  const replayRedemption = await supervisorA.client.rpc("redeem_supervisor_device", { p_company_id: companyA, p_challenge: enrollmentChallenge });
+  assert.equal(replayRedemption.data?.status, "approved", "redeemed device enrollment cannot mint a second token");
+  assert.deepEqual(await snapshot(companyA), beforeReplayRedemption, "repeated redemption has no device or audit side effects");
+
+  const secondChallenge = randomBytes(32).toString("base64url");
+  const secondDeviceRequest = await supervisorA.client.rpc("request_supervisor_device", { p_company_id: companyA, p_branch_id: branchA, p_label: "Synthetic rejected request", p_challenge: secondChallenge });
+  assert.ok(!secondDeviceRequest.error && secondDeviceRequest.data?.requestId);
+  response = await request("/api/supervisor-devices?companyId=" + companyA, { user: adminA, method: "PATCH", body: { requestId: secondDeviceRequest.data.requestId, approve: false } }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).request.status, "rejected");
+  const repeatedRejection = await adminA.client.rpc("review_supervisor_device_request", { p_company_id: companyA, p_request_id: secondDeviceRequest.data.requestId, p_approve: false });
+  assert.equal(repeatedRejection.error?.code, "23514");
+
+  const raceChallenge = randomBytes(32).toString("base64url");
+  const raceRequest = await supervisorA.client.rpc("request_supervisor_device", { p_company_id: companyA, p_branch_id: branchA, p_label: "Synthetic concurrent approval", p_challenge: raceChallenge });
+  assert.ok(!raceRequest.error && raceRequest.data?.requestId);
+  const concurrentReview = await Promise.all([
+    adminA.client.rpc("review_supervisor_device_request", { p_company_id: companyA, p_request_id: raceRequest.data.requestId, p_approve: true }),
+    adminA.client.rpc("review_supervisor_device_request", { p_company_id: companyA, p_request_id: raceRequest.data.requestId, p_approve: true }),
+  ]);
+  assert.equal(concurrentReview.filter((result) => !result.error).length, 1, "concurrent device approvals create exactly one authorized device");
+  assert.equal(concurrentReview.filter((result) => result.error?.code === "23514").length, 1, "the losing concurrent approval observes the resolved state");
+  assert.equal(Number((await dbPool.query("select count(*)::int n from public.authorized_devices where company_id=$1 and membership_id=$2", [companyA, supervisorA.memberships[0].id])).rows[0].n), 2, "concurrent approval creates no duplicate device");
+  assert.equal(Number((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='DEVICE_AUTHORIZATION_APPROVED'", [companyA, raceRequest.data.requestId])).rows[0].n), 1);
+
+  const beforeCrossTenantRevokeA = await snapshot(companyA), beforeCrossTenantRevokeB = await snapshot(companyB);
+  response = await request(`/api/supervisor-devices/${approved.deviceId}?companyId=${companyB}`, { user: adminB, method: "DELETE" }); assert.equal(response.status, 409);
+  assert.deepEqual(await snapshot(companyA), beforeCrossTenantRevokeA);
+  assert.deepEqual(await snapshot(companyB), beforeCrossTenantRevokeB);
+  response = await request(`/api/supervisor-devices/${approved.deviceId}?companyId=${companyA}`, { user: supervisorA, method: "DELETE" }); assert.equal(response.status, 403);
+  assert.deepEqual(await snapshot(companyA), beforeCrossTenantRevokeA, "wrong role cannot revoke a device");
+  response = await request(`/api/supervisor-devices/${approved.deviceId}?companyId=${companyA}`, { user: adminA, method: "DELETE" }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).device.active, false);
+  const afterDeviceRevoke = await snapshot(companyA);
+  assert.equal((await dbPool.query("select active,revoked_at is not null revoked from public.authorized_devices where id=$1", [approved.deviceId])).rows[0].active, false);
+  assert.equal((await dbPool.query("select status from private.device_authorization_requests where id=$1", [deviceRequestId])).rows[0].status, "revoked");
+  assert.equal(Number((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='SUPERVISOR_DEVICE_REVOKED'", [companyA, approved.deviceId])).rows[0].n), 1);
+  const revokedContext = await supervisorA.client.rpc("get_supervisor_scanner_context", { p_company_id: companyA, p_device_token: enrollmentChallenge });
+  assert.equal(revokedContext.data?.authorized, false, "revocation immediately removes scanner authorization");
+  const repeatedRevoke = await adminA.client.rpc("revoke_supervisor_device", { p_company_id: companyA, p_device_id: approved.deviceId });
+  assert.equal(repeatedRevoke.error?.code, "P0002");
+  assert.deepEqual(await snapshot(companyA), afterDeviceRevoke, "repeated device revocation has no duplicate audit side effects");
+
+  const beforeSupervisorDeactivation = await snapshot(companyA);
+  response = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { action: "deactivate", membershipId: supervisorA.memberships[0].id } }); assert.equal(response.status, 200);
+  assert.deepEqual(await dbPool.query("select active from public.company_memberships where id=$1", [supervisorA.memberships[0].id]).then((result) => result.rows[0]), { active: false });
+  const devicesAfterMembershipRevoke = await service.from("authorized_devices").select("id,active,revoked_at").eq("company_id", companyA).eq("membership_id", supervisorA.memberships[0].id);
+  assert.ok(!devicesAfterMembershipRevoke.error && devicesAfterMembershipRevoke.data.length > 0);
+  assert.ok(devicesAfterMembershipRevoke.data.every((device) => !device.active && device.revoked_at), "revoking supervisor membership deactivates every associated device");
+  const requestsAfterMembershipRevoke = await dbPool.query("select status from private.device_authorization_requests where company_id=$1 and membership_id=$2", [companyA, supervisorA.memberships[0].id]);
+  assert.ok(requestsAfterMembershipRevoke.rows.every((item) => ["rejected", "revoked"].includes(item.status)), "revoking supervisor membership resolves all outstanding device requests");
+  assert.notDeepEqual(await snapshot(companyA), beforeSupervisorDeactivation, "membership revocation records the access transition and device revocations");
+  const beforeInactiveSupervisorRequest = await snapshot(companyA);
+  const inactiveSupervisorRequest = await supervisorA.client.rpc("request_supervisor_device", { p_company_id: companyA, p_branch_id: branchA, p_label: "Synthetic revoked supervisor", p_challenge: randomBytes(32).toString("base64url") });
+  assert.equal(inactiveSupervisorRequest.error?.code, "42501", "revoked supervisor membership cannot request another device through the RPC");
+  assert.deepEqual(await snapshot(companyA), beforeInactiveSupervisorRequest, "revoked membership cannot create a request, device or audit event");
+  assert.equal((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_ACCESS_DEACTIVATED'", [companyA, supervisorA.memberships[0].id])).rows[0].n, 1);
+  process.stdout.write("PASS supervisor membership revocation invalidates approved devices and blocks subsequent enrollment without side effects\n");
+  process.stdout.write("PASS device enrollment, approval/rejection, challenge redemption, tenant/branch/permission guards, duplicate/concurrent review, revocation and no-side-effect snapshots\n");
 
   // Admin access APIs, scope selection, company.manage and rejected-write snapshots.
   response = await request(`/api/admin/access?companyId=${companyA}`);
