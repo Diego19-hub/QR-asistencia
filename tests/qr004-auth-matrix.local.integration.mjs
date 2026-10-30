@@ -24,10 +24,12 @@ const suites = [
   "company_user_share_invitations_test.sql",
   "employee_credentials_test.sql",
   "qr004_scanner_authorization_test.sql",
+  "schedule_integrity_test.sql",
 ];
 let temp;
 let startAttempted = false;
 let appServer, dbPool, service, apiUrl, anonKey, serviceKey, dbUrl, appUrl, mailpitUrl, appOutput = "";
+let attendanceSessionA, attendanceSessionB, foreignBranchSession;
 
 function safeCli(args, timeout = 900_000) {
   const env = { ...process.env, SUPABASE_TELEMETRY_DISABLED: "1", CI: "1" };
@@ -52,7 +54,9 @@ function safeCli(args, timeout = 900_000) {
 }
 
 async function freePortBlock() {
+  const mappedPorts = dockerHostPorts();
   for (let base = 56_000 + Math.floor(Math.random() * 1_500); base < 62_000; base += 10) {
+    if (Array.from({ length: 10 }, (_, offset) => base + offset).some((port) => mappedPorts.has(port))) continue;
     const available = await Promise.all(Array.from({ length: 10 }, (_, offset) => new Promise((resolvePort) => {
       const server = net.createServer();
       server.once("error", () => resolvePort(false));
@@ -68,6 +72,11 @@ function dockerResources(kind) {
     : kind === "volumes" ? ["volume", "ls", "--format", "{{.Name}}"]
       : ["network", "ls", "--format", "{{.Name}}"];
   return execFileSync("docker", args, { encoding: "utf8" }).trim().split(/\r?\n/).filter(Boolean);
+}
+
+function dockerHostPorts() {
+  const output = execFileSync("docker", ["container", "ls", "-a", "--format", "{{.Ports}}"], { encoding: "utf8" });
+  return new Set([...output.matchAll(/(?:0\.0\.0\.0|\[::\]):(\d+)->/g)].map((match) => Number(match[1])));
 }
 
 function parseEnv(text) {
@@ -185,6 +194,16 @@ async function snapshot(companyId) {
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'employee_number',employee_number,'branch_id',branch_id,'active',active) order by id),'[]'::jsonb) from public.employees where company_id=$1) employees,
     (select coalesce(jsonb_agg(jsonb_build_object('membership_id',membership_id,'employee_id',employee_id) order by membership_id),'[]'::jsonb) from public.supervisors where company_id=$1) supervisors,
     (select coalesce(jsonb_agg(jsonb_build_object('membership_id',membership_id,'branch_id',branch_id) order by membership_id,branch_id),'[]'::jsonb) from public.supervisor_branches where company_id=$1) supervisor_branches`, [companyId]);
+  const expanded = await dbPool.query(`select
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'employee_id',employee_id,'branch_id',branch_id,'assignment_id',assignment_id,'local_work_date',local_work_date,'status',status,'started_at',started_at,'ended_at',ended_at) order by id),'[]'::jsonb) from public.attendance_sessions where company_id=$1) attendance_sessions,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'session_id',session_id,'event_type',event_type,'sequence_no',sequence_no,'idempotency_key',idempotency_key) order by id),'[]'::jsonb) from public.attendance_events where company_id=$1) attendance_events,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'session_id',session_id,'requested_by',requested_by,'reviewed_by',reviewed_by,'status',status,'reason',reason,'proposed_events',proposed_events) order by id),'[]'::jsonb) from public.attendance_adjustments where company_id=$1) attendance_adjustments,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'branch_id',branch_id,'name',name,'active',active,'effective_from',effective_from,'effective_to',effective_to) order by id),'[]'::jsonb) from public.schedule_templates where company_id=$1) schedule_templates,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'template_id',template_id,'iso_weekday',iso_weekday,'start_local',start_local,'end_local',end_local,'scheduled_minutes',scheduled_minutes) order by id),'[]'::jsonb) from public.schedule_template_days where company_id=$1) schedule_template_days,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'template_day_id',template_day_id,'break_rule_id',break_rule_id,'planned_start_local',planned_start_local,'planned_end_local',planned_end_local) order by id),'[]'::jsonb) from public.schedule_template_breaks where company_id=$1) schedule_template_breaks,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'code',code,'name',name,'effective_from',effective_from,'effective_to',effective_to) order by id),'[]'::jsonb) from public.break_rules where company_id=$1) break_rules,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'employee_id',employee_id,'template_id',template_id,'branch_id',branch_id,'starts_on',starts_on,'ends_on',ends_on) order by id),'[]'::jsonb) from public.schedule_assignments where company_id=$1) schedule_assignments`, [companyId]);
+  Object.assign(rows[0], expanded.rows[0]);
   return rows[0];
 }
 async function request(path, { user, method = "GET", body, cookieExtra = "" } = {}) {
@@ -272,6 +291,9 @@ try {
   const branchBResult = await service.from("branches").insert({ company_id: companyB, name: `HTTP Branch B ${randomUUID()}`, timezone: "America/Mexico_City" }).select("id").single();
   if (branchAResult.error || branchBResult.error) throw new Error("failed creating synthetic HTTP branches");
   const branchA = branchAResult.data.id, branchB = branchBResult.data.id;
+  const otherBranchAResult = await service.from("branches").insert({ company_id: companyA, name: `HTTP Branch A2 ${randomUUID()}`, timezone: "America/Mexico_City" }).select("id").single();
+  if (otherBranchAResult.error || !otherBranchAResult.data) throw new Error("failed creating second synthetic branch for branch-scope verification");
+  const otherBranchA = otherBranchAResult.data.id;
   const ownerA = await createHttpUser("owner-a", "owner", companyA);
   const adminA = await createHttpUser("admin-a", "admin", companyA);
   const adminB = await createHttpUser("admin-b", "admin", companyB);
@@ -281,6 +303,57 @@ try {
   const employeeB = await createHttpUser("employee-b", "employee", companyB, { employee: true, branchId: branchB });
   const multiAdmin = await createHttpUser("multi-admin", "admin", companyA, { extraMemberships: [[companyB, "admin"]] });
   const multiEmployee = await createHttpUser("multi-employee", "employee", companyA, { extraMemberships: [[companyB, "employee"]], employee: true });
+
+  // Exercise attendance adjustment RLS with a supervisor assigned to one
+  // synthetic branch and sessions in both authorized and unauthorized branches.
+  const supervisorRecord = await service.from("supervisors").insert({ company_id: companyA, membership_id: supervisorA.memberships[0].id });
+  if (supervisorRecord.error) throw new Error(`failed creating synthetic supervisor record (${supervisorRecord.error.code ?? "unknown"})`);
+  const assignedBranch = await service.from("supervisor_branches").insert({ company_id: companyA, membership_id: supervisorA.memberships[0].id, branch_id: branchA });
+  if (assignedBranch.error) throw new Error(`failed preparing synthetic supervisor branch scope (${assignedBranch.error.code ?? "unknown"})`);
+  const sessionNow = new Date();
+  const sessionBase = { company_id: companyA, employee_id: employeeA.employeeId, local_work_date: sessionNow.toISOString().slice(0, 10), timezone: "America/Mexico_City", status: "closed", started_at: new Date(sessionNow.getTime() - 60_000).toISOString(), ended_at: sessionNow.toISOString(), scheduled_minutes: 480 };
+  const sessionAResult = await service.from("attendance_sessions").insert({ ...sessionBase, branch_id: branchA }).select("id").single();
+  const sessionOtherBranchResult = await service.from("attendance_sessions").insert({ ...sessionBase, branch_id: otherBranchA }).select("id").single();
+  const sessionBResult = await service.from("attendance_sessions").insert({ ...sessionBase, company_id: companyB, employee_id: employeeB.employeeId, branch_id: branchB }).select("id").single();
+  if ([sessionAResult, sessionOtherBranchResult, sessionBResult].some((result) => result.error || !result.data)) throw new Error("failed creating closed synthetic attendance sessions");
+  attendanceSessionA = sessionAResult.data.id;
+  foreignBranchSession = sessionOtherBranchResult.data.id;
+  attendanceSessionB = sessionBResult.data.id;
+  const beforeAdjustmentDenial = await snapshot(companyA);
+  const branchScopeProbe = await supervisorA.client.from("attendance_adjustments").insert({ company_id: companyA, session_id: foreignBranchSession, requested_by: supervisorA.userId, reason: "Synthetic branch-scope probe", proposed_events: [] }).select("id").maybeSingle();
+  assert.equal(branchScopeProbe.error?.code, "42501", "supervisor cannot submit an adjustment for an unassigned branch");
+  assert.deepEqual(await snapshot(companyA), beforeAdjustmentDenial, "cross-branch adjustment denial leaves sessions, adjustments, and audit state unchanged");
+  process.stdout.write("PASS adjustment RLS rejects a synthetic supervisor write to another branch of the same company\n");
+  const allowedBranchAdjustment = await supervisorA.client.from("attendance_adjustments").insert({ company_id: companyA, session_id: attendanceSessionA, requested_by: supervisorA.userId, reason: "Synthetic authorized correction", proposed_events: [] }).select("id").single();
+  if (allowedBranchAdjustment.error || !allowedBranchAdjustment.data) throw new Error("supervisor could not submit correction within assigned branch");
+  const beforeReviewDenial = await snapshot(companyA);
+  const unauthorizedReview = await supervisorA.client.rpc("review_attendance_adjustment", { p_adjustment_id: allowedBranchAdjustment.data.id, p_approve: true, p_review_note: "Synthetic unauthorized review" });
+  assert.equal(unauthorizedReview.error?.code, "42501", "supervisor without review permission cannot approve a correction");
+  assert.deepEqual(await snapshot(companyA), beforeReviewDenial, "unauthorized correction review leaves status and audit unchanged");
+  const reviewAuditCount = Number((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_table='attendance_adjustments' and entity_id=$2", [companyA, allowedBranchAdjustment.data.id])).rows[0].n);
+  const ownerReview = await ownerA.client.rpc("review_attendance_adjustment", { p_adjustment_id: allowedBranchAdjustment.data.id, p_approve: true, p_review_note: "Synthetic authorized review" });
+  assert.ok(!ownerReview.error, `authorized owner review succeeds (${ownerReview.error?.code ?? "ok"})`);
+  const reviewedAdjustment = await service.from("attendance_adjustments").select("status,reviewed_by").eq("id", allowedBranchAdjustment.data.id).single();
+  assert.deepEqual(reviewedAdjustment.data, { status: "approved", reviewed_by: ownerA.userId });
+  const reviewAuditAfter = Number((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_table='attendance_adjustments' and entity_id=$2", [companyA, allowedBranchAdjustment.data.id])).rows[0].n);
+  assert.equal(reviewAuditAfter, reviewAuditCount + 1, "authorized correction review creates one audit entry");
+  const syntheticLegacyAdjustment = await service.from("attendance_adjustments").insert({ company_id: companyA, session_id: foreignBranchSession, requested_by: supervisorA.userId, reason: "Synthetic historical foreign-branch correction", proposed_events: [] }).select("id").single();
+  if (syntheticLegacyAdjustment.error || !syntheticLegacyAdjustment.data) throw new Error("failed creating synthetic historical adjustment for read-scope check");
+  const foreignBranchAdjustmentRead = await supervisorA.client.from("attendance_adjustments").select("id").eq("id", syntheticLegacyAdjustment.data.id);
+  if (foreignBranchAdjustmentRead.error || (foreignBranchAdjustmentRead.data ?? []).length !== 0) throw new Error("supervisor can read an adjustment for an unassigned branch");
+  const ownerBranchAssignments = await service.from("supervisor_branches").select("branch_id").eq("company_id", companyA).eq("membership_id", ownerA.memberships[0].id);
+  if (ownerBranchAssignments.error || (ownerBranchAssignments.data ?? []).length !== 0) throw new Error("synthetic owner unexpectedly has a supervisor branch assignment");
+  const crossBranchCompanyReview = await ownerA.client.rpc("review_attendance_adjustment", { p_adjustment_id: syntheticLegacyAdjustment.data.id, p_approve: true, p_review_note: "Synthetic company-scope review" });
+  assert.ok(!crossBranchCompanyReview.error, `company reviewer can review a correction from another branch (${crossBranchCompanyReview.error?.code ?? "ok"})`);
+  const companyReviewedAdjustment = await service.from("attendance_adjustments").select("status,reviewed_by").eq("id", syntheticLegacyAdjustment.data.id).single();
+  assert.deepEqual(companyReviewedAdjustment.data, { status: "approved", reviewed_by: ownerA.userId }, "review_attendance_adjustment authorization is company-level rather than supervisor-branch-scoped");
+  const noAttendanceAdjust = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "attendance.adjust", allowed: false });
+  if (noAttendanceAdjust.error) throw new Error("could not prepare synthetic attendance.adjust denial");
+  const beforeAdminAdjustmentDenial = await snapshot(companyA);
+  const adminAdjustmentDenied = await adminA.client.from("attendance_adjustments").insert({ company_id: companyA, session_id: attendanceSessionA, requested_by: adminA.userId, reason: "Synthetic denied correction", proposed_events: [] }).select("id").maybeSingle();
+  assert.equal(adminAdjustmentDenied.error?.code, "42501", "company.read alone cannot substitute for attendance.adjust");
+  assert.deepEqual(await snapshot(companyA), beforeAdminAdjustmentDenial, "specific permission denial leaves correction and audit state unchanged");
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "attendance.adjust");
   const nextPort = await freePort(base + 20); appUrl = `http://127.0.0.1:${nextPort}`;
   const appRoot = join(temp, "next-app"); await mkdir(appRoot, { recursive: true });
   await cp(join(root, "src"), join(appRoot, "src"), { recursive: true });
@@ -300,9 +373,188 @@ try {
   await waitForNext(`${appUrl}/login`);
   process.stdout.write("PASS local Auth users and temporary Next.js server use only the disposable Supabase loopback endpoints\n");
 
+  let response;
+  // Attendance read APIs, scanner device gate, correction RLS, and rejected
+  // operation snapshots. Scanner requests use a dummy well-shaped QR and PIN,
+  // but an invalid device is rejected before QR/PIN validation in the RPC.
+  const today = new Date().toISOString().slice(0, 10);
+  response = await request(`/api/attendance?companyId=${companyA}&from=${today}&to=${today}`); assert.equal(response.status, 401);
+  response = await request(`/api/attendance/${attendanceSessionA}?companyId=${companyA}`); assert.equal(response.status, 401);
+  response = await request(`/api/attendance?companyId=${companyA}&from=${today}&to=${today}`, { user: employeeA }); assert.equal(response.status, 403);
+  response = await request(`/api/attendance?companyId=${companyA}&from=${today}&to=${today}`, { user: supervisorA }); assert.equal(response.status, 403);
+  response = await request(`/api/attendance?companyId=${companyB}&from=${today}&to=${today}`, { user: adminA }); assert.equal(response.status, 403);
+  response = await request(`/api/attendance?from=${today}&to=${today}`, { user: multiAdmin }); assert.equal(response.status, 400);
+  response = await request(`/api/attendance?companyId=${companyA}&from=${today}&to=${today}`, { user: adminA }); assert.equal(response.status, 200);
+  const attendanceA = await response.json();
+  assert.ok(attendanceA.items.some((item) => item.sessionId === attendanceSessionA || item.session_id === attendanceSessionA));
+  assert.equal(attendanceA.items.some((item) => item.sessionId === attendanceSessionB || item.session_id === attendanceSessionB), false, "attendance listing excludes a different company");
+  response = await request(`/api/attendance?companyId=${companyA}&branchId=${branchA}&from=${today}&to=${today}`, { user: adminA }); assert.equal(response.status, 200);
+  const branchAttendance = await response.json();
+  assert.ok(branchAttendance.items.some((item) => item.sessionId === attendanceSessionA || item.session_id === attendanceSessionA));
+  assert.equal(branchAttendance.items.some((item) => item.sessionId === foreignBranchSession || item.session_id === foreignBranchSession), false, "branch filter excludes another synthetic branch");
+  response = await request(`/api/attendance?companyId=${companyA}&branchId=${branchB}&from=${today}&to=${today}`, { user: adminA }); assert.equal(response.status, 403);
+  response = await request(`/api/attendance/${attendanceSessionA}?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
+  response = await request(`/api/attendance/${attendanceSessionB}?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 404);
+  response = await request(`/api/attendance/${attendanceSessionA}?companyId=${companyB}`, { user: adminB }); assert.equal(response.status, 404);
+  response = await request(`/api/attendance?companyId=${companyA}&from=bad&to=${today}`, { user: adminA }); assert.equal(response.status, 400);
+
+  const beforeScanDenialsA = await snapshot(companyA), beforeScanDenialsB = await snapshot(companyB);
+  response = await request("/api/attendance/scan", { method: "POST", body: { action: "preview", companyId: companyA, qrToken: "x".repeat(40), pin: "123456" } }); assert.equal(response.status, 401);
+  response = await request("/api/attendance/scan", { user: employeeA, method: "POST", body: { action: "preview", companyId: companyA, qrToken: "x".repeat(40), pin: "123456" } }); assert.equal(response.status, 403);
+  response = await request("/api/attendance/scan", { user: supervisorA, method: "POST", cookieExtra: `qr_device_${companyA}=invalid-synthetic-device`, body: { action: "preview", companyId: companyA, qrToken: "x".repeat(40), pin: "123456" } }); assert.equal(response.status, 403);
+  assert.deepEqual(await snapshot(companyA), beforeScanDenialsA, "scanner rejects anonymous, employee, and unauthorized-device requests without attendance, PIN, or audit side effects");
+  assert.deepEqual(await snapshot(companyB), beforeScanDenialsB, "scanner denial cannot modify another company");
+
+  // Schedule endpoints: real Auth sessions, company selection, branch scope,
+  // role/permission checks, direct RLS calls, and zero-write rejection snapshots.
+  response = await request("/api/schedules"); assert.equal(response.status, 401);
+  response = await request(`/api/schedules?companyId=${companyA}`, { user: supervisorA }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules?companyId=${companyA}`, { user: employeeA }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules?companyId=${companyB}`, { user: adminA }); assert.equal(response.status, 403);
+  response = await request("/api/schedules", { user: multiAdmin }); assert.equal(response.status, 400);
+  response = await request(`/api/schedules?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
+  const schedulesA = await response.json();
+  assert.equal(schedulesA.items.some((item) => item.branch_id === branchB), false, "schedule listing does not expose another company");
+  response = await request(`/api/schedules?companyId=${companyB}`, { user: multiAdmin }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).items.some((item) => item.branch_id === branchA), false, "multi-company selection scopes schedule results");
+
+  const schedulePayload = (branchId, name) => ({ branchId, name, kind: "fixed", workdayType: "day", entryToleranceMinutes: 5, effectiveFrom: today, effectiveTo: null, revisionOf: null, days: [{ weekday: 1, start: "09:00", end: "17:00", breaks: [{ name: "Comida sintética", start: "12:00", end: "12:30", countsAsWork: false, requiresQr: false, required: false, maxMinutes: null }] }] });
+  const beforeScheduleSetupA = await snapshot(companyA), beforeScheduleSetupB = await snapshot(companyB);
+  response = await request(`/api/schedules?companyId=${companyA}`, { user: adminA, method: "POST", body: schedulePayload(branchB, `Rejected ${randomUUID()}`) }); assert.equal(response.status, 422);
+  response = await request(`/api/schedules?companyId=${companyA}`, { user: adminA, method: "POST", body: { branchId: branchA, name: "" } }); assert.equal(response.status, 422);
+  assert.deepEqual(await snapshot(companyA), beforeScheduleSetupA, "invalid and cross-company schedule creation has no side effects");
+  assert.deepEqual(await snapshot(companyB), beforeScheduleSetupB, "cross-company schedule creation cannot modify the target tenant");
+
+  const deniedSchedulePermission = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "schedules.manage", allowed: false });
+  if (deniedSchedulePermission.error) throw new Error("could not prepare synthetic schedules.manage denial");
+  const beforeSchedulePermissionDenial = await snapshot(companyA);
+  response = await request(`/api/schedules?companyId=${companyA}`, { user: adminA, method: "POST", body: schedulePayload(branchA, `Denied ${randomUUID()}`) }); assert.equal(response.status, 403);
+  assert.deepEqual(await snapshot(companyA), beforeSchedulePermissionDenial, "API schedule denial leaves templates, assignments, and audit unchanged");
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "schedules.manage");
+
+  response = await request(`/api/schedules?companyId=${companyA}`, { user: adminA, method: "POST", body: schedulePayload(branchA, `Synthetic A ${randomUUID()}`) }); assert.equal(response.status, 201);
+  const templateA = (await response.json()).item;
+  response = await request(`/api/schedules?companyId=${companyB}`, { user: adminB, method: "POST", body: schedulePayload(branchB, `Synthetic B ${randomUUID()}`) }); assert.equal(response.status, 201);
+  const templateB = (await response.json()).item;
+  assert.equal((await service.from("schedule_templates").select("company_id").eq("id", templateA.id).single()).data.company_id, companyA);
+  assert.equal((await service.from("schedule_templates").select("company_id").eq("id", templateB.id).single()).data.company_id, companyB);
+
+  // Direct PostgREST writes exercise the table policies independently of the
+  // API's transactional RPC. First prove all four table paths still work with
+  // schedules.manage, then revoke only that permission while company.read
+  // remains granted and prove insert/update are blocked by RLS.
+  const companyReadBeforeOverride = await adminA.client.from("companies").select("id").eq("id", companyA).single();
+  assert.deepEqual(companyReadBeforeOverride.data, { id: companyA }, "admin retains company.read before the schedule permission override");
+  const directTemplate = await adminA.client.from("schedule_templates").insert({ company_id: companyA, branch_id: branchA, name: `Direct allowed ${randomUUID()}`, kind: "fixed" }).select("id").single();
+  assert.ok(!directTemplate.error && directTemplate.data?.id, "authorized direct insert succeeds for schedule_templates");
+  const directDay = await adminA.client.from("schedule_template_days").insert({ company_id: companyA, template_id: directTemplate.data.id, iso_weekday: 2, start_local: "09:00", end_local: "17:00", scheduled_minutes: 480 }).select("id").single();
+  assert.ok(!directDay.error && directDay.data?.id, "authorized direct insert succeeds for schedule_template_days");
+  const directRule = await service.from("break_rules").insert({ company_id: companyA, code: `DIRECT_${randomUUID().slice(0, 8)}`, name: "Regla sintética directa", effective_from: today, counts_as_work: false, required: false }).select("id").single();
+  if (directRule.error || !directRule.data?.id) throw new Error("failed to prepare synthetic break rule for direct RLS checks");
+  const directBreak = await adminA.client.from("schedule_template_breaks").insert({ company_id: companyA, template_day_id: directDay.data.id, break_rule_id: directRule.data.id, planned_start_local: "12:00", planned_end_local: "12:30", planned_minutes: 30 }).select("id").single();
+  assert.ok(!directBreak.error && directBreak.data?.id, "authorized direct insert succeeds for schedule_template_breaks");
+  const assignmentTemplate = await service.from("schedule_templates").insert({ company_id: companyA, branch_id: branchA, name: `Assignment fixture ${randomUUID()}`, kind: "fixed" }).select("id").single();
+  if (assignmentTemplate.error || !assignmentTemplate.data?.id) throw new Error("failed to prepare synthetic assignment template");
+  const assignmentDay = await service.from("schedule_template_days").insert({ company_id: companyA, template_id: assignmentTemplate.data.id, iso_weekday: 3, start_local: "09:00", end_local: "17:00", scheduled_minutes: 480 }).select("id").single();
+  if (assignmentDay.error || !assignmentDay.data?.id) throw new Error("failed to prepare synthetic assignment day");
+  const directAssignmentEmployee = await service.from("employees").insert({ company_id: companyA, employee_number: `DIRECT-${randomBytes(4).toString("hex")}`, first_name: "Synthetic", last_name: "Direct assignment", branch_id: branchA, active: true }).select("id").single();
+  if (directAssignmentEmployee.error || !directAssignmentEmployee.data?.id) throw new Error("failed to prepare synthetic employee for direct assignment RLS checks");
+  const directAssignment = await adminA.client.from("schedule_assignments").insert({ company_id: companyA, employee_id: directAssignmentEmployee.data.id, template_id: assignmentTemplate.data.id, branch_id: branchA, starts_on: "2095-01-01", ends_on: "2095-12-31", timezone: "America/Mexico_City", kind: "fixed", planned_start_local: "09:00", planned_end_local: "17:00", planned_minutes: 480 }).select("id").single();
+  assert.ok(!directAssignment.error && directAssignment.data?.id, `authorized direct insert succeeds for schedule_assignments (${directAssignment.error?.code ?? "ok"}: ${directAssignment.error?.message ?? ""})`);
+  const validTemplateUpdate = await adminA.client.from("schedule_templates").update({ name: `Direct updated ${randomUUID()}` }).eq("id", directTemplate.data.id).select("id").single();
+  assert.ok(!validTemplateUpdate.error && validTemplateUpdate.data?.id, "authorized direct update succeeds for schedule_templates");
+  const validDayUpdate = await adminA.client.from("schedule_template_days").update({ scheduled_minutes: 479 }).eq("id", directDay.data.id).select("id").single();
+  assert.ok(!validDayUpdate.error && validDayUpdate.data?.id, "authorized direct update succeeds for schedule_template_days");
+  const validAssignmentUpdate = await adminA.client.from("schedule_assignments").update({ ends_on: "2095-11-30" }).eq("id", directAssignment.data.id).select("id").single();
+  assert.ok(!validAssignmentUpdate.error && validAssignmentUpdate.data?.id, "authorized direct update succeeds for schedule_assignments");
+  const validBreakUpdate = await adminA.client.from("schedule_template_breaks").update({ planned_start_local: "12:15" }).eq("id", directBreak.data.id).select("id").single();
+  assert.ok(!validBreakUpdate.error && validBreakUpdate.data?.id, "authorized direct update succeeds for schedule_template_breaks");
+
+  const directBreakRuleDenied = await service.from("break_rules").insert({ company_id: companyA, code: `DENIED_${randomUUID().slice(0, 8)}`, name: "Regla sintética para rechazo", effective_from: today, counts_as_work: false, required: false }).select("id").single();
+  if (directBreakRuleDenied.error || !directBreakRuleDenied.data?.id) throw new Error("failed to prepare second synthetic break rule for denied insert");
+  const beforeDirectRlsDenialsA = await snapshot(companyA), beforeDirectRlsDenialsB = await snapshot(companyB);
+  const revokedSchedulePermission = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "schedules.manage", allowed: false });
+  if (revokedSchedulePermission.error) throw new Error("could not revoke synthetic admin schedules.manage permission");
+  const companyReadAfterOverride = await adminA.client.from("companies").select("id").eq("id", companyA).single();
+  assert.deepEqual(companyReadAfterOverride.data, { id: companyA }, "company.read remains permitted while schedules.manage is explicitly denied");
+  const assertDeniedRlsWrite = (result, label) => {
+    if (result.error) assert.equal(result.error.code, "42501", `${label} returns SQLSTATE 42501`);
+    else assert.equal((result.data ?? []).length, 0, `${label} affects no rows under RLS`);
+  };
+  const deniedTemplateInsert = await adminA.client.from("schedule_templates").insert({ company_id: companyA, branch_id: branchA, name: `Direct denied ${randomUUID()}`, kind: "fixed" }).select("id");
+  assertDeniedRlsWrite(deniedTemplateInsert, "schedule_templates insert");
+  const deniedDayInsert = await adminA.client.from("schedule_template_days").insert({ company_id: companyA, template_id: directTemplate.data.id, iso_weekday: 7, start_local: "10:00", end_local: "18:00", scheduled_minutes: 480 }).select("id");
+  assertDeniedRlsWrite(deniedDayInsert, "schedule_template_days insert");
+  const deniedAssignmentInsert = await adminA.client.from("schedule_assignments").insert({ company_id: companyA, employee_id: directAssignmentEmployee.data.id, template_id: assignmentTemplate.data.id, branch_id: branchA, starts_on: "2096-01-01", ends_on: "2096-12-31", timezone: "America/Mexico_City", kind: "fixed", planned_start_local: "10:00", planned_end_local: "18:00", planned_minutes: 480 }).select("id");
+  assert.ok(deniedAssignmentInsert.error?.code === "42501" || deniedAssignmentInsert.error?.code === "23503", "schedule_assignments insert is rejected by permission RLS or its authorization-aware template guard");
+  const deniedBreakInsert = await adminA.client.from("schedule_template_breaks").insert({ company_id: companyA, template_day_id: directDay.data.id, break_rule_id: directBreakRuleDenied.data.id, planned_start_local: "13:00", planned_end_local: "13:30", planned_minutes: 30 }).select("id");
+  assertDeniedRlsWrite(deniedBreakInsert, "schedule_template_breaks insert");
+
+  const deniedTemplateUpdate = await adminA.client.from("schedule_templates").update({ name: `Denied update ${randomUUID()}` }).eq("id", directTemplate.data.id).select("id");
+  assertDeniedRlsWrite(deniedTemplateUpdate, "schedule_templates update");
+  const deniedDayUpdate = await adminA.client.from("schedule_template_days").update({ scheduled_minutes: 479 }).eq("id", directDay.data.id).select("id");
+  assertDeniedRlsWrite(deniedDayUpdate, "schedule_template_days update");
+  const deniedAssignmentUpdate = await adminA.client.from("schedule_assignments").update({ ends_on: "2095-10-31" }).eq("id", directAssignment.data.id).select("id");
+  assertDeniedRlsWrite(deniedAssignmentUpdate, "schedule_assignments update");
+  const deniedBreakUpdate = await adminA.client.from("schedule_template_breaks").update({ planned_start_local: "12:15" }).eq("id", directBreak.data.id).select("id");
+  assertDeniedRlsWrite(deniedBreakUpdate, "schedule_template_breaks update");
+  assert.deepEqual(await snapshot(companyA), beforeDirectRlsDenialsA, "direct schedule insert/update denials leave company A data and audit unchanged");
+  assert.deepEqual(await snapshot(companyB), beforeDirectRlsDenialsB, "direct schedule denials leave company B data and audit unchanged");
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "schedules.manage");
+  process.stdout.write("PASS direct inserts and updates on all four schedule tables require schedules.manage; valid direct inserts remain available to authorized admins\n");
+
+  response = await request(`/api/schedules?companyId=${companyA}&branchId=${otherBranchA}`, { user: adminA }); assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).items, [], "branch filter returns no schedules from an unselected branch");
+  response = await request(`/api/schedules/${templateA.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { active: false } }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.active, false);
+  response = await request(`/api/schedules/${templateA.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { active: true } }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.active, true);
+
+  response = await request(`/api/schedules/assignments?companyId=${companyA}`, { user: employeeA, method: "POST", body: { branchId: branchA, templateId: templateA.id, employeeIds: [employeeA.employeeId], startsOn: today, endsOn: null } }); assert.equal(response.status, 403);
+  response = await request(`/api/schedules/assignments?companyId=${companyA}`, { method: "POST", body: { branchId: branchA, templateId: templateA.id, employeeIds: [employeeA.employeeId], startsOn: today, endsOn: null } }); assert.equal(response.status, 401);
+  const beforeForeignAssignmentA = await snapshot(companyA), beforeForeignAssignmentB = await snapshot(companyB);
+  response = await request(`/api/schedules/assignments?companyId=${companyA}`, { user: adminA, method: "POST", body: { branchId: branchB, templateId: templateB.id, employeeIds: [employeeB.employeeId], startsOn: today, endsOn: null } }); assert.equal(response.status, 422);
+  response = await request(`/api/schedules/assignments?companyId=${companyA}`, { user: adminA, method: "POST", body: { branchId: otherBranchA, templateId: templateA.id, employeeIds: [employeeA.employeeId], startsOn: today, endsOn: null } }); assert.equal(response.status, 422);
+  response = await request(`/api/schedules/${templateB.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { active: false } }); assert.equal(response.status, 404);
+  assert.deepEqual(await snapshot(companyA), beforeForeignAssignmentA, "foreign template, employee, branch, and schedule IDs cannot create/update tenant A data");
+  assert.deepEqual(await snapshot(companyB), beforeForeignAssignmentB, "rejected assignment and update cannot mutate tenant B");
+
+  const beforeSupervisorScheduleDenial = await snapshot(companyA);
+  const supervisorScheduleRpc = await supervisorA.client.rpc("save_schedule_template", {
+    p_company_id: companyA, p_branch_id: branchA, p_name: `Denied supervisor ${randomUUID()}`, p_kind: "fixed", p_workday_type: "day",
+    p_entry_tolerance_minutes: 0, p_effective_from: today, p_effective_to: null,
+    p_days: [{ weekday: 1, start_local: "09:00", end_local: "17:00", scheduled_minutes: 480, breaks: [] }], p_revision_of: null,
+  });
+  assert.equal(supervisorScheduleRpc.error?.code, "42501", "supervisor role cannot call schedule management RPC without schedules.manage");
+  assert.deepEqual(await snapshot(companyA), beforeSupervisorScheduleDenial, "role-denied schedule RPC leaves schedules and audit unchanged");
+  await service.from("company_memberships").update({ active: false }).eq("id", supervisorA.memberships[0].id);
+  const beforeRevokedSupervisorWrite = await snapshot(companyA);
+  const revokedSupervisorAdjustment = await supervisorA.client.from("attendance_adjustments").insert({ company_id: companyA, session_id: attendanceSessionA, requested_by: supervisorA.userId, reason: "Synthetic revoked correction", proposed_events: [] });
+  assert.equal(revokedSupervisorAdjustment.error?.code, "42501", "revoked supervisor membership cannot submit corrections");
+  assert.deepEqual(await snapshot(companyA), beforeRevokedSupervisorWrite, "revoked membership cannot alter corrections or audit");
+  await service.from("company_memberships").update({ active: true }).eq("id", supervisorA.memberships[0].id);
+
+  response = await request(`/api/schedules/assignments?companyId=${companyA}`, { user: adminA, method: "POST", body: { branchId: branchA, templateId: templateA.id, employeeIds: [employeeA.employeeId], startsOn: today, endsOn: null } }); assert.equal(response.status, 201);
+  response = await request(`/api/schedules/assignments?companyId=${companyA}&employeeId=${employeeB.employeeId}`, { user: adminA }); assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).items, [], "assignment lookup does not disclose an employee from another tenant");
+  const monday = new Date(`${today}T00:00:00.000Z`);
+  monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+  const weekStart = monday.toISOString().slice(0, 10);
+  response = await request(`/api/schedules/calendar?companyId=${companyA}&weekStart=${weekStart}&branchId=${branchA}`, { user: adminA }); assert.equal(response.status, 200);
+  const calendar = await response.json();
+  assert.equal(calendar.weekStart, weekStart);
+  assert.ok(calendar.days.some((day) => day.rows.some((row) => row.employee.id === employeeA.employeeId && row.assignment?.templateName === templateA.name)));
+  const inactiveAdmin = await createHttpUser("inactive-admin", "admin", companyA);
+  await service.from("company_memberships").update({ active: false }).eq("id", inactiveAdmin.memberships[0].id);
+  const beforeInactiveAdmin = await snapshot(companyA);
+  response = await request(`/api/schedules?companyId=${companyA}`, { user: inactiveAdmin }); assert.equal(response.status, 403);
+  response = await request(`/api/attendance?companyId=${companyA}&from=${today}&to=${today}`, { user: inactiveAdmin }); assert.equal(response.status, 403);
+  assert.deepEqual(await snapshot(companyA), beforeInactiveAdmin, "revoked admin membership cannot read or mutate schedule data");
+  process.stdout.write("PASS attendance, scanner, correction-RLS, and schedule HTTP/Auth matrix enforces tenant/branch/role/permission boundaries with zero-write rejection snapshots\n");
+
   // Employee and branch routes were previously covered only by static/unit
   // checks. Exercise their real SSR Auth boundary and tenant/branch scoping.
-  let response = await request("/api/employees"); assert.equal(response.status, 401);
+  response = await request("/api/employees"); assert.equal(response.status, 401);
   response = await request("/api/employees", { user: supervisorA }); assert.equal(response.status, 403);
   response = await request("/api/employees", { user: adminA }); assert.equal(response.status, 200);
   const employeesA = await response.json();

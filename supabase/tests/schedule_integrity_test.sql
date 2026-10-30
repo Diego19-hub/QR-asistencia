@@ -1,5 +1,5 @@
 BEGIN;
-SELECT plan(24);
+SELECT plan(31);
 
 SELECT has_table('public', 'schedule_template_breaks', 'planned breaks are linked to schedule days');
 SELECT has_column('public', 'schedule_templates', 'workday_type', 'shift classification is configurable');
@@ -25,6 +25,13 @@ SELECT is(((timestamp '2026-01-01 22:00' at time zone 'America/Mexico_City') + i
 SELECT is((480 - 60)::integer, 420, 'a non-computable planned break is excluded from scheduled work');
 SELECT is((480 - 0)::integer, 480, 'a computable planned break remains part of scheduled work');
 SELECT ok(position('detected_overtime_minutes' in pg_get_viewdef('public.attendance_session_totals'::regclass)) > 0 AND to_regclass('public.overtime_authorizations') IS NOT NULL, 'detected and authorized overtime remain separate');
+SELECT ok(to_regprocedure('private.can_manage_branch(uuid,uuid,text)') IS NOT NULL, 'branch writes have an explicit permission-and-membership guard');
+SELECT ok((SELECT position('can_manage_branch' in pg_get_expr(polwithcheck,polrelid)) > 0 FROM pg_policy WHERE polrelid='public.schedule_templates'::regclass AND polname='schedule_templates_manage'), 'schedule template writes require schedule permission and branch scope');
+SELECT ok((SELECT position('can_manage_branch' in pg_get_expr(polwithcheck,polrelid)) > 0 FROM pg_policy WHERE polrelid='public.attendance_adjustments'::regclass AND polname='attendance_adjustments_submit'), 'attendance corrections require permission and session branch scope');
+SELECT ok((SELECT prosecdef AND 'search_path=""'=ANY(proconfig) FROM pg_proc WHERE oid='private.can_manage_branch(uuid,uuid,text)'::regprocedure), 'branch permission guard is SECURITY DEFINER with an empty search_path');
+SELECT ok(has_function_privilege('authenticated','private.can_manage_branch(uuid,uuid,text)','EXECUTE') AND NOT has_function_privilege('anon','private.can_manage_branch(uuid,uuid,text)','EXECUTE'), 'only authenticated clients can invoke the branch permission guard');
+SELECT is((SELECT count(*)::integer FROM pg_policy WHERE polrelid IN ('public.schedule_templates'::regclass,'public.schedule_template_days'::regclass,'public.schedule_assignments'::regclass,'public.schedule_template_breaks'::regclass,'public.attendance_adjustments'::regclass) AND polpermissive AND polcmd IN ('*','a','w','d')), 7, 'schedule and correction tables have only the expected permissive write policies');
+SELECT ok(NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid IN ('public.schedule_templates'::regclass,'public.schedule_template_days'::regclass,'public.schedule_assignments'::regclass,'public.schedule_template_breaks'::regclass,'public.attendance_adjustments'::regclass) AND polpermissive AND polcmd IN ('*','a','w','d') AND (coalesce(pg_get_expr(polqual,polrelid),'') || coalesce(pg_get_expr(polwithcheck,polrelid),'')) NOT LIKE '%can_manage_branch%'), 'every permissive schedule/correction write policy delegates to the permission-and-branch guard');
 
 SELECT * FROM finish();
 ROLLBACK;
