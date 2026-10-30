@@ -341,6 +341,12 @@ try {
   if (syntheticLegacyAdjustment.error || !syntheticLegacyAdjustment.data) throw new Error("failed creating synthetic historical adjustment for read-scope check");
   const foreignBranchAdjustmentRead = await supervisorA.client.from("attendance_adjustments").select("id").eq("id", syntheticLegacyAdjustment.data.id);
   if (foreignBranchAdjustmentRead.error || (foreignBranchAdjustmentRead.data ?? []).length !== 0) throw new Error("supervisor can read an adjustment for an unassigned branch");
+  const ownerBranchAssignments = await service.from("supervisor_branches").select("branch_id").eq("company_id", companyA).eq("membership_id", ownerA.memberships[0].id);
+  if (ownerBranchAssignments.error || (ownerBranchAssignments.data ?? []).length !== 0) throw new Error("synthetic owner unexpectedly has a supervisor branch assignment");
+  const crossBranchCompanyReview = await ownerA.client.rpc("review_attendance_adjustment", { p_adjustment_id: syntheticLegacyAdjustment.data.id, p_approve: true, p_review_note: "Synthetic company-scope review" });
+  assert.ok(!crossBranchCompanyReview.error, `company reviewer can review a correction from another branch (${crossBranchCompanyReview.error?.code ?? "ok"})`);
+  const companyReviewedAdjustment = await service.from("attendance_adjustments").select("status,reviewed_by").eq("id", syntheticLegacyAdjustment.data.id).single();
+  assert.deepEqual(companyReviewedAdjustment.data, { status: "approved", reviewed_by: ownerA.userId }, "review_attendance_adjustment authorization is company-level rather than supervisor-branch-scoped");
   const noAttendanceAdjust = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "attendance.adjust", allowed: false });
   if (noAttendanceAdjust.error) throw new Error("could not prepare synthetic attendance.adjust denial");
   const beforeAdminAdjustmentDenial = await snapshot(companyA);
@@ -423,9 +429,7 @@ try {
   if (deniedSchedulePermission.error) throw new Error("could not prepare synthetic schedules.manage denial");
   const beforeSchedulePermissionDenial = await snapshot(companyA);
   response = await request(`/api/schedules?companyId=${companyA}`, { user: adminA, method: "POST", body: schedulePayload(branchA, `Denied ${randomUUID()}`) }); assert.equal(response.status, 403);
-  const directDeniedTemplate = await adminA.client.from("schedule_templates").insert({ company_id: companyA, branch_id: branchA, name: `Direct denied ${randomUUID()}`, kind: "fixed" }).select("id").maybeSingle();
-  assert.equal(directDeniedTemplate.error?.code, "42501", "direct PostgREST write is denied by schedule RLS when schedules.manage is revoked");
-  assert.deepEqual(await snapshot(companyA), beforeSchedulePermissionDenial, "API and direct RLS schedule denials leave templates, assignments, and audit unchanged");
+  assert.deepEqual(await snapshot(companyA), beforeSchedulePermissionDenial, "API schedule denial leaves templates, assignments, and audit unchanged");
   await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "schedules.manage");
 
   response = await request(`/api/schedules?companyId=${companyA}`, { user: adminA, method: "POST", body: schedulePayload(branchA, `Synthetic A ${randomUUID()}`) }); assert.equal(response.status, 201);
@@ -434,6 +438,71 @@ try {
   const templateB = (await response.json()).item;
   assert.equal((await service.from("schedule_templates").select("company_id").eq("id", templateA.id).single()).data.company_id, companyA);
   assert.equal((await service.from("schedule_templates").select("company_id").eq("id", templateB.id).single()).data.company_id, companyB);
+
+  // Direct PostgREST writes exercise the table policies independently of the
+  // API's transactional RPC. First prove all four table paths still work with
+  // schedules.manage, then revoke only that permission while company.read
+  // remains granted and prove insert/update are blocked by RLS.
+  const companyReadBeforeOverride = await adminA.client.from("companies").select("id").eq("id", companyA).single();
+  assert.deepEqual(companyReadBeforeOverride.data, { id: companyA }, "admin retains company.read before the schedule permission override");
+  const directTemplate = await adminA.client.from("schedule_templates").insert({ company_id: companyA, branch_id: branchA, name: `Direct allowed ${randomUUID()}`, kind: "fixed" }).select("id").single();
+  assert.ok(!directTemplate.error && directTemplate.data?.id, "authorized direct insert succeeds for schedule_templates");
+  const directDay = await adminA.client.from("schedule_template_days").insert({ company_id: companyA, template_id: directTemplate.data.id, iso_weekday: 2, start_local: "09:00", end_local: "17:00", scheduled_minutes: 480 }).select("id").single();
+  assert.ok(!directDay.error && directDay.data?.id, "authorized direct insert succeeds for schedule_template_days");
+  const directRule = await service.from("break_rules").insert({ company_id: companyA, code: `DIRECT_${randomUUID().slice(0, 8)}`, name: "Regla sintética directa", effective_from: today, counts_as_work: false, required: false }).select("id").single();
+  if (directRule.error || !directRule.data?.id) throw new Error("failed to prepare synthetic break rule for direct RLS checks");
+  const directBreak = await adminA.client.from("schedule_template_breaks").insert({ company_id: companyA, template_day_id: directDay.data.id, break_rule_id: directRule.data.id, planned_start_local: "12:00", planned_end_local: "12:30", planned_minutes: 30 }).select("id").single();
+  assert.ok(!directBreak.error && directBreak.data?.id, "authorized direct insert succeeds for schedule_template_breaks");
+  const assignmentTemplate = await service.from("schedule_templates").insert({ company_id: companyA, branch_id: branchA, name: `Assignment fixture ${randomUUID()}`, kind: "fixed" }).select("id").single();
+  if (assignmentTemplate.error || !assignmentTemplate.data?.id) throw new Error("failed to prepare synthetic assignment template");
+  const assignmentDay = await service.from("schedule_template_days").insert({ company_id: companyA, template_id: assignmentTemplate.data.id, iso_weekday: 3, start_local: "09:00", end_local: "17:00", scheduled_minutes: 480 }).select("id").single();
+  if (assignmentDay.error || !assignmentDay.data?.id) throw new Error("failed to prepare synthetic assignment day");
+  const directAssignmentEmployee = await service.from("employees").insert({ company_id: companyA, employee_number: `DIRECT-${randomBytes(4).toString("hex")}`, first_name: "Synthetic", last_name: "Direct assignment", branch_id: branchA, active: true }).select("id").single();
+  if (directAssignmentEmployee.error || !directAssignmentEmployee.data?.id) throw new Error("failed to prepare synthetic employee for direct assignment RLS checks");
+  const directAssignment = await adminA.client.from("schedule_assignments").insert({ company_id: companyA, employee_id: directAssignmentEmployee.data.id, template_id: assignmentTemplate.data.id, branch_id: branchA, starts_on: "2095-01-01", ends_on: "2095-12-31", timezone: "America/Mexico_City", kind: "fixed", planned_start_local: "09:00", planned_end_local: "17:00", planned_minutes: 480 }).select("id").single();
+  assert.ok(!directAssignment.error && directAssignment.data?.id, `authorized direct insert succeeds for schedule_assignments (${directAssignment.error?.code ?? "ok"}: ${directAssignment.error?.message ?? ""})`);
+  const validTemplateUpdate = await adminA.client.from("schedule_templates").update({ name: `Direct updated ${randomUUID()}` }).eq("id", directTemplate.data.id).select("id").single();
+  assert.ok(!validTemplateUpdate.error && validTemplateUpdate.data?.id, "authorized direct update succeeds for schedule_templates");
+  const validDayUpdate = await adminA.client.from("schedule_template_days").update({ scheduled_minutes: 479 }).eq("id", directDay.data.id).select("id").single();
+  assert.ok(!validDayUpdate.error && validDayUpdate.data?.id, "authorized direct update succeeds for schedule_template_days");
+  const validAssignmentUpdate = await adminA.client.from("schedule_assignments").update({ ends_on: "2095-11-30" }).eq("id", directAssignment.data.id).select("id").single();
+  assert.ok(!validAssignmentUpdate.error && validAssignmentUpdate.data?.id, "authorized direct update succeeds for schedule_assignments");
+  const validBreakUpdate = await adminA.client.from("schedule_template_breaks").update({ planned_start_local: "12:15" }).eq("id", directBreak.data.id).select("id").single();
+  assert.ok(!validBreakUpdate.error && validBreakUpdate.data?.id, "authorized direct update succeeds for schedule_template_breaks");
+
+  const directBreakRuleDenied = await service.from("break_rules").insert({ company_id: companyA, code: `DENIED_${randomUUID().slice(0, 8)}`, name: "Regla sintética para rechazo", effective_from: today, counts_as_work: false, required: false }).select("id").single();
+  if (directBreakRuleDenied.error || !directBreakRuleDenied.data?.id) throw new Error("failed to prepare second synthetic break rule for denied insert");
+  const beforeDirectRlsDenialsA = await snapshot(companyA), beforeDirectRlsDenialsB = await snapshot(companyB);
+  const revokedSchedulePermission = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "schedules.manage", allowed: false });
+  if (revokedSchedulePermission.error) throw new Error("could not revoke synthetic admin schedules.manage permission");
+  const companyReadAfterOverride = await adminA.client.from("companies").select("id").eq("id", companyA).single();
+  assert.deepEqual(companyReadAfterOverride.data, { id: companyA }, "company.read remains permitted while schedules.manage is explicitly denied");
+  const assertDeniedRlsWrite = (result, label) => {
+    if (result.error) assert.equal(result.error.code, "42501", `${label} returns SQLSTATE 42501`);
+    else assert.equal((result.data ?? []).length, 0, `${label} affects no rows under RLS`);
+  };
+  const deniedTemplateInsert = await adminA.client.from("schedule_templates").insert({ company_id: companyA, branch_id: branchA, name: `Direct denied ${randomUUID()}`, kind: "fixed" }).select("id");
+  assertDeniedRlsWrite(deniedTemplateInsert, "schedule_templates insert");
+  const deniedDayInsert = await adminA.client.from("schedule_template_days").insert({ company_id: companyA, template_id: directTemplate.data.id, iso_weekday: 7, start_local: "10:00", end_local: "18:00", scheduled_minutes: 480 }).select("id");
+  assertDeniedRlsWrite(deniedDayInsert, "schedule_template_days insert");
+  const deniedAssignmentInsert = await adminA.client.from("schedule_assignments").insert({ company_id: companyA, employee_id: directAssignmentEmployee.data.id, template_id: assignmentTemplate.data.id, branch_id: branchA, starts_on: "2096-01-01", ends_on: "2096-12-31", timezone: "America/Mexico_City", kind: "fixed", planned_start_local: "10:00", planned_end_local: "18:00", planned_minutes: 480 }).select("id");
+  assert.ok(deniedAssignmentInsert.error?.code === "42501" || deniedAssignmentInsert.error?.code === "23503", "schedule_assignments insert is rejected by permission RLS or its authorization-aware template guard");
+  const deniedBreakInsert = await adminA.client.from("schedule_template_breaks").insert({ company_id: companyA, template_day_id: directDay.data.id, break_rule_id: directBreakRuleDenied.data.id, planned_start_local: "13:00", planned_end_local: "13:30", planned_minutes: 30 }).select("id");
+  assertDeniedRlsWrite(deniedBreakInsert, "schedule_template_breaks insert");
+
+  const deniedTemplateUpdate = await adminA.client.from("schedule_templates").update({ name: `Denied update ${randomUUID()}` }).eq("id", directTemplate.data.id).select("id");
+  assertDeniedRlsWrite(deniedTemplateUpdate, "schedule_templates update");
+  const deniedDayUpdate = await adminA.client.from("schedule_template_days").update({ scheduled_minutes: 479 }).eq("id", directDay.data.id).select("id");
+  assertDeniedRlsWrite(deniedDayUpdate, "schedule_template_days update");
+  const deniedAssignmentUpdate = await adminA.client.from("schedule_assignments").update({ ends_on: "2095-10-31" }).eq("id", directAssignment.data.id).select("id");
+  assertDeniedRlsWrite(deniedAssignmentUpdate, "schedule_assignments update");
+  const deniedBreakUpdate = await adminA.client.from("schedule_template_breaks").update({ planned_start_local: "12:15" }).eq("id", directBreak.data.id).select("id");
+  assertDeniedRlsWrite(deniedBreakUpdate, "schedule_template_breaks update");
+  assert.deepEqual(await snapshot(companyA), beforeDirectRlsDenialsA, "direct schedule insert/update denials leave company A data and audit unchanged");
+  assert.deepEqual(await snapshot(companyB), beforeDirectRlsDenialsB, "direct schedule denials leave company B data and audit unchanged");
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "schedules.manage");
+  process.stdout.write("PASS direct inserts and updates on all four schedule tables require schedules.manage; valid direct inserts remain available to authorized admins\n");
+
   response = await request(`/api/schedules?companyId=${companyA}&branchId=${otherBranchA}`, { user: adminA }); assert.equal(response.status, 200);
   assert.deepEqual((await response.json()).items, [], "branch filter returns no schedules from an unselected branch");
   response = await request(`/api/schedules/${templateA.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { active: false } }); assert.equal(response.status, 200);
