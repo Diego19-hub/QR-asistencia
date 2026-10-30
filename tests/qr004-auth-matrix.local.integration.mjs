@@ -117,7 +117,7 @@ async function stopNext() {
     await exited;
   }
 }
-async function createHttpUser(label, role, companyId, { extraMemberships = [], employee = false } = {}) {
+async function createHttpUser(label, role, companyId, { extraMemberships = [], employee = false, branchId } = {}) {
   const email = `${label}-${randomUUID()}@qr-asistencia.invalid`;
   const password = randomBytes(32).toString("base64url");
   const created = await service.auth.admin.createUser({ email, password, email_confirm: true });
@@ -129,9 +129,11 @@ async function createHttpUser(label, role, companyId, { extraMemberships = [], e
     if (inserted.error || !inserted.data) throw new Error(`synthetic membership creation failed (${label})`);
     membershipRows.push(inserted.data);
   }
+  let employeeId;
   if (employee) {
-    const inserted = await service.from("employees").insert({ company_id: companyId, employee_number: `HTTP-${randomBytes(4).toString("hex")}`, first_name: "Synthetic", last_name: label, email, auth_user_id: userId, active: true }).select("id").single();
+    const inserted = await service.from("employees").insert({ company_id: companyId, employee_number: `HTTP-${randomBytes(4).toString("hex")}`, first_name: "Synthetic", last_name: label, email, auth_user_id: userId, branch_id: branchId ?? null, active: true }).select("id").single();
     if (inserted.error || !inserted.data) throw new Error(`synthetic employee creation failed (${label})`);
+    employeeId = inserted.data.id;
   }
   const client = createClient(apiUrl, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
   const login = await client.auth.signInWithPassword({ email, password });
@@ -145,7 +147,7 @@ async function createHttpUser(label, role, companyId, { extraMemberships = [], e
   } });
   const ssrLogin = await ssr.auth.signInWithPassword({ email, password });
   if (ssrLogin.error) throw new Error(`local SSR session creation failed (${label})`);
-  return { userId, email, companyId, memberships: membershipRows, client, cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; ") };
+  return { userId, email, companyId, employeeId, memberships: membershipRows, client, cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; ") };
 }
 async function createAuthOnly(email) {
   const password = randomBytes(32).toString("base64url");
@@ -178,7 +180,11 @@ async function snapshot(companyId) {
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'status',status,'email',email,'expires_at',expires_at,'share_token_hash',share_token_hash) order by id),'[]'::jsonb) from public.company_user_invitations where company_id=$1) invitations,
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'actor_user_id',actor_user_id,'action',action,'entity_table',entity_table,'entity_id',entity_id,'before_data',before_data,'after_data',after_data) order by id),'[]'::jsonb) from public.audit_log where company_id=$1) audit,
     (select coalesce(jsonb_agg(jsonb_build_object('id',id,'user_id',user_id,'role',role,'active',active) order by id),'[]'::jsonb) from public.company_memberships where company_id=$1) memberships,
-    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'membership_id',membership_id,'active',active,'revoked_at',revoked_at) order by id),'[]'::jsonb) from public.authorized_devices where company_id=$1) devices`, [companyId]);
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'membership_id',membership_id,'active',active,'revoked_at',revoked_at) order by id),'[]'::jsonb) from public.authorized_devices where company_id=$1) devices,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'name',name,'active',active) order by id),'[]'::jsonb) from public.branches where company_id=$1) branches,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',id,'employee_number',employee_number,'branch_id',branch_id,'active',active) order by id),'[]'::jsonb) from public.employees where company_id=$1) employees,
+    (select coalesce(jsonb_agg(jsonb_build_object('membership_id',membership_id,'employee_id',employee_id) order by membership_id),'[]'::jsonb) from public.supervisors where company_id=$1) supervisors,
+    (select coalesce(jsonb_agg(jsonb_build_object('membership_id',membership_id,'branch_id',branch_id) order by membership_id,branch_id),'[]'::jsonb) from public.supervisor_branches where company_id=$1) supervisor_branches`, [companyId]);
   return rows[0];
 }
 async function request(path, { user, method = "GET", body, cookieExtra = "" } = {}) {
@@ -262,11 +268,17 @@ try {
   const companyBResult = await service.from("companies").insert({ name: `QR004 HTTP Synthetic B ${randomUUID()}` }).select("id").single();
   if (companyAResult.error || companyBResult.error) throw new Error("failed creating synthetic HTTP test companies");
   const companyA = companyAResult.data.id, companyB = companyBResult.data.id;
+  const branchAResult = await service.from("branches").insert({ company_id: companyA, name: `HTTP Branch A ${randomUUID()}`, timezone: "America/Mexico_City" }).select("id").single();
+  const branchBResult = await service.from("branches").insert({ company_id: companyB, name: `HTTP Branch B ${randomUUID()}`, timezone: "America/Mexico_City" }).select("id").single();
+  if (branchAResult.error || branchBResult.error) throw new Error("failed creating synthetic HTTP branches");
+  const branchA = branchAResult.data.id, branchB = branchBResult.data.id;
   const ownerA = await createHttpUser("owner-a", "owner", companyA);
   const adminA = await createHttpUser("admin-a", "admin", companyA);
   const adminB = await createHttpUser("admin-b", "admin", companyB);
   const supervisorA = await createHttpUser("supervisor-a", "supervisor", companyA);
-  const employeeA = await createHttpUser("employee-a", "employee", companyA, { employee: true });
+  const supervisorB = await createHttpUser("supervisor-b", "supervisor", companyB);
+  const employeeA = await createHttpUser("employee-a", "employee", companyA, { employee: true, branchId: branchA });
+  const employeeB = await createHttpUser("employee-b", "employee", companyB, { employee: true, branchId: branchB });
   const multiAdmin = await createHttpUser("multi-admin", "admin", companyA, { extraMemberships: [[companyB, "admin"]] });
   const multiEmployee = await createHttpUser("multi-employee", "employee", companyA, { extraMemberships: [[companyB, "employee"]], employee: true });
   const nextPort = await freePort(base + 20); appUrl = `http://127.0.0.1:${nextPort}`;
@@ -288,8 +300,73 @@ try {
   await waitForNext(`${appUrl}/login`);
   process.stdout.write("PASS local Auth users and temporary Next.js server use only the disposable Supabase loopback endpoints\n");
 
+  // Employee and branch routes were previously covered only by static/unit
+  // checks. Exercise their real SSR Auth boundary and tenant/branch scoping.
+  let response = await request("/api/employees"); assert.equal(response.status, 401);
+  response = await request("/api/employees", { user: supervisorA }); assert.equal(response.status, 403);
+  response = await request("/api/employees", { user: adminA }); assert.equal(response.status, 200);
+  const employeesA = await response.json();
+  assert.ok(employeesA.items.some((item) => item.id === employeeA.employeeId));
+  assert.equal(employeesA.items.some((item) => item.id === employeeB.employeeId), false, "employee listing does not disclose another tenant");
+  response = await request(`/api/employees?branchId=${branchB}`, { user: adminA }); assert.equal(response.status, 403);
+  response = await request(`/api/employees/${employeeB.employeeId}`, { user: adminA }); assert.equal(response.status, 404);
+  const beforeEmployeeDenialsA = await snapshot(companyA), beforeEmployeeDenialsB = await snapshot(companyB);
+  response = await request("/api/employees", { user: adminA, method: "POST", body: { employee_number: `CROSS-${randomUUID()}`, first_name: "Synthetic", last_name: "Rejected", branch_id: branchB } });
+  assert.equal(response.status, 422, "employee creation rejects a branch from another company");
+  response = await request(`/api/employees/${employeeB.employeeId}`, { user: adminA, method: "PATCH", body: { first_name: "Cross Tenant Mutation" } }); assert.equal(response.status, 404);
+  response = await request(`/api/employees/${employeeA.employeeId}`, { user: adminA, method: "PATCH", body: { branch_id: branchB } }); assert.equal(response.status, 422);
+  assert.deepEqual(await snapshot(companyA), beforeEmployeeDenialsA, "rejected employee requests leave tenant A unchanged");
+  assert.deepEqual(await snapshot(companyB), beforeEmployeeDenialsB, "rejected employee requests leave tenant B unchanged");
+
+  response = await request("/api/branches"); assert.equal(response.status, 401);
+  response = await request("/api/branches", { user: supervisorA }); assert.equal(response.status, 403);
+  response = await request("/api/branches", { user: adminA }); assert.equal(response.status, 200);
+  const branchesA = await response.json();
+  assert.ok(branchesA.items.some((item) => item.id === branchA));
+  assert.equal(branchesA.items.some((item) => item.id === branchB), false, "branch listing does not disclose another tenant");
+  const noBranchManage = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "company.manage", allowed: false });
+  if (noBranchManage.error) throw new Error("could not prepare synthetic branch-management denial");
+  const beforeBranchDenial = await snapshot(companyA);
+  response = await request("/api/branches", { user: adminA, method: "POST", body: { name: `Denied Branch ${randomUUID()}`, timezone: "UTC" } }); assert.equal(response.status, 403);
+  assert.deepEqual(await snapshot(companyA), beforeBranchDenial, "company.manage denial cannot create a branch");
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "company.manage");
+  response = await request("/api/branches", { user: adminA, method: "PATCH", body: { id: branchB, active: false } }); assert.equal(response.status, 404);
+  assert.equal((await service.from("branches").select("active").eq("id", branchB).single()).data.active, true, "cross-tenant branch update leaves the target active");
+  process.stdout.write("PASS employee and branch APIs enforce anonymous/role checks, tenant and branch boundaries, company.manage, and zero-write rejections\n");
+
+  // Supervisors and device-management APIs must scope rows by the selected
+  // company and enforce the devices.manage permission inside the RPC layer.
+  response = await request("/api/supervisors"); assert.equal(response.status, 401);
+  response = await request("/api/supervisors", { user: supervisorA }); assert.equal(response.status, 403);
+  response = await request("/api/supervisors", { user: adminA }); assert.equal(response.status, 200);
+  const supervisorList = (await response.json()).data;
+  assert.ok(supervisorList.supervisors.some((item) => item.membershipId === supervisorA.memberships[0].id));
+  assert.equal(supervisorList.supervisors.some((item) => item.membershipId === supervisorB.memberships[0].id), false, "supervisor listing does not disclose another tenant");
+  response = await request("/api/supervisors", { user: adminA, method: "PATCH", body: { membershipId: supervisorB.memberships[0].id, branchId: branchB, assigned: true } }); assert.equal(response.status, 409);
+  assert.deepEqual(await snapshot(companyA), beforeBranchDenial, "foreign supervisor assignment rejection creates no supervisor branch or audit row");
+  response = await request("/api/supervisors", { user: adminA, method: "PATCH", body: { membershipId: supervisorA.memberships[0].id, branchId: branchA, assigned: true } }); assert.equal(response.status, 200);
+  const assignedSupervisor = (await response.json()).data;
+  assert.equal(assignedSupervisor.assigned, true);
+  assert.deepEqual((await service.from("supervisor_branches").select("company_id,branch_id").eq("membership_id", supervisorA.memberships[0].id).single()).data, { company_id: companyA, branch_id: branchA });
+  response = await request("/api/employees", { user: adminA, method: "POST", body: { employee_number: `HTTP-CREATED-${randomUUID()}`, first_name: "Synthetic", last_name: "Created", branch_id: branchA } }); assert.equal(response.status, 201);
+  const createdEmployee = (await response.json()).item;
+  assert.equal(createdEmployee.branch_id, branchA);
+  assert.equal((await service.from("employees").select("company_id,branch_id").eq("id", createdEmployee.id).single()).data.company_id, companyA);
+  response = await request("/api/branches", { user: adminA, method: "POST", body: { name: `HTTP Created ${randomUUID()}`, timezone: "UTC" } }); assert.equal(response.status, 201);
+  const createdBranch = (await response.json()).item;
+  assert.equal((await service.from("branches").select("company_id").eq("id", createdBranch.id).single()).data.company_id, companyA);
+  response = await request("/api/supervisor-devices"); assert.equal(response.status, 401);
+  response = await request("/api/supervisor-devices", { user: supervisorA }); assert.equal(response.status, 403);
+  response = await request("/api/supervisor-devices", { user: adminA }); assert.equal(response.status, 200);
+  const deviceLists = await response.json(); assert.ok(Array.isArray(deviceLists.requests) && Array.isArray(deviceLists.devices));
+  const noDeviceManage = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "devices.manage", allowed: false });
+  if (noDeviceManage.error) throw new Error("could not prepare synthetic device-management denial");
+  response = await request("/api/supervisor-devices", { user: adminA }); assert.equal(response.status, 403);
+  await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "devices.manage");
+  process.stdout.write("PASS supervisor assignment and device APIs enforce tenant scoping, role and devices.manage checks\n");
+
   // Admin access APIs, scope selection, company.manage and rejected-write snapshots.
-  let response = await request(`/api/admin/access?companyId=${companyA}`);
+  response = await request(`/api/admin/access?companyId=${companyA}`);
   assert.equal(response.status, 401);
   response = await request(`/api/admin/access?companyId=${companyA}`, { user: supervisorA }); assert.equal(response.status, 403);
   response = await request(`/api/admin/access?companyId=${companyB}`, { user: adminA }); assert.equal(response.status, 403);

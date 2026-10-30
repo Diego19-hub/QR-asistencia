@@ -1,14 +1,13 @@
 # QR-004 — Auditoría de seguridad multiempresa
 
-Fecha: 28 de octubre de 2026<br>
-Rama: `audit/qr-004-multitenant-security`<br>
-Base revisada: `02263e1ae17d1151e6466838058b297b1cbd0181` (`main`, posterior al merge del PR #3)
+Fecha: 29 de octubre de 2026<br>
+Base de trabajo: `6bb6573d03267e58fbea7307ed5f5dbe95ea692f` (`main`, PR #12 integrado); esta actualización registra la cobertura incremental de la rama actual.
 
 ## Resumen ejecutivo
 
 La revisión del código y migraciones de esta base no confirmó una nueva ruta de explotación entre empresas. Los componentes centrales derivan identidad de `auth.getUser()`, comprueban membresías activas, acotan consultas por `company_id` y mantienen RLS y restricciones SQL como segunda frontera. La migración QR-003 contiene la corrección local de persistencia de fallos de PIN.
 
-QR-004 **permanece en curso**. La fase 2 ejecutó una matriz SQL local con usuarios, empresas, sucursales, membresías, credenciales y dispositivos sintéticos en un stack Supabase desechable. La fase 3 amplió el mismo runner para iniciar Auth local y Next.js en loopback, probando endpoints Route Handler, páginas protegidas y RPC de invitación con sesiones reales sintéticas. No se consultó ni modificó Testing o Producción; la evidencia previa sobre QR-003 no se revalidó. La matriz no certifica todos los Server Actions, E2E de navegador ni la configuración de entornos remotos.
+QR-004 **permanece en curso**. La fase 2 ejecutó una matriz SQL local; la fase 3 añadió Auth local y Next.js en loopback. Esta ampliación extiende la matriz HTTP/Auth a expedientes, sucursales, asignaciones de supervisores y lectura de dispositivos, con usuarios/empresas/sucursales sintéticos y comprobaciones de efectos laterales. La ejecución actual pasó 156/156 aserciones pgTAP y las pruebas HTTP/Auth incluidas. No se consultó ni modificó Testing o Producción. No se certifican todavía todas las rutas API, Server Actions, E2E de navegador ni configuraciones remotas.
 
 ## Alcance y método
 
@@ -52,20 +51,20 @@ No se confirmó una nueva vulnerabilidad explotable entre empresas en el SHA rev
 
 ### Riesgos conocidos y limitaciones
 
-#### QR004-R1 — Estado efectivo de QR-003 en Testing no revalidado
+#### QR004-R1 — Persistencia de fallos del PIN pendiente (fuera de alcance de esta fase)
 
 - **Severidad:** alta para la operación de asistencia mientras se mantenga el comportamiento legacy; estado remoto no confirmado en este turno.
-- **Evidencia:** `TASKS.md` y `docs/PIN-LOCKOUT-FIX.md` indican que la migración `20261018120000_persist_employee_pin_failures.sql` está pendiente en Testing. El informe Etapa 9.4A documenta que las RPC antiguas lanzan excepción tras incrementar el contador, revirtiendo el intento junto con la transacción.
-- **Impacto/condición:** usuarios que conozcan un QR válido pueden realizar intentos fallidos sin que el contador persista si Testing continúa con esas definiciones. No se hizo ninguna consulta o intento remoto en esta auditoría.
-- **Recomendación:** mantener QR-003 abierta; antes de aplicarla, terminar la reconciliación del historial, confirmar el proyecto y realizar el procedimiento aislado/preflight ya solicitado en QR-003. Después comprobar con identidades y empleados sintéticos autorizados.
+- **Evidencia:** `TASKS.md` y `docs/PIN-LOCKOUT-FIX.md` registran la migración `20261018120000_persist_employee_pin_failures.sql` y el comportamiento legacy conocido. El estado de Testing no se revalidó en esta fase.
+- **Impacto/condición:** la corrección sigue pendiente de confirmación en Testing y el propietario ha pospuesto QR-003. No se hicieron consultas, pruebas, respaldos ni escrituras remotas.
+- **Recomendación:** conservar el código y la migración; mantener el P0 abierto y no considerar corregido el entorno Testing. No iniciar el trabajo aplazado en el marco de QR-004.
 - **Regresión requerida:** el test local de PIN debe comprobar contador, quinto intento, expiración, concurrencia y ausencia de evento. No lanzar intentos contra empleados reales ni remotos.
 
 #### QR004-R2 — Cobertura restante fuera de la matriz SQL y HTTP local
 
-- **Severidad:** baja como riesgo residual de cobertura; no es vulnerabilidad demostrada.
-- **Evidencia:** seis suites pgTAP (142 aserciones) y Route Handlers/páginas Next probados con sesiones Auth sintéticas. La matriz HTTP no cubre todos los Server Actions ni todas las rutas API de la aplicación. Se omitió `tests/security-jwt-matrix.integration.mjs` porque apunta a Testing. No se ejecutó la suite DB de bloqueo PIN para mantener QR-003 fuera de alcance.
+- **Severidad:** baja como riesgo de cobertura; no es una vulnerabilidad demostrada.
+- **Evidencia:** siete suites pgTAP (156 aserciones) y Route Handlers/páginas Next probados con sesiones Auth sintéticas. Se añadieron APIs de empleados, sucursales, asignaciones de supervisores y lectura/permiso de dispositivos. La matriz HTTP aún no cubre todas las APIs, Server Actions ni todos los recorridos de navegador. Se omitió `tests/security-jwt-matrix.integration.mjs` porque apunta a Testing. No se ejecutó la suite DB de bloqueo PIN porque QR-003 quedó pospuesta.
 - **Impacto/condición:** comportamientos fuera de las rutas y escenarios nombrados siguen sin evidencia dinámica en esta matriz.
-- **Recomendación:** mantener el runner local en CI y añadir cobertura específica por dominio conforme se priorice. Consultar Testing/Producción solo mediante autorización independiente y lectura segregada por entorno.
+- **Recomendación:** mantener el runner local en CI; continuar por API de asistencia, empresa/tablero, horarios, credenciales QR/PIN y solicitudes/revocación de dispositivos. Para Server Actions usar un harness Next estable (por ejemplo, E2E de QR-005 cuando se apruebe); no fabricar peticiones HTTP. La revisión remota, si se vuelve a priorizar, requiere autorización independiente y lectura segregada por entorno.
 - **Regresión requerida:** conservar pruebas SQL/RPC, Route Handlers y snapshots de cero cambios colaterales ante denegaciones; los Server Actions continúan con sus pruebas unitarias y requieren un mecanismo de integración estable antes de ejercitarse dinámicamente.
 
 #### QR004-R3 — Configuración de producción y Testing no inspeccionada
@@ -97,32 +96,34 @@ No se confirmó una nueva vulnerabilidad explotable entre empresas en el SHA rev
 |---|---|
 | `npm run lint` | Aprobado (código 0). |
 | `npm run typecheck` | Aprobado (código 0). |
-| `npm test` | Aprobado (69/69 pruebas Node; suites de unidad y regresión listadas por el script `test`). Node emitió advertencias existentes de `MODULE_TYPELESS_PACKAGE_JSON`; sin fallos. |
+| `npm test` | Aprobado: 80 pruebas pasaron y una prueba GnuPG fue omitida porque el sandbox denegó el socket local del agente. Se conservaron avisos existentes `MODULE_TYPELESS_PACKAGE_JSON`; sin fallos. |
 | `npm run test:reports:lease:local` | Aprobado (14/14 controles): proyecto Supabase desechable, migraciones locales, 13 pgTAP, Auth/JWT sintéticos, rechazo cross-tenant/rol/anónimo, carrera concurrente y HTTP/exportación. El script confirmó limpieza del stack/volúmenes. |
-| `npm run test:security:matrix:local` | Aprobado: seis suites pgTAP, 142 aserciones, en proyecto Supabase aleatorio desechable. Incluye tenant/RLS/roles, memberships, sucursales, ACL de RPC/credenciales y escáner con dispositivo desconocido, tenant/sucursal cruzados, QR revocado y cero eventos/sesiones/contadores PIN tras rechazos. El runner eliminó el stack y verificó que la instancia QR preexistente no cambiara. |
-| `npm run test:security:matrix:local` (fase HTTP/Auth) | Aprobado junto con 142/142 pgTAP. Cubre `GET/POST/PATCH /api/admin/access`, `POST /api/admin/access/invitations/:id/resend`, `GET /api/me`, `GET /api/employee/portal`, `/admin`, `/mi-qr`, `GET /api/admin/audit`, `GET /api/admin/permissions` y RPC de aceptación/revocación. Incluye sesiones ausentes, rol insuficiente, tenant cruzado, `company.manage`, selección multiempresa, cambios de rol y membresía revocada, validación, snapshots completos sin cambios en rechazos, destinatario incorrecto, expiración, revocación, consumo y doble aceptación. La invitación local válida respondió HTTP 201 y el correo quedó en el transporte local. El reenvío respondió HTTP 200 usando Auth SMTP local, sin cambiar datos ni configurar Resend. |
-| `npm run build` | Aprobado (código 0), Next.js 16.4.0, en una copia temporal sin `.env.local`; variables Supabase sintéticas apuntaron a loopback. Next avisó que archivos de salida standalone fuera de la raíz de trazado no se incluyeron porque `node_modules` estaba enlazado desde el repo; la compilación, TypeScript y generación de rutas terminaron correctamente. El temporal se eliminó. |
+| `npm run test:security:matrix:local` | Aprobado en la ejecución final: siete suites pgTAP, 156 aserciones, en el proyecto aleatorio `qr004_disposable_0fe44b75d15b`. Incluye tenant/RLS/roles, membresías, sucursales, ACL de RPC/credenciales y escáner con negativos de empresa/sucursal/dispositivo/QR. El runner eliminó el stack desechable y preservó los recursos Docker preexistentes. Un intento previo se detuvo por un `ReferenceError` del runner antes de los HTTP; se corrigió la declaración y la ejecución completa pasó. |
+| `npm run test:security:matrix:local` (HTTP/Auth) | Aprobado junto con pgTAP. Además de `/api/admin/access` y su reenvío, `/api/me`, `/api/employee/portal`, `/admin`, `/mi-qr`, auditoría, permisos e invitaciones, la ejecución cubrió `GET/POST /api/employees`, `GET/PATCH /api/employees/[id]`, `GET/POST/PATCH /api/branches`, `GET/PATCH /api/supervisors` y `GET /api/supervisor-devices`. Se ejercitaron anónimo, rol insuficiente, IDs/branches de empresa ajena, permisos `company.manage` y `devices.manage`, operaciones permitidas dentro del tenant y snapshots sin cambios en rechazos. La invitación válida devolvió 201 y Mailpit recibió el correo sintético; el reenvío devolvió 200 y Mailpit recibió el segundo correo. Las aceptaciones conservaron cobertura de destinatario, expiración, revocación, consumo único y concurrencia entre canales. |
+| `npm run build` | Aprobado (código 0), Next.js 16.4.0, en una copia temporal sin `.env*` y con variables Supabase sintéticas de loopback. Next avisó que 27 archivos standalone quedaron fuera del trazado porque `node_modules` estaba enlazado desde el repo; compilación, TypeScript y generación de rutas terminaron correctamente. El temporal se eliminó. |
 | `npm run test:pin-lockout:db` | No ejecutado: requiere un workdir y URL PostgreSQL locales configurados como proyecto QR PIN desechable. No se reutilizó una instancia compartida ni se imprimieron variables. La prueba Node de PIN sí pasó dentro de `npm test`. |
 | Matriz `tests/security-jwt-matrix.integration.mjs` | Omitida intencionalmente: su configuración apunta a Testing; no se ejecutaron pruebas remotas. |
 
-La fase HTTP ejercita Route Handlers y páginas protegidas con Auth local real. La aceptación/expiración/revocación de invitaciones se prueba por RPC autenticada; no se fabricaron peticiones a Server Actions. `tests/auth-email-flow.test.mjs` conserva la cobertura unitaria de esas acciones. Esto no constituye una matriz completa de cada RPC, tabla y ruta.
+La fase HTTP ejercita Route Handlers y páginas protegidas con Auth local real. La aceptación/expiración/revocación de invitaciones se prueba por RPC autenticada; no se fabricaron peticiones a Server Actions. `tests/auth-email-flow.test.mjs` conserva comprobaciones unitarias/estáticas del flujo de invitaciones, pero `chooseMembership`, `setAdminMembership`, `signIn` y otras acciones todavía no tienen una matriz dinámica con sesión. No se cubrieron todavía `/api/company`, `/api/dashboard/summary`, APIs de asistencia y horarios, emisión/revocación de credenciales por HTTP, ni todas las operaciones de solicitudes y dispositivos. Esto no constituye una matriz completa de cada RPC, tabla y ruta.
 
 ## Recomendaciones priorizadas
 
-1. **P0 operacional:** mantener QR-003 en curso y verificar su despliegue únicamente mediante el procedimiento separado autorizado. No usar intentos PIN sobre empleados reales.
-2. **P1 evidencia:** extender con casos adicionales para rutas API restantes y un E2E de navegador solo si existe infraestructura local estable; conservar la prohibición de peticiones inventadas a Server Actions.
+1. **P0 de seguridad pendiente:** QR-003 está pospuesta por decisión del propietario; no se considera corregida ni aplicada en Testing. No continuar respaldos, autorizaciones ni despliegues de esa tarea hasta que se retome expresamente.
+2. **P1 evidencia:** extender casos locales a las APIs restantes y validar Server Actions mediante un harness estable; conservar la prohibición de peticiones inventadas a Server Actions.
 3. **P1 entorno:** si se autoriza una auditoría remota de solo lectura, comparar por separado Testing y Producción; revisar refs, historial, cuerpos SQL, ACL, RLS y configuración Auth sin tratar snapshots anteriores como actuales.
 4. **P2 mantenimiento:** mantener el runner SQL/HTTP en CI con fixtures efímeras; nunca inyectar secretos o datos personales en logs/artefactos.
 5. **P2 revisiones futuras:** para cada RPC privilegiada, conservar una lista de funciones/ACL esperadas y comprobar cambios de `search_path`, owner, `EXECUTE`, identidad y alcance tenant.
 
-## Condiciones antes de QR-002
+## Estado de QR-002
 
-- Cerrar/verificar los controles de membresía activa, revocación, destinatario y empresa en el flujo de invitación.
-- Ejecutar pruebas locales positivas/negativas para expiración, revocación, aceptación por usuario incorrecto, consumo único, cambio de rol y vinculación opcional del expediente.
-- Confirmar que errores no permitan enumerar otras empresas/correos y que el servicio administrativo permanezca solo en servidor.
-- Aclarar el estado actual de QR-003 en Testing por su canal de despliegue separado. QR-002 no debe usar una invitación como bypass de PIN o de permisos.
-- No considerar QR-004 concluida mientras falte la matriz de autorización acordada o existan hallazgos de severidad alta sin resolver.
+La implementación y las regresiones de los canales correo/WhatsApp están integradas en `main` (PR #7); los flujos de destinatario, verificación Auth, expiración, revocación, reuso, carrera y envío local aparecen probados en la matriz. Para cerrar QR-002 falta completar la dependencia de QR-004 y aceptar su evidencia de autorización multiempresa. La pausa de QR-003 se mantiene separada; no autoriza el despliegue ni cambia el estado del PIN.
+
+## Condiciones para cerrar QR-004
+
+- Completar la matriz HTTP/Auth en las rutas API enumeradas como pendientes y documentar resultados negativos y positivos con datos sintéticos.
+- Disponer de un mecanismo verificable para Server Actions o acotar formalmente qué controles se validan por pruebas unitarias y cuáles quedan pendientes.
+- No declarar la auditoría completa mientras falte la revisión remota segregada requerida por el plan o haya hallazgos altos sin resolver. Esa revisión no se realizó en esta tarea.
 
 ## Estado
 
-**QR-004: en curso; matrices SQL y HTTP/Auth locales completadas para los casos descritos.** Se amplió `tests/qr004-auth-matrix.local.integration.mjs`, ya conectado al script de CI existente. No se modificaron migraciones ni lógica funcional, dependencias o suites unitarias. Testing y Producción no se consultaron ni modificaron. No se confirmó una vulnerabilidad nueva. El resultado no certifica rutas no incluidas ni el estado remoto, y no autoriza una migración o despliegue.
+**QR-004: en curso; matrices SQL y HTTP/Auth locales completadas para los casos enumerados, con rutas de empleados, sucursales, supervisores y dispositivos añadidas en esta fase.** Se amplió `tests/qr004-auth-matrix.local.integration.mjs`; el script existente de CI ya ejecuta el runner, pero GitHub Actions aún debe confirmar el commit de este PR. No se modificaron migraciones ni lógica funcional. No se confirmó una vulnerabilidad nueva en los escenarios cubiertos. Los escenarios API/Server Actions remanentes y la revisión remota segregada impiden cerrar QR-004. Testing y Producción no se consultaron ni modificaron. QR-003 queda pospuesta y su riesgo P0 no se considera resuelto en Testing.
