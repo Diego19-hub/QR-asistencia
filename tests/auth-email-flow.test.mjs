@@ -88,10 +88,17 @@ test("Auth routes verify server-side and never redirect using request.url or tok
   assert.match(confirm, /if \(error\) return redirectAuth\("login-invite-error"\)/);
 });
 
-test("Invitation setup keeps password and role acceptance on the authenticated SSR flow", async () => {
-  const actions = await readFile(new URL("../src/app/(auth)/invitacion/actions.ts", import.meta.url), "utf8");
+test("Invitation setup uses server-controlled completion metadata and rechecks it in the action", async () => {
+  const [actions, page] = await Promise.all([
+    readFile(new URL("../src/app/(auth)/invitacion/actions.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/app/(auth)/invitacion/page.tsx", import.meta.url), "utf8"),
+  ]);
   assert.match(actions, /await supabase\.auth\.getUser\(\)/);
-  assert.match(actions, /updateUser\(\{[\s\S]*password,[\s\S]*access_setup_completed_at/);
+  assert.match(actions, /auth\.user\.invited_at && !auth\.user\.app_metadata\?\.access_setup_completed_at/);
+  assert.match(actions, /supabase\.auth\.updateUser\(\{ password \}\)/, "the authenticated user update changes only the password, not user_metadata");
+  assert.match(actions, /createAuthAdminClient\(\)/);
+  assert.match(actions, /updateUserById\(auth\.user\.id,[\s\S]*app_metadata:[\s\S]*access_setup_completed_at/);
+  assert.match(page, /auth\.user\.invited_at && !auth\.user\.app_metadata\?\.access_setup_completed_at/);
   assert.match(actions, /accept_company_user_invitation/);
   assert.match(actions, /destinationForRole\(membership\.role/);
   assert.match(actions, /\/seleccionar-empresa/);
