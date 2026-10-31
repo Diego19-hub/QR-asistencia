@@ -452,7 +452,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     appServer = spawn(process.execPath, nextArgs, {
       cwd: appRoot,
       env: {
-        PATH: process.env.PATH, NODE_ENV: "development", NEXT_TELEMETRY_DISABLED: "1",
+        PATH: process.env.PATH, NODE_ENV: performanceOnly ? "production" : "development", NEXT_TELEMETRY_DISABLED: "1",
         NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey,
         SUPABASE_SERVICE_ROLE_KEY: adminServiceKey, APP_BASE_URL: appUrl,
       },
@@ -466,6 +466,15 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   process.stdout.write("PASS local Auth users and temporary Next.js server use only the disposable Supabase loopback endpoints\n");
 
   if (browserOnly) {
+    const readAttendanceSnapshot = async () => {
+      const snapshot = {};
+      for (const table of ["attendance_sessions", "attendance_events"]) {
+        const result = await service.from(table).select("*").eq("company_id", companyA).order("id");
+        if (result.error) throw new Error(`could not inspect local synthetic ${table} snapshot (${result.error.code ?? "unknown"})`);
+        snapshot[table] = result.data ?? [];
+      }
+      return snapshot;
+    };
     const unassigned = await createHttpIdentity(`e2e-unassigned-${randomUUID()}@qr-asistencia.invalid`);
     const unlinkedEmployee = await createHttpUser("e2e-unlinked-employee", "employee", companyA);
     const inactiveMembership = await createHttpUser("e2e-inactive-supervisor", "supervisor", companyA);
@@ -504,6 +513,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       }
       process.stdout.write("PASS SQL benchmark fixture: 500 synthetic employees in local company A; no attendance rows created\n");
     }
+    const performanceAttendanceSnapshot = performanceOnly ? await readAttendanceSnapshot() : null;
     const childEnv = {
       PATH: process.env.PATH ?? "",
       ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
@@ -565,6 +575,11 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       noBranchSupervisor.email, noBranchSupervisor.password, revokedSupervisor.email, revokedSupervisor.password,
       serviceKey, anonKey, dbUrl,
     ]);
+    if (performanceOnly) {
+      const after = await readAttendanceSnapshot();
+      assert.deepEqual(after, performanceAttendanceSnapshot, "QR-009 performance-only must not create or modify attendance sessions/events");
+      process.stdout.write("PASS QR-009 performance-only preserved local attendance session/event row counts\n");
+    }
     process.stdout.write(`PASS ${performanceOnly ? "QR-009 performance" : "QR-005 browser"} tests used disposable Auth identities, loopback services, and temporary reports only\n`);
   } else {
 

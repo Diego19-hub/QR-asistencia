@@ -9,7 +9,7 @@ Estado: **En curso; baseline local reproducible disponible, sin optimizaciones i
 
 ## 1. Resumen ejecutivo
 
-Se revisaron dashboard, reportes, portal del empleado, escáner, consultas y configuración de build. La fase 1 inventarió chunks; fase 2 midió Chrome local y consultas SQL con RLS y datos sintéticos. JavaScript mediano transferido: 256,671 B en `/admin/reportes` y 271,906 B en `/scanner`. Al abrir el panel Recharts no se transfirieron bytes JavaScript adicionales (0 B observados), consistente con el import estático actual. No se atribuye el total de cada ruta exclusivamente a un paquete.
+Se revisaron dashboard, reportes, portal del empleado, escáner, consultas y configuración de build. La corrida corregida de fase 2 midió 100 muestras de Chrome local (incluye login móvil) y consultas SQL con RLS y datos sintéticos. JavaScript mediano transferido: 256,672 B en `/admin/reportes` y 271,907 B en `/scanner`. Al abrir el panel Recharts no se transfirieron bytes JavaScript adicionales (0 B observados), consistente con el import estático actual. No se atribuye el total de cada ruta exclusivamente a un paquete.
 
 Se midieron localmente LCP, CLS, TTFB, FCP, bytes transferidos, endpoints seleccionados y p50/p95 de una consulta bajo RLS. TBT e INP no se midieron; las tareas largas se informan por separado. Lighthouse no está instalado y no se agregó dependencia. El contexto del escáner devolvió 403 porque el build local en loopback HTTP no satisface el guard HTTPS; no se activó la cámara. Las cifras no son RUM ni Producción. Sin comparación antes/después ni evidencia de usuarios reales, no se modificó código de aplicación ni se afirma una mejora. QR-009 permanece En curso.
 
@@ -59,11 +59,11 @@ La revisión estática confirma controles existentes de ciclo de cámara, cancel
 
 ## 8. PostgreSQL y Supabase
 
-Se ejecutó `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` con 500 empleados sintéticos locales, en tres rangos (10/100/500) y cinco repeticiones. La consulta fue bajo el rol `authenticated`, claims JWT sintéticos, política RLS activa y conteo verificado; no se usó `service_role` para las lecturas. Resultados p50/p95: 0.978/1.490 ms, 8.474/8.976 ms y 34.540/35.209 ms respectivamente. El dataset es pequeño y solo mide `employees`, no representa producción ni reportes de asistencia. No se accedió a Testing/Producción, ni hubo migraciones o cambios RLS.
+Se ejecutó `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` con 500 empleados sintéticos locales, en tres rangos (10/100/500) y cinco repeticiones. La consulta fue bajo el rol `authenticated`, claims JWT sintéticos, política RLS activa y conteo verificado; no se usó `service_role` para las lecturas. Resultados p50/p95 corregidos: 0.913/1.040 ms, 7.812/8.509 ms y 34.144/35.631 ms respectivamente. El dataset es pequeño y solo mide `employees`, no representa producción ni reportes de asistencia. No se accedió a Testing/Producción, ni hubo migraciones o cambios RLS.
 
 ## 9. Problemas confirmados y optimizaciones
 
-- Problemas de rendimiento funcionales confirmados: **ninguno**. Medidas observadas: `/admin/reportes` transfiere 256,671 B de JS mediano y `/scanner` 271,906 B en esta instancia local; la consulta sintética escala de 0.978 ms p50 a 34.540 ms al elevar el rango de 10 a 500 filas.
+- Problemas de rendimiento funcionales confirmados: **ninguno**. Medidas corregidas: `/admin/reportes` transfiere 256,672 B de JS mediano y `/scanner` 271,907 B en esta instancia local; la consulta sintética tuvo p50 de 0.913 ms (10 filas) y 34.144 ms (500 filas).
 - Vulnerabilidades o filtraciones: **ninguna detectada en el alcance revisado**.
 - Optimización implementada: **ninguna**. La línea base local ya existe, pero falta evidencia de degradación en producción/usuarios y una comparación antes/después para justificar un cambio.
 - Dashboard, reportes, portal y scanner conservan su lógica y controles.
@@ -80,21 +80,22 @@ Se ejecutó `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` con 500 empleados sintéti
 | `npm run typecheck` | PASS | `tsc --noEmit` |
 | `npm test` | PASS, 1 skip | Todas las suites del script pasaron; un caso de GnuPG omitido porque el sandbox deniega el socket del agente |
 | `npm run test:security:matrix:local` | PASS | 201 aserciones pgTAP y comprobaciones dinámicas HTTP/Auth/Server Actions; teardown completado |
-| `npm run test:e2e` | PASS, 22/22 | Playwright local con identidades sintéticas; teardown completado |
-| `npm run benchmark:qr009:local` | PASS, 90 muestras + 3 escenarios SQL | Chrome local con build de producción, Auth local, 5 repeticiones por ruta/perfil/caché y SQL/RLS autenticado; no incluye sesiones/eventos de asistencia; teardown comprobado |
+| `npm run test:e2e` | PASS, 22/22 | Playwright local con Auth/identidades sintéticas; no crea filas de asistencia ni verifica PIN; teardown completado |
+| `npm run benchmark:qr009:local` | PASS, 100/100 muestras + 3 escenarios SQL | `NODE_ENV=production` en build/start; login en desktop y móvil; CDP cache inspection; Auth local; 5 repeticiones/grupo. Cero requests de PIN/scan y snapshots de sesiones/eventos idénticos; teardown PASS |
 | Suites unitarias funcionales seleccionadas | PASS, 67 tests | `test:attendance` presentation, reports, scanner, employee-portal, user-access, auth-flow, deployment, credentials. Se excluyó deliberadamente `test:pin-lockout` por la restricción de no probar PIN |
-| Matriz completa QR-004 en esta fase | No ejecutada | El runner integral crea sesiones/eventos sintéticos de asistencia y por eso quedó fuera del alcance. Se conserva el resultado previo documentado de 201 pgTAP assertions; no se presenta como revalidación de esta rama |
+| Matriz completa QR-004 en esta fase | No ejecutada | El runner integral crea sesiones/eventos sintéticos y ejecuta casos scan/PIN; quedó fuera del alcance. El resultado previo de 201 pgTAP assertions no es revalidación de esta rama |
 | Build de producción aislado final | PASS, 41/41 rutas | Sin archivos `.env`; URL/key Supabase sintéticas de loopback. Advertencia de 27 trazas omitidas por symlink de `node_modules` fuera del `outputFileTracingRoot` temporal |
 | Limpieza del stack temporal | PASS | No quedaron contenedores con prefijo `qr004_disposable_` en la verificación posterior |
 
 ## 11. Riesgos y limitaciones residuales
 
-- No hay Lighthouse ni RUM. La medición local brinda LCP/FCP/CLS/TTFB y bytes de cinco muestras, pero no es un Core Web Vitals de usuarios reales; el impacto de caché fue nulo en bytes JS observados.
+- No hay Lighthouse ni RUM. La medición local brinda LCP/FCP/CLS/TTFB y bytes con 5/5 muestras válidas por grupo, pero no son Core Web Vitals de usuarios reales.
+- Las muestras “repetidas” no tienen cache hits porque el guard de orígenes utiliza `browserContext.route`, que Playwright documenta que desactiva HTTP cache. Se mantuvo la guardia para no debilitar aislamiento; no presentar el conjunto como caché caliente.
 - INP no está instrumentado; no se inferirá desde TBT.
 - El conjunto de 500 empleados no demuestra comportamiento a escala; no se midió un reporte con asistencia sintética ni escrituras.
 - La cifra de JavaScript por ruta no desglosa exactamente Recharts/ZXing. Abrir los charts añadió 0 B, pero no se atribuye el tamaño inicial solo a Recharts.
-- No se midieron cámara real, latencia de autorización de scanner bajo un origen seguro local ni hardware físico.
-- El benchmark toma alrededor de 1.7 minutos y usa navegador/dispositivo emulados.
+- No se midieron cámara real ni hardware físico. El `/api/supervisor/scanner/context` retornó 403 por el guard de origen HTTP/HTTPS; ese rechazo no mide la latencia normal de un contexto autorizado.
+- El benchmark toma alrededor de 1.9 minutos y usa navegador/dispositivo emulados.
 - No se probó hardware físico, datos productivos, Testing ni Producción.
 
 ## 12. Recomendaciones y criterios para cerrar QR-009
@@ -107,3 +108,9 @@ Se ejecutó `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` con 500 empleados sintéti
 6. Mantener QR-003 en P0/NO-GO y no validar flujos completos de asistencia.
 
 QR-009 sigue **En curso**. QR-004, QR-005 y QR-006 siguen En curso. QR-003 permanece pospuesta, P0 y NO-GO.
+
+### Estado de CI y alternativas seguras
+
+El run `CI #126` fue cancelado intencionalmente mientras `npm ci` estaba ejecutándose; checkout, Node y setup Chrome terminaron, y lint/typecheck/tests no llegaron a ejecutarse. No fue una falla técnica de `npm ci` ni un PASS. Se canceló para no iniciar los pasos siguientes que infringen este alcance: `npm run test` incluye `test:pin-lockout`; `npm run test:security:matrix:local` siembra sesiones/eventos, llama al endpoint scan y cubre PIN. No se modificaron workflow ni reglas de protección.
+
+La validación independiente segura para este benchmark es `benchmark:qr009:local` (stack local desechable, guard de origen, snapshot de sesiones/eventos y monitor de PIN/scan), `npm run lint`, `npm run typecheck`, `npm run test:e2e` (`--e2e-only`, 22/22), suites unitarias seleccionadas que excluyan PIN (67/67) y build aislado temporal. Esta verificación local no sustituye el check requerido de GitHub; el PR no debe declararse CI-aprobado ni listo para merge mientras el workflow integral requiera esos pasos prohibidos.

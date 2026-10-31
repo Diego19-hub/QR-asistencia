@@ -17,16 +17,22 @@ type Metric = {
   profile: string;
   cache: "cold" | "warm";
   sample: number;
-  navigationMs: number;
-  ttfbMs: number;
+  navigationMs: number | null;
+  ttfbMs: number | null;
   fcpMs: number | null;
   lcpMs: number | null;
-  cls: number;
-  longTaskMs: number;
-  transferBytes: number;
-  jsTransferBytes: number;
+  cls: number | null;
+  longTaskMs: number | null;
+  transferBytes: number | null;
+  jsTransferBytes: number | null;
   jsResources: number;
   cachedJsResources: number;
+  cacheDiagnostics: {
+    jsResponseCount: number; cacheServedCount: number; diskCacheCount: number; serviceWorkerCount: number;
+    prefetchCacheCount: number;
+    responseStatusCodes: number[]; requestCacheDirectives: string[]; conditionalRequestCount: number;
+    etagResponses: number; lastModifiedResponses: number; cacheControl: string[];
+  };
   api: { path: string; status: number; durationMs: number }[];
 };
 
@@ -38,6 +44,7 @@ function percentile(values: number[], fraction: number) {
 async function configureProfile(page: Page, profile: "desktop" | "mobile-emulated") {
   const session = await page.context().newCDPSession(page);
   await session.send("Network.enable");
+  await session.send("Network.setCacheDisabled", { cacheDisabled: false });
   if (profile === "mobile-emulated") {
     await session.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await session.send("Emulation.setCPUThrottlingRate", { rate: 4 });
@@ -63,6 +70,44 @@ async function waitForPageReady(page: Page, route: string) {
 async function measure(page: Page, route: string, profile: "desktop" | "mobile-emulated", cache: "cold" | "warm", sample: number, session: Awaited<ReturnType<typeof configureProfile>>): Promise<Metric> {
   if (cache === "cold") await session.send("Network.clearBrowserCache");
   const api: Metric["api"] = [];
+  const scriptResponseIds = new Set<string>();
+  const scriptRequestCacheDirectives = new Map<string, string[]>();
+  const servedFromCacheRequestIds = new Set<string>();
+  const cacheServedIds = new Set<string>();
+  const diskCacheIds = new Set<string>();
+  const serviceWorkerIds = new Set<string>();
+  const prefetchCacheIds = new Set<string>();
+  const cacheControls = new Set<string>();
+  const responseStatusCodes = new Set<number>();
+  const conditionalRequestIds = new Set<string>();
+  let etagResponses = 0;
+  let lastModifiedResponses = 0;
+  const onCacheServed = (event: { requestId: string }) => {
+    servedFromCacheRequestIds.add(event.requestId);
+    if (scriptResponseIds.has(event.requestId)) cacheServedIds.add(event.requestId);
+  };
+  const onCdpRequest = (event: { requestId: string; type?: string; request: { url: string; headers: Record<string, string> } }) => {
+    if (event.type !== "Script" || !new URL(event.request.url).pathname.endsWith(".js")) return;
+    const headers = Object.fromEntries(Object.entries(event.request.headers).map(([name, value]) => [name.toLowerCase(), String(value)]));
+    scriptRequestCacheDirectives.set(event.requestId, [headers["cache-control"], headers.pragma].filter((value): value is string => Boolean(value)));
+    if (headers["if-none-match"] || headers["if-modified-since"]) conditionalRequestIds.add(event.requestId);
+  };
+  const onCdpResponse = (event: { requestId: string; type?: string; response: { url: string; headers: Record<string, string>; status?: number; fromDiskCache?: boolean; fromServiceWorker?: boolean; fromPrefetchCache?: boolean } }) => {
+    if (event.type !== "Script" || !new URL(event.response.url).pathname.endsWith(".js")) return;
+    scriptResponseIds.add(event.requestId);
+    if (servedFromCacheRequestIds.has(event.requestId)) cacheServedIds.add(event.requestId);
+    if (event.response.fromDiskCache) diskCacheIds.add(event.requestId);
+    if (event.response.fromServiceWorker) serviceWorkerIds.add(event.requestId);
+    if (event.response.fromPrefetchCache) prefetchCacheIds.add(event.requestId);
+    if (event.response.headers.etag) etagResponses += 1;
+    if (event.response.headers["last-modified"] || event.response.headers["Last-Modified"]) lastModifiedResponses += 1;
+    if (typeof event.response.status === "number") responseStatusCodes.add(event.response.status);
+    const cacheControl = Object.entries(event.response.headers).find(([name]) => name.toLowerCase() === "cache-control")?.[1];
+    if (cacheControl) cacheControls.add(cacheControl);
+  };
+  session.on("Network.requestServedFromCache", onCacheServed);
+  session.on("Network.requestWillBeSent", onCdpRequest);
+  session.on("Network.responseReceived", onCdpResponse);
   const requestStartedAt = new WeakMap<import("@playwright/test").Request, number>();
   const onRequest = (request: import("@playwright/test").Request) => {
     if (apiPaths.has(new URL(request.url()).pathname)) requestStartedAt.set(request, Date.now());
@@ -89,45 +134,70 @@ async function measure(page: Page, route: string, profile: "desktop" | "mobile-e
     const nav = entries[0];
     const resources = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
     const js = resources.filter((entry) => new URL(entry.name).pathname.endsWith(".js"));
+    const finiteOrNull = (value: number | undefined) => value !== undefined && Number.isFinite(value) && value >= 0 ? Math.round(value * 10) / 10 : null;
     return {
-      navigationMs: Math.round((nav?.loadEventEnd ?? 0) * 10) / 10,
-      ttfbMs: Math.round((nav?.responseStart ?? 0) * 10) / 10,
-      fcpMs: performance.getEntriesByName("first-contentful-paint")[0]?.startTime ?? null,
-      lcpMs: (window as Window & { __qr009Lcp?: number }).__qr009Lcp ?? null,
-      cls: (window as Window & { __qr009Cls?: number }).__qr009Cls ?? 0,
-      longTaskMs: (window as Window & { __qr009LongTaskMs?: number }).__qr009LongTaskMs ?? 0,
-      transferBytes: resources.reduce((sum, entry) => sum + entry.transferSize, nav?.transferSize ?? 0),
-      jsTransferBytes: js.reduce((sum, entry) => sum + entry.transferSize, 0),
+      navigationMs: finiteOrNull(nav?.loadEventEnd),
+      ttfbMs: finiteOrNull(nav?.responseStart),
+      fcpMs: finiteOrNull(performance.getEntriesByName("first-contentful-paint")[0]?.startTime),
+      lcpMs: finiteOrNull((window as Window & { __qr009Lcp?: number | null }).__qr009Lcp ?? undefined),
+      cls: finiteOrNull((window as Window & { __qr009Cls?: number | null }).__qr009Cls ?? undefined),
+      longTaskMs: finiteOrNull((window as Window & { __qr009LongTaskMs?: number | null }).__qr009LongTaskMs ?? undefined),
+      transferBytes: nav ? resources.reduce((sum, entry) => sum + entry.transferSize, nav.transferSize) : null,
+      jsTransferBytes: js.length > 0 ? js.reduce((sum, entry) => sum + entry.transferSize, 0) : null,
       jsResources: js.length,
       cachedJsResources: js.filter((entry) => entry.transferSize === 0 && entry.encodedBodySize > 0).length,
     };
   });
   page.off("response", onResponse);
   page.off("request", onRequest);
-  return { route, profile, cache, sample, ...values, api };
+  session.off("Network.requestServedFromCache", onCacheServed);
+  session.off("Network.requestWillBeSent", onCdpRequest);
+  session.off("Network.responseReceived", onCdpResponse);
+  return {
+    route, profile, cache, sample, ...values,
+    cacheDiagnostics: {
+      jsResponseCount: scriptResponseIds.size, cacheServedCount: cacheServedIds.size, diskCacheCount: diskCacheIds.size,
+      serviceWorkerCount: serviceWorkerIds.size, prefetchCacheCount: prefetchCacheIds.size,
+      responseStatusCodes: [...responseStatusCodes].sort((a, b) => a - b),
+      requestCacheDirectives: [...new Set([...scriptRequestCacheDirectives.values()].flat())].sort(),
+      conditionalRequestCount: conditionalRequestIds.size, etagResponses, lastModifiedResponses,
+      cacheControl: [...cacheControls].sort(),
+    },
+    api,
+  };
 }
 
 async function newGuardedContext(browser: Browser, viewport: { width: number; height: number }): Promise<BrowserContext> {
   const context = await browser.newContext({ viewport, permissions: ["camera"] });
   await context.addInitScript(() => {
-    const state = window as Window & { __qr009Lcp?: number; __qr009Cls?: number; __qr009LongTaskMs?: number };
-    state.__qr009Lcp = 0;
-    state.__qr009Cls = 0;
-    state.__qr009LongTaskMs = 0;
+    const state = window as Window & { __qr009Lcp?: number | null; __qr009Cls?: number | null; __qr009LongTaskMs?: number | null };
+    state.__qr009Lcp = null;
+    state.__qr009Cls = null;
+    state.__qr009LongTaskMs = null;
     try {
       new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) state.__qr009Lcp = entry.startTime;
       }).observe({ type: "largest-contentful-paint", buffered: true });
+    } catch {
+      // Unsupported LCP observation is represented as null.
+    }
+    try {
+      state.__qr009Cls = 0;
       new PerformanceObserver((list) => {
         for (const entry of list.getEntries() as Array<PerformanceEntry & { value?: number; hadRecentInput?: boolean }>) {
           if (!entry.hadRecentInput) state.__qr009Cls = (state.__qr009Cls ?? 0) + (entry.value ?? 0);
         }
       }).observe({ type: "layout-shift", buffered: true });
+    } catch {
+      state.__qr009Cls = null;
+    }
+    try {
+      state.__qr009LongTaskMs = 0;
       new PerformanceObserver((list) => {
         state.__qr009LongTaskMs = (state.__qr009LongTaskMs ?? 0) + list.getEntries().reduce((sum, entry) => sum + entry.duration, 0);
       }).observe({ type: "longtask", buffered: true });
     } catch {
-      // Unsupported browser performance entry types remain null/zero in report.
+      state.__qr009LongTaskMs = null;
     }
   });
   await qr.guardBrowserOrigins(context);
@@ -163,6 +233,11 @@ test("captura baseline web y PostgreSQL local con identidades y datos sintético
     for (let sample = 2; sample <= sampleCount; sample++) records.push(await measure(anonymousPage, "/login", "desktop", "cold", sample, desktopSession));
     await measure(anonymousPage, "/login", "desktop", "warm", 0, desktopSession);
     for (let sample = 1; sample <= sampleCount; sample++) records.push(await measure(anonymousPage, "/login", "desktop", "warm", sample, desktopSession));
+    const mobileLoginSession = await configureProfile(anonymousPage, "mobile-emulated");
+    await measure(anonymousPage, "/login", "mobile-emulated", "cold", 0, mobileLoginSession);
+    for (let sample = 1; sample <= sampleCount; sample++) records.push(await measure(anonymousPage, "/login", "mobile-emulated", "cold", sample, mobileLoginSession));
+    await measure(anonymousPage, "/login", "mobile-emulated", "warm", 0, mobileLoginSession);
+    for (let sample = 1; sample <= sampleCount; sample++) records.push(await measure(anonymousPage, "/login", "mobile-emulated", "warm", sample, mobileLoginSession));
 
     const adminContext = await newGuardedContext(browser, { width: 1440, height: 900 });
     const supervisorContext = await newGuardedContext(browser, { width: 1440, height: 900 });
@@ -176,7 +251,13 @@ test("captura baseline web y PostgreSQL local con identidades y datos sintético
     await expect(supervisorPage.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible({ timeout: 30_000 });
     await signIn(employeePage, qr.fixture("EMPLOYEE_EMAIL"), qr.fixture("EMPLOYEE_PASSWORD"), /\/mi-qr(?:\?.*)?$/);
 
-    supervisorPage.on("request", (request) => { if (new URL(request.url()).pathname === "/api/attendance/scan") scanRequests.push("attendance scan endpoint"); });
+    for (const context of [adminContext, supervisorContext, employeeContext]) {
+      context.on("request", (request) => {
+        const path = new URL(request.url()).pathname;
+        if (path === "/api/attendance/scan") scanRequests.push("attendance scan endpoint");
+        if (/^\/api\/employees\/[^/]+\/pin$/.test(path)) scanRequests.push("employee PIN endpoint");
+      });
+    }
 
     const routeActors = [
       { page: adminPage, routes: ["/admin", "/admin/reportes"] },
@@ -208,12 +289,13 @@ test("captura baseline web y PostgreSQL local con identidades y datos sintético
     await waitForPageReady(supervisorPage, "/scanner");
     expect(scanRequests).toEqual([]);
 
+    expect(records).toHaveLength(100);
     const report = {
       schemaVersion: 1,
       generatedAt: new Date().toISOString(),
       baseCommit: process.env.QR009_BASE_COMMIT ?? process.env.GITHUB_SHA ?? "local-working-tree",
-      environment: { app: "Next.js production build, local loopback", browser: "Chromium via Playwright", syntheticOnly: true, profiles: ["desktop 1440x900", "mobile emulated 390x844, CPU 4x, RTT 40ms, 1.6Mbps down / 750Kbps up"], samplesPerRouteCacheProfile: sampleCount },
-      browser: { samples: records, summaries: summarize(records), interactions: { recharts, scanner: { cameraReadyMs: null, jsTransferBeforeCamera: null, jsTransferAfterCamera: null, cameraStatus: "not measured: production APP_BASE_URL origin guard rejects scanner-context POST from loopback HTTP", attendanceScanRequests: scanRequests.length } } },
+      environment: { app: "Next.js production build and server, local loopback", browser: "Chromium via Playwright", syntheticOnly: true, profiles: ["desktop 1440x900", "mobile emulated 390x844, CPU 4x, RTT 40ms, 1.6Mbps down / 750Kbps up"], samplesPerRouteCacheProfile: sampleCount, browserSamplesExpected: 100 },
+      browser: { samples: records, summaries: summarize(records), interactions: { recharts, scanner: { cameraReadyMs: null, jsTransferBeforeCamera: null, jsTransferAfterCamera: null, cameraStatus: "not measured: production APP_BASE_URL origin guard rejects scanner-context POST from loopback HTTP", prohibitedAttendanceOrPinRequests: scanRequests.length } } },
       postgres: sql,
       limitations: ["No real-device INP; long-task duration is reported separately and is not TBT.", "Synthetic dataset is 500 employee rows only; no attendance sessions/events were created.", "Browser transferSize is local Chromium resource timing, not production CDN/RUM traffic.", "The production build safely rejects the scanner-context POST from loopback HTTP, so camera readiness and authorized-device API latency are not measured."],
     };
@@ -221,28 +303,44 @@ test("captura baseline web y PostgreSQL local con identidades y datos sintético
     await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
     await writeFile(destination, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     process.stdout.write(`QR-009 results written to ${destination}; samples=${records.length}; PostgreSQL scenarios=${sql.scenarios.length}; no credentials or identities stored\n`);
-    expect(scanRequests).toHaveLength(0);
+    expect(scanRequests).toEqual([]);
   } finally {
     await Promise.all(contexts.map((context) => context.close().catch(() => undefined)));
   }
 });
 
 function summarize(records: Metric[]) {
+  const metricStats = (values: (number | null)[]) => {
+    const valid = values.filter((value): value is number => value !== null && Number.isFinite(value));
+    return { validSamples: valid.length, p50: valid.length ? percentile(valid, 0.5) : null, p95: valid.length ? percentile(valid, 0.95) : null };
+  };
   const keys = [...new Set(records.map((record) => `${record.route}|${record.profile}|${record.cache}`))];
   return keys.map((key) => {
     const [route, profile, cache] = key.split("|");
     const samples = records.filter((record) => `${record.route}|${record.profile}|${record.cache}` === key);
-    const values = (field: "navigationMs" | "ttfbMs" | "transferBytes" | "jsTransferBytes") => samples.map((record) => record[field]);
+    const values = (field: "navigationMs" | "ttfbMs" | "fcpMs" | "lcpMs" | "cls" | "longTaskMs" | "transferBytes" | "jsTransferBytes" | "cachedJsResources") => samples.map((record) => record[field]);
     const apiPathsForRoute = [...new Set(samples.flatMap((record) => record.api.map((entry) => entry.path)))];
     return {
       route, profile, cache, n: samples.length,
-      navigationP50: percentile(values("navigationMs"), 0.5), navigationP95: percentile(values("navigationMs"), 0.95),
-      ttfbP50: percentile(values("ttfbMs"), 0.5), transferBytesP50: percentile(values("transferBytes"), 0.5),
-      jsTransferBytesP50: percentile(values("jsTransferBytes"), 0.5), lcpP50: percentile(samples.map((record) => record.lcpMs ?? 0), 0.5),
-      fcpP50: percentile(samples.map((record) => record.fcpMs ?? 0), 0.5),
-      clsP50: percentile(samples.map((record) => record.cls), 0.5),
-      longTaskMsP50: percentile(samples.map((record) => record.longTaskMs), 0.5),
-      cachedJsResourcesP50: percentile(samples.map((record) => record.cachedJsResources), 0.5),
+      metrics: {
+        navigationMs: metricStats(values("navigationMs")), ttfbMs: metricStats(values("ttfbMs")),
+        fcpMs: metricStats(values("fcpMs")), lcpMs: metricStats(values("lcpMs")), cls: metricStats(values("cls")),
+        longTaskMs: metricStats(values("longTaskMs")), transferBytes: metricStats(values("transferBytes")),
+        jsTransferBytes: metricStats(values("jsTransferBytes")), cachedJsResources: metricStats(values("cachedJsResources")),
+      },
+      cacheDiagnostics: {
+        jsResponseCountP50: percentile(samples.map((record) => record.cacheDiagnostics.jsResponseCount), 0.5),
+        cacheServedCountP50: percentile(samples.map((record) => record.cacheDiagnostics.cacheServedCount), 0.5),
+        diskCacheCountP50: percentile(samples.map((record) => record.cacheDiagnostics.diskCacheCount), 0.5),
+        serviceWorkerCountP50: percentile(samples.map((record) => record.cacheDiagnostics.serviceWorkerCount), 0.5),
+        prefetchCacheCountP50: percentile(samples.map((record) => record.cacheDiagnostics.prefetchCacheCount), 0.5),
+        responseStatusCodes: [...new Set(samples.flatMap((record) => record.cacheDiagnostics.responseStatusCodes))].sort((a, b) => a - b),
+        requestCacheDirectives: [...new Set(samples.flatMap((record) => record.cacheDiagnostics.requestCacheDirectives))].sort(),
+        conditionalRequestCountP50: percentile(samples.map((record) => record.cacheDiagnostics.conditionalRequestCount), 0.5),
+        etagResponsesP50: percentile(samples.map((record) => record.cacheDiagnostics.etagResponses), 0.5),
+        lastModifiedResponsesP50: percentile(samples.map((record) => record.cacheDiagnostics.lastModifiedResponses), 0.5),
+        cacheControl: [...new Set(samples.flatMap((record) => record.cacheDiagnostics.cacheControl))].sort(),
+      },
       api: apiPathsForRoute.map((path) => {
         const responses = samples.flatMap((record) => record.api.filter((entry) => entry.path === path));
         return { path, responses: responses.length, statuses: [...new Set(responses.map((entry) => entry.status))].sort(), durationP50: percentile(responses.map((entry) => entry.durationMs), 0.5), durationP95: percentile(responses.map((entry) => entry.durationMs), 0.95) };
