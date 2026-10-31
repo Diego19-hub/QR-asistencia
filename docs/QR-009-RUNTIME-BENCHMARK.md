@@ -89,6 +89,8 @@ La medición muestra crecimiento con cardinalidad para esta consulta y fixture; 
 
 ## Validaciones y decisión
 
+**Nota de vigencia:** los PASS de esta sección describen la corrida local previa documentada (sobre `e95ff37` y ajustes incorporados en `9464f9f`), no revalidan automáticamente el follow-up `24ae7a6` ni commits posteriores. Para revalidar cada nuevo HEAD sin ejecutar PIN/scan ni registrar asistencia, utilizar [el protocolo seguro de revalidación](QR-009-VALIDACION-SEGURA.md).
+
 - Benchmark producción local: **PASS**, 100/100 muestras, 3 escenarios SQL, 5 repeticiones por volumen, report JSON efímero; cero requests de scan/PIN y snapshots completos de sesiones/eventos iguales antes/después; teardown PASS.
 - Build temporal de Next: **PASS**.
 - `npm run lint`: **PASS**.
@@ -97,7 +99,7 @@ La medición muestra crecimiento con cardinalidad para esta consulta y fixture; 
 - Suites funcionales seleccionadas: **PASS 67/67** (`test:attendance` presentation, reports, scanner context, employee portal, user access, auth flow, deployment, credentials); se excluyó `test:pin-lockout`.
 - `npm run lint` y `npm run typecheck`: **PASS** tras las correcciones.
 - Build temporal aislado de Next `next build --webpack`: **PASS** dentro del runner; `next start` production también sirvió el benchmark. No se usó `.env.local`.
-- GitHub Actions `CI #126`: cancelado intencionalmente durante `npm ci`, después de checkout/setup Node/Chrome y antes de los pasos de lint/typecheck/tests. No es un fallo de CI ni un PASS.
+- GitHub Actions `CI #128`: cancelado intencionalmente durante `npm ci`, después de checkout/setup Node/Chrome y antes de los pasos de lint/typecheck/tests. No es un fallo de CI ni un PASS.
 - Sin cambios funcionales ni optimizaciones propuestas. Los tiempos son locales/emulados, no métricas RUM ni resultados de Testing/Producción. Lighthouse, INP real, cámara activa, atribución exacta Recharts/ZXing, caché caliente real y carga de datos de asistencia quedan pendientes.
 
 QR-009 permanece **En curso**. No se considera línea base de usuarios reales ni se justifican optimizaciones todavía.
