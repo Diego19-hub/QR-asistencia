@@ -102,4 +102,4 @@ La medición muestra crecimiento con cardinalidad para esta consulta y fixture; 
 - GitHub Actions `CI #128`: cancelado intencionalmente durante `npm ci`, después de checkout/setup Node/Chrome y antes de los pasos de lint/typecheck/tests. No es un fallo de CI ni un PASS.
 - Sin cambios funcionales ni optimizaciones propuestas. Los tiempos son locales/emulados, no métricas RUM ni resultados de Testing/Producción. Lighthouse, INP real, cámara activa, atribución exacta Recharts/ZXing, caché caliente real y carga de datos de asistencia quedan pendientes.
 
-QR-009 permanece **En curso**. No se considera línea base de usuarios reales ni se justifican optimizaciones todavía.
+**Actualización de cierre (31-oct-2026):** la investigación local quedó concluida, con evaluación antes/después y decisión documentada en [QR-009-CIERRE-TECNICO.md](QR-009-CIERRE-TECNICO.md). Las limitaciones de esta línea base no desaparecen: no representa usuarios reales y no se recomienda integrar las optimizaciones experimentales actuales. CI/QR-003 siguen en NO-GO para merge/despliegue.

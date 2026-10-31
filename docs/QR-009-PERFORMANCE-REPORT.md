@@ -5,13 +5,13 @@ Fecha: 2026-10-30
 Commit base: `1a0b0a5a465fce453dc8a748e326c244da3a675e` (PR #23)
 
 Rama: `perf/qr-009-runtime-benchmark`
-Estado: **En curso; baseline local reproducible disponible, sin optimizaciones implementadas.** Resultados de fase 2: [QR-009-RUNTIME-BENCHMARK.md](QR-009-RUNTIME-BENCHMARK.md).
+Estado: **Investigación técnica concluida en alcance local; el PR #25 sigue sin fusionar y CI/QR-003 bloquean integración.** Resultados de fase 2: [QR-009-RUNTIME-BENCHMARK.md](QR-009-RUNTIME-BENCHMARK.md).
 
 ## 1. Resumen ejecutivo
 
 Se revisaron dashboard, reportes, portal del empleado, escáner, consultas y configuración de build. La corrida corregida de fase 2 midió 100 muestras de Chrome local (incluye login móvil) y consultas SQL con RLS y datos sintéticos. JavaScript mediano transferido: 256,672 B en `/admin/reportes` y 271,907 B en `/scanner`. Al abrir el panel Recharts no se transfirieron bytes JavaScript adicionales (0 B observados), consistente con el import estático actual. No se atribuye el total de cada ruta exclusivamente a un paquete.
 
-Se midieron localmente LCP, CLS, TTFB, FCP, bytes transferidos, endpoints seleccionados y p50/p95 de una consulta bajo RLS. TBT e INP no se midieron; las tareas largas se informan por separado. Lighthouse no está instalado y no se agregó dependencia. El contexto del escáner devolvió 403 porque el build local en loopback HTTP no satisface el guard HTTPS; no se activó la cámara. Las cifras no son RUM ni Producción. Sin comparación antes/después ni evidencia de usuarios reales, no se modificó código de aplicación ni se afirma una mejora. QR-009 permanece En curso.
+Se midieron localmente LCP, CLS, TTFB, FCP, bytes transferidos, endpoints seleccionados y p50/p95 de una consulta bajo RLS. TBT e INP no se midieron; las tareas largas se informan por separado. Lighthouse no está instalado y no se agregó dependencia. El contexto del escáner devolvió 403 porque el build local en loopback HTTP no satisface el guard HTTPS; no se activó la cámara. Las cifras no son RUM ni Producción. La corrida original de este informe no incluía comparación antes/después ni evidencia de usuarios reales. **Actualización 31-oct-2026:** las fases experimentales 4 y 5 ya compararon lazy Recharts/ZXing y no justifican integrarlos. Ver [cierre técnico](QR-009-CIERRE-TECNICO.md).
 
 ## 2. Entorno y metodología
 
@@ -107,7 +107,7 @@ Se ejecutó `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` con 500 empleados sintéti
 5. Solo implementar una optimización si la evidencia acredita una causa; repetir el mismo método y cubrir UX/seguridad/regresión antes y después.
 6. Mantener QR-003 en P0/NO-GO y no validar flujos completos de asistencia.
 
-QR-009 sigue **En curso**. QR-004, QR-005 y QR-006 siguen En curso. QR-003 permanece pospuesta, P0 y NO-GO.
+**La evaluación técnica local de QR-009 se cierra con decisión de no integrar las variantes actuales.** El PR #25 aún no está fusionado y no tiene CI integral aprobado. QR-004, QR-005 y QR-006 siguen En curso; QR-003 permanece P0/NO-GO. Ver [QR-009-CIERRE-TECNICO.md](QR-009-CIERRE-TECNICO.md).
 
 ### Estado de CI y alternativas seguras
 
