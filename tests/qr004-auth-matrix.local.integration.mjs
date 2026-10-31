@@ -639,6 +639,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal(actionCompany.body.item.id, companyB);
   await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(actionMultiAdmin.memberships[0].id)}`);
   await actionBrowser.runForm("#set-admin-membership");
+  await actionBrowser.waitForActiveMembership(actionMultiAdmin.memberships[0].id);
   membershipCookie = (await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id");
   assert.equal(membershipCookie?.value, actionMultiAdmin.memberships[0].id, "setAdminMembership switches to the caller's own active admin membership");
   await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(adminB.memberships[0].id)}`);
@@ -654,6 +655,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal((await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id")?.value, actionMultiAdmin.memberships[0].id, "chooseMembership cannot replace a valid cookie with an inactive/revoked membership");
   await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(actionMultiAdmin.memberships[1].id)}`);
   await actionBrowser.runForm("#set-admin-membership");
+  await actionBrowser.waitForActiveMembership(actionMultiAdmin.memberships[1].id);
   membershipCookie = (await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id");
   assert.equal(membershipCookie?.value, actionMultiAdmin.memberships[1].id, "a remaining active membership can replace a revoked selection");
   await service.from("company_memberships").update({ active: true }).eq("id", actionMultiAdmin.memberships[0].id);

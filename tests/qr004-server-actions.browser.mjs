@@ -93,6 +93,20 @@ function connect(url) {
   };
 }
 
+// Wait for the exact target cookie, not a stale company ID from before the
+// Server Action. Fail closed on timeout and never log membership identifiers.
+export async function waitForCookieValue(readCookies, name, expected, { attempts = 100, intervalMs = 100 } = {}) {
+  if (typeof readCookies !== "function" || !name || typeof expected !== "string" || !expected ||
+      !Number.isInteger(attempts) || attempts < 1 || attempts > 200 ||
+      !Number.isInteger(intervalMs) || intervalMs < 0 || intervalMs > 1000) throw new Error("Invalid bounded cookie wait");
+  for (let n = 0; n < attempts; n++) {
+    const result = (await readCookies()).find((cookie) => cookie.name === name);
+    if (result?.value === expected) return result;
+    if (n + 1 < attempts) await new Promise((resolveWait) => setTimeout(resolveWait, intervalMs));
+  }
+  throw new Error("Server Action did not commit the expected active membership cookie within the bounded wait");
+}
+
 export async function launchServerActionBrowser(appUrl) {
   const chrome = await findChrome();
   const debugPort = await freePort();
@@ -166,18 +180,21 @@ export async function launchServerActionBrowser(appUrl) {
       const encoded = JSON.stringify(values).replaceAll("<", "\\u003c");
       const expression = `(() => { const form = document.querySelector(${JSON.stringify(selector)}); if (!(form instanceof HTMLFormElement)) throw new Error('rendered form missing'); const values = ${encoded}; for (const [name, value] of Object.entries(values)) { const fields = [...form.elements].filter((field) => field.name === name); if (!fields.length) throw new Error('rendered field missing'); fields[0].value = value; } const submit = form.querySelector('button[type=submit],button:not([type])'); if (submit instanceof HTMLButtonElement) submit.disabled = false; form.requestSubmit(submit ?? undefined); return true; })()`;
       const actionResult = new Promise((resolveAction, rejectAction) => {
-        let requestId;
+        let requestId, responseStatus = null;
         const timeout = setTimeout(() => { cleanup(); rejectAction(new Error("Next.js Server Action form did not complete locally")); }, 20_000);
-        const cleanup = () => { clearTimeout(timeout); offRequest(); offResponse(); offFailed(); };
+        const cleanup = () => { clearTimeout(timeout); offRequest(); offResponse(); offFinished(); offFailed(); };
         const offRequest = page.on("Network.requestWillBeSent", (event) => {
           if (event.request.method === "POST" && new URL(event.request.url).origin === origin) requestId = event.requestId;
         });
         const offResponse = page.on("Network.responseReceived", (event) => {
-          if (event.requestId === requestId) {
-            cleanup();
-            if (event.response.status >= 500) rejectAction(new Error(`Next.js returned HTTP ${event.response.status} for a local Server Action`));
-            else resolveAction(true);
-          }
+          if (event.requestId === requestId) responseStatus = event.response.status;
+        });
+        // CDP responseReceived observes headers, not full response processing.
+        const offFinished = page.on("Network.loadingFinished", (event) => {
+          if (event.requestId !== requestId || responseStatus === null) return;
+          cleanup();
+          if (responseStatus >= 500) rejectAction(new Error(`Next.js returned HTTP ${responseStatus} for a local Server Action`));
+          else resolveAction(true);
         });
         const offFailed = page.on("Network.loadingFailed", (event) => {
           if (event.requestId === requestId) { cleanup(); rejectAction(new Error(`Next.js Server Action request failed locally (${String(event.errorText ?? "network failure").slice(0, 100)})`)); }
@@ -206,13 +223,16 @@ export async function launchServerActionBrowser(appUrl) {
       const result = await page.call("Network.getAllCookies");
       return result.cookies.filter((cookie) => cookie.domain.includes(new URL(origin).hostname));
     }
+    async function waitForActiveMembership(expectedId) {
+      return waitForCookieValue(getCookies, "qr_active_membership_id", expectedId);
+    }
     async function fetchJson(path) {
       const targetUrl = new URL(path, origin);
       assert.equal(targetUrl.origin, origin, "browser API probe must stay on the local Next.js origin");
       return evaluate(`fetch(${JSON.stringify(targetUrl.pathname + targetUrl.search)}, { cache: 'no-store' }).then(async r => ({ status: r.status, body: await r.json() }))`);
     }
     return {
-      navigate, runForm, click, clickButtonText, waitForPath, bodyText, getCookies, fetchJson,
+      navigate, runForm, click, clickButtonText, waitForPath, bodyText, getCookies, waitForActiveMembership, fetchJson,
       evaluate,
       currentUrl: () => evaluate("location.href"),
       close: async () => {
