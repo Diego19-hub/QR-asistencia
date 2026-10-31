@@ -72,6 +72,7 @@ export function Dashboard() {
       .then((payload) => {
         if (!controller.signal.aborted) {
           setData(payload);
+          setError("");
           setBranchOptions(payload.branches);
           setBranchesCompanyId(company.companyId);
           setLoadedCompanyId(company.companyId);

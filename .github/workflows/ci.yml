@@ -35,7 +35,7 @@ jobs:
         env:
           QR004_CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
           QR004_CHROME_NO_SANDBOX: "1"
-      - run: npm run test:e2e:local
+      - run: npm run test:e2e
         env:
           QR004_CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
           QR004_CHROME_NO_SANDBOX: "1"

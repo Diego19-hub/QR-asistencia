@@ -119,7 +119,9 @@ async function waitForNext(url) {
   throw new Error("temporary Next.js server did not become ready");
 }
 async function runPlaywrightLocal(env, secrets) {
-  const child = spawn(process.execPath, [join(root, "node_modules/@playwright/test/cli.js"), "test", "--config", join(root, "playwright.config.mjs")], {
+  const playwrightArgs = [join(root, "node_modules/@playwright/test/cli.js"), "test", "--config", join(root, "playwright.config.ts")];
+  if (process.argv.includes("--ui")) playwrightArgs.push("--ui");
+  const child = spawn(process.execPath, playwrightArgs, {
     cwd: root,
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -441,13 +443,26 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     const inactiveMembership = await createHttpUser("e2e-inactive-supervisor", "supervisor", companyA);
     const inactiveUpdate = await service.from("company_memberships").update({ active: false }).eq("id", inactiveMembership.memberships[0].id);
     if (inactiveUpdate.error) throw new Error("could not seed an inactive synthetic membership");
+    const inactiveEmployee = await createHttpUser("e2e-inactive-employee", "employee", companyA, { employee: true, branchId: branchA });
+    const inactiveEmployeeUpdate = await service.from("company_memberships").update({ active: false }).eq("id", inactiveEmployee.memberships[0].id);
+    if (inactiveEmployeeUpdate.error) throw new Error("could not seed an inactive synthetic employee membership");
     const noBranchSupervisor = await createHttpUser("e2e-no-branch-supervisor", "supervisor", companyA);
     const noBranchRecord = await service.from("supervisors").insert({ company_id: companyA, membership_id: noBranchSupervisor.memberships[0].id });
     if (noBranchRecord.error) throw new Error("could not seed a supervisor without a branch");
+    const networkSupervisor = await createHttpUser("e2e-network-supervisor", "supervisor", companyA);
+    const networkSupervisorRecord = await service.from("supervisors").insert({ company_id: companyA, membership_id: networkSupervisor.memberships[0].id });
+    const networkSupervisorBranch = await service.from("supervisor_branches").insert({ company_id: companyA, membership_id: networkSupervisor.memberships[0].id, branch_id: branchA });
+    if (networkSupervisorRecord.error || networkSupervisorBranch.error) throw new Error("could not seed network-retry synthetic supervisor");
     const revokedSupervisor = await createHttpUser("e2e-revoked-supervisor", "supervisor", companyA);
     const revokedRecord = await service.from("supervisors").insert({ company_id: companyA, membership_id: revokedSupervisor.memberships[0].id });
     const revokedBranch = await service.from("supervisor_branches").insert({ company_id: companyA, membership_id: revokedSupervisor.memberships[0].id, branch_id: branchA });
     if (revokedRecord.error || revokedBranch.error) throw new Error("could not seed a revocable synthetic supervisor");
+    const multiSupervisor = await createHttpUser("e2e-multi-supervisor", "supervisor", companyA, { extraMemberships: [[companyB, "supervisor"]] });
+    for (const [companyId, membership, branchId] of [[companyA, multiSupervisor.memberships[0], branchA], [companyB, multiSupervisor.memberships[1], branchB]]) {
+      const supervisor = await service.from("supervisors").insert({ company_id: companyId, membership_id: membership.id });
+      const branch = await service.from("supervisor_branches").insert({ company_id: companyId, membership_id: membership.id, branch_id: branchId });
+      if (supervisor.error || branch.error) throw new Error("could not seed multi-company synthetic supervisor scope");
+    }
 
     const childEnv = {
       PATH: process.env.PATH ?? "",
@@ -472,23 +487,33 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       QR005_NO_MEMBERSHIP_PASSWORD: unassigned.password,
       QR005_INACTIVE_MEMBERSHIP_EMAIL: inactiveMembership.email,
       QR005_INACTIVE_MEMBERSHIP_PASSWORD: inactiveMembership.password,
+      QR005_INACTIVE_EMPLOYEE_EMAIL: inactiveEmployee.email,
+      QR005_INACTIVE_EMPLOYEE_PASSWORD: inactiveEmployee.password,
       QR005_MULTI_ADMIN_EMAIL: multiAdmin.email,
       QR005_MULTI_ADMIN_PASSWORD: multiAdmin.password,
+      QR005_MULTI_SUPERVISOR_EMAIL: multiSupervisor.email,
+      QR005_MULTI_SUPERVISOR_PASSWORD: multiSupervisor.password,
       QR005_NO_BRANCH_SUPERVISOR_EMAIL: noBranchSupervisor.email,
       QR005_NO_BRANCH_SUPERVISOR_PASSWORD: noBranchSupervisor.password,
+      QR005_NETWORK_SUPERVISOR_EMAIL: networkSupervisor.email,
+      QR005_NETWORK_SUPERVISOR_PASSWORD: networkSupervisor.password,
       QR005_REVOKED_SUPERVISOR_EMAIL: revokedSupervisor.email,
       QR005_REVOKED_SUPERVISOR_PASSWORD: revokedSupervisor.password,
       QR005_REVOKED_SUPERVISOR_MEMBERSHIP_ID: revokedSupervisor.memberships[0].id,
       QR005_COMPANY_A_ID: companyA,
       QR005_COMPANY_B_ID: companyB,
+      QR005_BRANCH_A_ID: branchA,
       QR005_COMPANY_A_NAME: companyAName,
       QR005_COMPANY_B_NAME: companyBName,
+      QR005_FOREIGN_MEMBERSHIP_ID: adminB.memberships[0].id,
     };
     await mkdir(childEnv.QR005_RESULTS_DIR, { recursive: true, mode: 0o700 });
     await runPlaywrightLocal(childEnv, [
       adminA.email, adminA.password, supervisorA.email, supervisorA.password, employeeA.email, employeeA.password,
       unlinkedEmployee.email, unlinkedEmployee.password, unassigned.email, unassigned.password,
       inactiveMembership.email, inactiveMembership.password, multiAdmin.email, multiAdmin.password,
+      multiSupervisor.email, multiSupervisor.password,
+      networkSupervisor.email, networkSupervisor.password,
       noBranchSupervisor.email, noBranchSupervisor.password, revokedSupervisor.email, revokedSupervisor.password,
       serviceKey, anonKey, dbUrl,
     ]);

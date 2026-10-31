@@ -23,7 +23,9 @@
     "test:reports:lease:local": "node tests/reports-export-lease.local.integration.mjs",
     "test:security:matrix": "npm run test:security:matrix:local",
     "test:security:matrix:local": "node tests/qr004-auth-matrix.local.integration.mjs",
+    "test:e2e": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only",
     "test:e2e:local": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only",
+    "test:e2e:ui": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only --ui",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test:security:jwt": "node tests/security-jwt-matrix.integration.mjs"

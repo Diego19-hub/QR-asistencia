@@ -6,7 +6,7 @@ if (!process.env.QR005_BASE_URL || !process.env.QR005_SUPABASE_URL || !process.e
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  testMatch: "**/*.spec.mjs",
+  testMatch: "**/*.spec.ts",
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,

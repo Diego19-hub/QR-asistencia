@@ -6,9 +6,9 @@
 
 ## Arquitectura
 
-`playwright.config.mjs` ejecuta un proyecto Chromium secuencial con timeout explícito, un worker y reintento únicamente en CI. `tests/e2e/qr005-auth-access.spec.mjs` interactúa con las páginas y formularios reales de Next.js. No simula Server Actions ni usa API administrativa para iniciar sesión.
+`playwright.config.ts` ejecuta Chromium secuencialmente con timeout explícito, un worker y reintento únicamente en CI. La suite se organiza por área en `tests/e2e/{auth,permissions,company-selection,employee-portal,supervisor-scanner}.spec.ts`, con fixtures y validación de entorno compartidas en `fixtures/` y `helpers/`. Los flujos de autenticación usan formularios reales de Next.js; las operaciones administrativas de preparación usan únicamente APIs locales y usuarios sintéticos.
 
-El comando `npm run test:e2e:local` reutiliza el bootstrap aislado de `tests/qr004-auth-matrix.local.integration.mjs` en modo `--e2e-only`:
+Los comandos `npm run test:e2e` y `npm run test:e2e:local` reutilizan el bootstrap aislado de `tests/qr004-auth-matrix.local.integration.mjs` en modo `--e2e-only`. `npm run test:e2e:ui` inicia la interfaz de Playwright dentro del mismo stack desechable:
 
 1. Crea un ID aleatorio y un directorio temporal fuera del repositorio.
 2. Copia el manifiesto SQL y la configuración, reasigna puertos libres y arranca Supabase local sin enlazar un proyecto remoto.
@@ -26,8 +26,8 @@ El modo `--e2e-only` omite los pgTAP y la matriz HTTP completa para evitar dupli
 - Node de CI: 24.21.0; Chromium/Chrome instalado por CI o por Playwright local.
 - Docker y Supabase CLI fijado en el proyecto.
 - Instalación npm normal: `npm ci`.
-- Local: `npm run test:e2e:local`.
-- En macOS, si Chromium de Playwright no está instalado, puede usarse Chrome existente: `QR004_CHROME_BIN='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm run test:e2e:local`.
+- Local: `npm run test:e2e`.
+- En macOS, si Chromium de Playwright no está instalado, puede usarse Chrome existente: `QR004_CHROME_BIN='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm run test:e2e`.
 - CI: paso E2E aislado en `.github/workflows/ci.yml`, usando Chrome del job.
 - Otras validaciones: `npm run test:security:matrix:local`, `npm test`, `npm run lint`, `npm run typecheck` y `npm run build`.
 
@@ -37,12 +37,12 @@ Los datos temporales nunca se guardan en el repositorio. La configuración desac
 
 | Área | Casos E2E del navegador |
 |---|---|
-| Sesión | Acceso anónimo a `/admin`, `/scanner`, `/mi-qr`; contraseña inválida; login admin real; cierre de sesión y cookie HttpOnly. |
-| Roles | Administrador, supervisor y empleado en su destino; rol insuficiente ante `/admin`; Auth válido sin membresía y membresía inactiva. |
-| Empresas | Usuario admin con dos empresas, selección explícita y cambio entre ambas con cookie de membresía. |
-| Portal | Empleado vinculado en `/mi-qr`; cuenta employee sin expediente ve solo el estado no vinculado. |
-| Escáner/dispositivo | Supervisor con/sin sucursal; solicitud real, aprobación desde la interfaz administrativa, redención por el contexto real, revocación de dispositivo y revocación de membresía. |
-| Cámara | Chromium usa media fake. El primer `getUserMedia` se rechaza con un mock de permiso denegado; la repetición utiliza el dispositivo fake y puede detenerlo. Se comprueba que no se invoque `/api/attendance/scan`. |
+| Sesión y panel | Acceso anónimo a rutas protegidas; contraseña inválida; login admin real; cierre de sesión/cookie HttpOnly; dashboard con empresa sintética, navegación y recuperación al reintentar una falla de red simulada. |
+| Roles | Administrador, supervisor y empleado en su destino; roles insuficientes; identidades sin membresía, membresía inactiva y membresía de empleado inactiva. |
+| Empresas | Usuario admin con dos empresas, cambio explícito, datos del tenant seleccionado y rechazo de una membresía de otra identidad. |
+| Portal | Empleado vinculado con datos sintéticos de su empresa; portal sin expediente; rechazo de acceso a administración/escáner; cierre de sesión y revocación de membresía. |
+| Escáner/dispositivo | Supervisor con/sin sucursal; selección del contexto entre dos empresas; solicitud, aprobación, revocación del dispositivo y revocación de membresía. |
+| Cámara y red | Cámara simulada sin dispositivo y permiso denegado, posterior recuperación con dispositivo fake; error y reintento de red local. Se comprueba que no se invoque `/api/attendance/scan`. |
 
 Los tests usan selectores accesibles de roles, nombres y labels. No dependen de orden global; cada prueba crea un contexto de navegador nuevo. Las identidades se crean para una ejecución y la base se destruye completa.
 
@@ -54,13 +54,17 @@ La autorización del dispositivo y la cámara fake no simulan una asistencia com
 
 ## CI y diagnósticos
 
-El workflow conserva todas las suites existentes y agrega un paso separado para `npm run test:e2e:local`. CI usa un worker y un reintento. No se publican archivos de diagnóstico; capturas, videos y trazas están apagados. Los logs de fallos se redactan para eliminar las contraseñas/identidades sintéticas que el bootstrap pasa al proceso de pruebas.
+El workflow conserva todas las suites existentes y agrega un paso separado para `npm run test:e2e`. CI usa un worker y un reintento. No se publican archivos de diagnóstico; capturas, videos y trazas están apagados. Los logs de fallos se redactan para eliminar las contraseñas/identidades sintéticas que el bootstrap pasa al proceso de pruebas.
 
 ## Criterios pendientes
 
-- **Ejecución local observada (2026-10-30):** `npm run test:e2e:local` con Chrome 156.0.8078.79 pasó 10/10 pruebas de navegador en 49.7 s; la preparación y limpieza del stack desechable terminaron correctamente y se conservaron los recursos Docker preexistentes. Una primera ejecución sin `QR004_CHROME_BIN` falló antes de abrir el navegador porque no estaba instalado el Chromium administrado por Playwright; repetir con el Chrome ya instalado pasó. No se descargó otro navegador.
-- **Otras validaciones observadas (2026-10-30):** `npm run test:security:matrix:local` pasó los ocho archivos pgTAP (201 aserciones) y la matriz dinámica HTTP/Auth; `npm test` terminó con 80 aprobadas y 1 omitida por el bloqueo del socket del agente GnuPG; `npm run lint`, `npm run typecheck` y `npm run build` pasaron. El build aislado generó 41/41 páginas estáticas; Next reportó que 27 archivos de trace quedaron fuera del output standalone porque `node_modules` se enlazó desde fuera del directorio temporal. El artefacto temporal se eliminó. `npm audit` reportó 0 vulnerabilidades después de actualizar Next.js, `eslint-config-next` y Zod a versiones parcheadas compatibles.
+- **Ejecución ampliada (2026-10-30):** `QR004_CHROME_BIN='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm run test:e2e` pasó 16/16 pruebas de navegador en 55.8 s con Supabase desechable. El runner confirmó eliminación del stack y datos temporales y preservación de los recursos Docker preexistentes.
+- **Hallazgo de UI QR-005:** la prueba interactiva con un 503 sintético del endpoint dashboard reprodujo que el dashboard conservaba el mensaje de error después de una consulta válida de reintento. Causa: el estado `error` no se limpiaba en el camino exitoso del efecto. Se corrigió limpiándolo cuando se recibe una respuesta válida y la regresión E2E pasa. Severidad funcional: baja; el panel mantenía el estado visual de error y ocultaba los datos hasta actualizar la vista.
+- **Regresión y calidad (2026-10-30):** `npm run test:security:matrix:local` finalizó con éxito: 201 aserciones pgTAP, matrices HTTP/Auth/Server Actions y teardown local verificado. `npm test`: 80 aprobadas, 0 fallidas y 1 omitida porque el sandbox bloqueó el socket local del agente GnuPG.
+- **Validaciones estáticas/build (2026-10-30):** `npm run lint` y `npm run typecheck` pasaron. `npm run build` en un directorio temporal aislado pasó y generó 41/41 páginas/rutas. Next mostró una advertencia conocida: 27 traces no entraron al output standalone porque `node_modules` estaba enlazado desde el checkout; no se conservó el artefacto temporal.
+- **Cobertura actual:** 16 casos de navegador locales; sesión/roles, navegación del dashboard, error/reintento, selección y rechazo de membresía ajena, portal vinculado/no vinculado/inactivo, autorización y revocación de dispositivo, supervisor sin sucursal, contexto supervisor entre empresas, fallas de red y cámara simulada.
+- `npm audit` reportó 0 vulnerabilidades en la revisión previa de dependencias parcheadas.
 - GitHub Actions debe completar con el nuevo commit antes de considerar QR-005 lista para revisión final.
-- Ampliar cobertura de estados de cámara/dispositivo móvil con evidencia adicional, manteniendo el bloqueo de asistencia/PIN.
+- Las pruebas de cámara usan mocks de `getUserMedia` y dispositivo fake de Chromium; no representan hardware físico ni permisos de un navegador móvil real.
 - Seguir la matriz de autorización multiempresa de QR-004; E2E no sustituye RLS/pgTAP ni revisión remota segregada.
 - Añadir flujos completos de asistencia solo cuando exista una decisión independiente que retire el bloqueo de QR-003.

@@ -20,7 +20,7 @@ QR-003 documenta la reproducción legacy y los resultados de pgTAP/integración 
 - **Unitarias:** reglas de dominio y presentación; comprobar límites y errores.
 - **Integración HTTP/Auth:** sesión, permisos, entradas inválidas, errores y aislamiento entre empresas.
 - **SQL/pgTAP:** RLS, funciones, integridad transaccional, concurrencia y acceso bajo roles reales de prueba.
-- **E2E local (QR-005):** `npm run test:e2e:local` levanta una copia Supabase/Next desechable, usa Playwright Chromium y limpia únicamente el proyecto temporal; no requiere ni carga `.env.local`.
+- **E2E local (QR-005):** `npm run test:e2e` levanta una copia Supabase/Next desechable, usa Playwright Chromium y limpia únicamente el proyecto temporal; no requiere ni carga `.env.local`.
 - **Regresión:** ejecutar pruebas del dominio afectado y suites de seguridad relevantes.
 
 ## Reglas
@@ -37,10 +37,10 @@ QR-003 documenta la reproducción legacy y los resultados de pgTAP/integración 
 
 ## QR-005 — Playwright E2E
 
-La configuración está en `playwright.config.mjs`. Ejecuta `npm run test:e2e:local`; el comando lanza el runner local con `--e2e-only`, que crea un proyecto Supabase con ID aleatorio, aplica las migraciones únicamente en PostgreSQL desechable, prepara identidades sintéticas y arranca Next.js en loopback. El runner elimina su stack y directorio temporal incluso tras fallos, y comprueba que contenedores, volúmenes y redes preexistentes permanezcan.
+La configuración está en `playwright.config.ts`. Ejecuta `npm run test:e2e` (alias: `npm run test:e2e:local`) o `npm run test:e2e:ui`; cada comando lanza el runner local con `--e2e-only`, que crea un proyecto Supabase con ID aleatorio, aplica las migraciones únicamente en PostgreSQL desechable, prepara identidades sintéticas y arranca Next.js en loopback. El runner elimina su stack y directorio temporal incluso tras fallos, y comprueba que contenedores, volúmenes y redes preexistentes permanezcan.
 
-Playwright bloquea toda solicitud del navegador fuera del origen Next local y la API Supabase loopback. Las pruebas usan los formularios reales y Server Actions de Next.js; no fabrican el protocolo de Server Actions. Capturas, video y trazas están desactivados; resultados temporales quedan dentro del directorio que el runner elimina. CI usa el Chrome aislado del job, un worker y un reintento; localmente no hay reintentos.
+Playwright bloquea toda solicitud del navegador fuera del origen Next local y la API Supabase loopback. Las pruebas usan los formularios reales y Server Actions de Next.js; no fabrican el protocolo de Server Actions. Capturas, video y trazas están desactivados; resultados temporales quedan dentro del directorio que el runner elimina. CI usa el Chrome aislado del job, un worker y un reintento; localmente no hay reintentos. QR-005 conserva explícitamente fuera de cobertura los flujos de PIN y registro de asistencia mientras QR-003 permanezca pospuesta.
 
-La fase inicial cubre navegación anónima protegida, inicio/cierre de sesión de owner/admin, rechazo de contraseña, roles supervisor/empleado, cuenta sin membresía activa, expediente no vinculado, selección y cambio entre empresas, sucursal faltante, ciclo de solicitud/aprobación/revocación de dispositivo y revocación de membresía. La cámara se prueba con Chromium y dispositivo multimedia simulado; la denegación inicial de `getUserMedia` es un mock del navegador, no una prueba física de hardware. Se comprueba que abrir/cerrar cámara no llama a `/api/attendance/scan`.
+La suite E2E cubre navegación anónima protegida, inicio/cierre de sesión de owner/admin, rechazo de contraseña, roles supervisor/empleado, cuentas y membresías inactivas, expediente no vinculado, selección y cambio entre empresas, rechazo de selección de membresía ajena, dashboard y reintento, sucursal faltante, ciclo de solicitud/aprobación/revocación de dispositivo y revocación de membresía. La cámara se prueba con Chromium y dispositivo multimedia simulado; ausencia de cámara y permiso denegado se simulan en `getUserMedia`, no son una prueba física de hardware. Se comprueba que el escáner no llame a `/api/attendance/scan`.
 
 **Bloqueado por QR-003:** no se valida PIN, no se envía ningún PIN, no se lee una credencial QR, no se llama a `private.verify_employee_pin`, no se confirma movimiento y no se prueba el lockout. Entrada/salida/descanso quedan fuera de la aceptación E2E de esta fase.
