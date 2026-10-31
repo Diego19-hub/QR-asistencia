@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
-    "test": "npm run test:attendance && npm run test:reports && npm run test:scanner && npm run test:pin-lockout && npm run test:credentials && npm run test:employee-portal && npm run test:user-access && npm run test:auth-flow && npm run test:deployment && npm run test:backup-tool",
+    "test": "npm run test:attendance && npm run test:reports && npm run test:scanner && npm run test:pin-lockout && npm run test:credentials && npm run test:employee-portal && npm run test:user-access && npm run test:auth-flow && npm run test:deployment && npm run test:backup-tool && npm run test:server-action-cookie-sync",
     "test:attendance": "node --experimental-strip-types --test tests/attendance-presentation.test.mjs",
     "test:scanner": "node --test tests/scanner-context.test.mjs",
     "test:pin-lockout": "node --test tests/attendance-pin-lockout.test.mjs",
@@ -29,7 +29,8 @@
     "benchmark:qr009:local": "node tests/qr004-auth-matrix.local.integration.mjs --performance-only",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test:security:jwt": "node tests/security-jwt-matrix.integration.mjs"
+    "test:security:jwt": "node tests/security-jwt-matrix.integration.mjs",
+    "test:server-action-cookie-sync": "node --test tests/qr004-server-action-cookie-sync.test.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

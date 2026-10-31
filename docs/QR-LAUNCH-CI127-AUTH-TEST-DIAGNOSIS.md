@@ -17,7 +17,7 @@ En `tests/qr004-server-actions.browser.mjs`, `runForm()` marcaba terminada la pe
 
 ## Validación requerida antes de integrar
 
-1. `node --test tests/qr004-server-action-cookie-sync.test.mjs` (sin Docker ni Supabase): **NOT RUN en máquina local**; se verificó la función pura con pruebas sintéticas en V8 durante la autoría.
+1. `npm run test:server-action-cookie-sync` (sin Docker ni Supabase): **NOT RUN en máquina local**. Se añadió a `npm test` para que el CI obligatorio verifique las regresiones, sin sustituir ninguna suite existente. La función pura se ejercitó con V8 durante la autoría.
 2. `npm run lint` y `npm run typecheck`: pendientes para este commit.
 3. **Tras confirmar Docker local desechable y autorizar formalmente la matriz de integración**, ejecutar `npm run test:security:matrix:local` **en una rama aislada**, nunca enlazada a Testing/Producción. Asegurar pruebas de denegación, cookies y limpieza; revisar la causa si falla otra vez.
 4. Solicitar code review; solo después decidir si incorporar este cambio al PR/una rama de integración y obtener **CI obligatorio PASS en SHA final**. No eliminar matrices ni aceptar un check saltado.
@@ -31,3 +31,7 @@ En `tests/qr004-server-actions.browser.mjs`, `runForm()` marcaba terminada la pe
 - **No merge, reactivación, migración remota ni despliegue** en esta fase.
 
 **Resultado:** se corrige un motivo plausible de flakiness en el harness y se preservan comprobaciones de seguridad. La validación integral sigue pendiente.
+
+## Autorización de validación (31-oct-2026)
+
+El propietario autorizó continuar con el lanzamiento. Se permite la ejecución de GitHub Actions **exclusivamente con el alcance definido en `.github/workflows/ci.yml`**: datos sintéticos, Docker/Supabase loopback desechables y sin conexiones a Testing/Producción. La aprobación no autoriza operar sobre bases alojadas, descartar datos ni desplegar. Esta rama se revisará como PR apilado contra `perf/qr-009-runtime-benchmark`. **No se han ejecutado todavía las nuevas pruebas en esta revisión**.
