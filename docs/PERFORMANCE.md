@@ -1,6 +1,6 @@
 # Medición de rendimiento
 
-No hay mediciones de referencia registradas en esta configuración. Captura datos antes de optimizar y repite el mismo procedimiento después. Anota commit, ambiente, dispositivo/navegador, ruta, volumen de datos, herramienta, número de repeticiones y resultados. No presentes resultados locales como métricas de Producción.
+La revisión QR-009 capturó un inventario estático de chunks de cliente desde un build aislado de producción de la base `1a0b0a5`; no obtuvo una línea base válida de carga en navegador. Lighthouse no estaba instalado. Los dos intentos de un probe Playwright local quedaron limitados por duración bajo throttling y no generaron series completas; no presentar sus intentos como métricas ni como regresión del producto. No se ha justificado ni realizado una optimización. Antes de cambiar código, obtener una serie reproducible y repetirla con el mismo entorno. No presentar resultados locales como métricas de Producción.
 
 ## Carga y experiencia de página
 
@@ -34,4 +34,5 @@ Antes de cambiar caché, documenta clave, usuario/empresa, invalidación y datos
 
 | Fecha/commit | Ruta/escenario | Entorno y dispositivo | Método | Línea base | Después | Observaciones |
 |---|---|---|---|---|---|---|
-| Pendiente | — | — | — | — | — | Completar en QR-009 |
+| 2026-10-30 / `1a0b0a5` | `/login`, `/admin`, `/admin/reportes`, `/scanner`, `/mi-qr` | Build de producción aislado; inventario estático, no dispositivo | Chunks referenciados por el client-reference manifest, deduplicados por ruta | Ver tabla en [informe QR-009](QR-009-PERFORMANCE-REPORT.md) | N/A | No representa bytes transferidos por navegador ni permite concluir LCP/TBT |
+| 2026-10-30 / `1a0b0a5` | cinco rutas prioritarias | Playwright/Chrome local, viewport móvil 390×844, CPU 4×, perfil 4G, Supabase desechable | Probe exploratorio; se intentaron repeticiones frías y calientes | Sin serie válida | N/A | Dos intentos incompletos por tiempo; no usar como baseline cuantitativo. 22 E2E funcionales existentes sí pasaron en la primera ejecución |

@@ -12,7 +12,7 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 | QR-006 | P2 | En curso | QR-005 | Estabilidad del escáner. Se reprodujo la inicialización doble y se añadieron pruebas para fallos de cámara, respuestas HTTP y carreras de contexto, estados de autorización y viewports móviles. No certifica hardware móvil físico ni flujos de asistencia bloqueados por QR-003. Informe y evidencia en [docs/QR-006-SCANNER-STABILITY.md](docs/QR-006-SCANNER-STABILITY.md). |
 | QR-007 | P1 | En curso | — | Auditoría técnica documentada para revisión en [docs/QR-007-CODE-AUDIT.md](docs/QR-007-CODE-AUDIT.md): 8 oportunidades/brechas, 0 críticas/altas. Lint/typecheck PASS; npm test 80 aprobadas, 0 fallidas, 1 skip; matriz local 201 pgTAP + HTTP/Auth PASS; E2E 22/22; build aislado 41/41 rutas PASS con advertencia standalone de trazas por symlink. npm audit bloqueado por DNS, advisories completos pendientes. Solo documentación; QR-008/009/010 quedan separadas. |
 | QR-008 | P2 | En curso | QR-007 | Inventario conservador de dependencias/candidatos completado en [docs/QR-008-SAFE-CLEANUP.md](docs/QR-008-SAFE-CLEANUP.md). `argon2` se conserva: sin imports en el repo ni dependientes transitivos, pero Docker/historial operativo no descartan consumidores y no hay evidencia suficiente para retirarlo. No se confirmó otro código, prueba, script o archivo obsoleto; no hubo eliminaciones. Validaciones locales documentadas; PR en revisión. |
-| QR-009 | P1 | Pendiente | QR-007 | Optimización de velocidad web |
+| QR-009 | P1 | En curso | QR-007 | Auditoría de rendimiento; baseline de bundle por ruta disponible, pero faltan mediciones reproducibles de navegador y consultas antes de justificar optimizaciones. Evidencia: [informe QR-009](docs/QR-009-PERFORMANCE-REPORT.md). |
 | QR-010 | P2 | Pendiente | QR-007 | Mantenibilidad y refactorización |
 
 ## QR-001 — Enlaces de acceso
@@ -108,7 +108,8 @@ Estados: **Pendiente**, **En curso**, **Bloqueada**, **Hecha**. No marques una t
 
 - **Objetivo:** medir carga inicial, móvil, JavaScript, renderizado, Server Components, solicitudes, recursos, división/carga diferida, caché, Supabase, índices, paginación, panel y escáner.
 - **Criterios de aceptación:** línea base reproducible y resultados antes/después; identificar entorno, dispositivo, ruta, tamaño de muestra y herramienta; analizar privacidad antes de modificar caché; documentar métricas y cambios en `docs/PERFORMANCE.md`.
-- **Evidencia inicial:** `next.config.ts` configura standalone y trazado de recursos PDFKit; Docker compila para `linux/amd64`; hay pruebas específicas de exportación y lease. No hay métricas de Lighthouse/Core Web Vitals capturadas en esta configuración inicial.
+- **Estado de esta fase:** revisión documental y build aislado de la base `1a0b0a5` completados. Inventario estático de chunks por ruta registrado en `docs/QR-009-PERFORMANCE-REPORT.md`; no equivale a bytes transferidos. Lighthouse no está instalado y dos intentos de muestreo Playwright bajo throttling no concluyeron dentro de un tiempo reproducible. No se cambió código de aplicación ni se afirma una mejora. Pendientes: perfil de navegador con muestras estables, p50/p95 de consultas sobre dataset sintético de volumen documentado y medición antes/después si se demuestra una oportunidad.
+- **Restricciones conservadas:** QR-003 permanece P0/NO-GO; QR-004, QR-005 y QR-006 siguen en curso. Sin conexiones Supabase remotas, datos reales, operaciones QR/PIN/asistencia ni cambios de caché/RLS.
 
 ## QR-010 — Mantenibilidad y refactorización
 
