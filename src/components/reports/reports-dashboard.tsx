@@ -29,8 +29,18 @@ const hhmm = (value: string | null, timezone: string) => value ? new Intl.DateTi
 const duration = (value: number | null) => value === null ? "—" : `${Math.floor(value / 60)} h ${String(value % 60).padStart(2, "0")} min`;
 const baseInput = "h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100";
 
+// Share the same import between intent-based preloading and the lazy component.
+const loadReportsCharts = () => import("@/components/reports/reports-charts").then((module) => module.ReportsCharts);
+function preloadReportsCharts() {
+  // Preloading never grants access or fetches report data; rendering still
+  // requires an authorized report payload and explicit panel expansion.
+  void loadReportsCharts().catch(() => {
+    // A failed speculative load must not surface an unhandled rejection.
+    // Normal rendering keeps its own loading/error behavior.
+  });
+}
 const ReportsCharts = dynamic(
-  () => import("@/components/reports/reports-charts").then((module) => module.ReportsCharts),
+  loadReportsCharts,
   { ssr: false, loading: () => <div role="status" className="grid h-40 place-items-center text-sm text-slate-500">Cargando gráficas…</div> },
 );
 
@@ -184,7 +194,7 @@ export function ReportsDashboard() {
 
     <section aria-label="Resumen del reporte" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{keyMetrics.map((item) => <article key={item.label} className="min-h-[104px] rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-medium text-slate-500">{item.label}</p><p className="mt-2 text-xl font-bold tracking-tight text-slate-950">{loading ? <span className="inline-block h-6 w-12 animate-pulse rounded bg-slate-100" /> : reportLoadError ? "—" : item.value ?? 0}</p><p className="mt-1 text-[11px] text-slate-400">{item.hint} · {applied.from} – {applied.to}</p></article>)}</section>
 
-    {data ? <details onToggle={(event) => { if (event.currentTarget.open) setShowCharts(true); }} className="rounded-2xl border border-slate-200 bg-white shadow-sm"><summary className="cursor-pointer list-none px-5 py-4 text-sm font-bold text-slate-800"><span className="inline-flex items-center gap-2"><BarChart3 size={16} className="text-blue-700" />Análisis y métricas avanzadas</span><span className="mt-1 block text-xs font-normal text-slate-500">Descansos, retardos, salidas anticipadas y horas extra autorizadas.</span></summary><div className="space-y-4 border-t border-slate-100 p-4 sm:p-5"><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{[
+    {data ? <details onToggle={(event) => { if (event.currentTarget.open) setShowCharts(true); }} className="rounded-2xl border border-slate-200 bg-white shadow-sm"><summary onPointerEnter={preloadReportsCharts} onFocus={preloadReportsCharts} onTouchStart={preloadReportsCharts} className="cursor-pointer list-none px-5 py-4 text-sm font-bold text-slate-800"><span className="inline-flex items-center gap-2"><BarChart3 size={16} className="text-blue-700" />Análisis y métricas avanzadas</span><span className="mt-1 block text-xs font-normal text-slate-500">Descansos, retardos, salidas anticipadas y horas extra autorizadas.</span></summary><div className="space-y-4 border-t border-slate-100 p-4 sm:p-5"><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{[
       { label: "Presencia", value: duration(summary?.presenceMinutes ?? 0), detail: "Tiempo entre entrada y salida" },
       { label: "Descansos", value: duration((summary?.paidBreakMinutes ?? 0) + (summary?.unpaidBreakMinutes ?? 0)), detail: `${duration(summary?.paidBreakMinutes ?? 0)} computables · ${duration(summary?.unpaidBreakMinutes ?? 0)} no computables` },
       { label: "Retardos", value: duration(summary?.latenessMinutes ?? 0), detail: "Minutos acumulados" },
