@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { BrowserQRCodeReader, type IScannerControls } from "@zxing/browser";
+import type { IScannerControls } from "@zxing/browser";
 import { Camera, CameraOff, CheckCircle2, CircleAlert, Clock3, LoaderCircle, RotateCcw, ShieldCheck, Smartphone } from "lucide-react";
 import Link from "next/link";
 import { isCurrentContextRequest } from "@/lib/http/request-origin";
@@ -205,6 +205,15 @@ export function MobileScanner() {
     setError(""); setSuccess(null);
     scanHandledRef.current = false;
     try {
+      const { BrowserQRCodeReader } = await import("@zxing/browser");
+      // Authorization or camera state may change while the decoder chunk downloads.
+      if (generation !== cameraGenerationRef.current || !cameraStartingRef.current || !contextAuthorizedRef.current) {
+        if (generation === cameraGenerationRef.current) {
+          cameraStartingRef.current = false;
+          setCameraStarting(false);
+        }
+        return;
+      }
       const reader = new BrowserQRCodeReader();
       const controls = await reader.decodeFromVideoDevice(undefined, video, (result) => {
         if (generation !== cameraGenerationRef.current || !contextAuthorizedRef.current) return;
