@@ -35,3 +35,7 @@ En `tests/qr004-server-actions.browser.mjs`, `runForm()` marcaba terminada la pe
 ## Autorización de validación (31-oct-2026)
 
 El propietario autorizó continuar con el lanzamiento. Se permite la ejecución de GitHub Actions **exclusivamente con el alcance definido en `.github/workflows/ci.yml`**: datos sintéticos, Docker/Supabase loopback desechables y sin conexiones a Testing/Producción. La aprobación no autoriza operar sobre bases alojadas, descartar datos ni desplegar. Esta rama se revisará como PR apilado contra `perf/qr-009-runtime-benchmark`. **No se han ejecutado todavía las nuevas pruebas en esta revisión**.
+
+## Evidencia del CI #130 (31-oct-2026)
+
+En `push` sobre `17bf0a9`, el check **superó** npm ci, lint, typecheck, npm test (incluida la regresión), restore-local, reports-lease y los pgTAP iniciales de la matriz. **Falló** por timeout de 10 segundos esperando la cookie exacta en el primer cambio legítimo de empresa. Esto demuestra que la sincronización posterior a los headers, por sí sola, **no corrige** el comportamiento. Una nueva instrumentación *exclusivamente en el harness temporal* registra únicamente `ALLOWED`/`DENIED` del Server Action, sin IDs ni credenciales, y muestra ese marcador si el cambio vuelve a fallar. No se altera aplicación ni se reduce ninguna aserción de autorización. **El nuevo diagnóstico tampoco representa un PASS hasta ejecutarse.**

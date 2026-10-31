@@ -411,7 +411,12 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const query = await searchParams;
   const value = (name: string) => typeof query[name] === "string" ? query[name] as string : "";
   async function employeeSignOut() { "use server"; await signOutEmployee(); }
-  async function updateAdminMembership() { "use server"; await setAdminMembership(value("adminMembershipId")); }
+  async function updateAdminMembership() {
+    "use server";
+    const allowed = await setAdminMembership(value("adminMembershipId"));
+    // Only synthetic test action result; never log IDs, tokens or cookies.
+    console.info("QR004_LOCAL_ADMIN_ACTION_RESULT:" + (allowed ? "ALLOWED" : "DENIED"));
+  }
   return <main>
     <form id="sign-in" action={signIn}><input name="email" type="email" /><input name="password" type="password" /><input type="hidden" name="next" value={value("next")} /><button type="submit">Sign in</button></form>
     <form id="sign-out" action={signOut}><button type="submit">Sign out</button></form>
@@ -639,7 +644,12 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal(actionCompany.body.item.id, companyB);
   await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(actionMultiAdmin.memberships[0].id)}`);
   await actionBrowser.runForm("#set-admin-membership");
-  await actionBrowser.waitForActiveMembership(actionMultiAdmin.memberships[0].id);
+  try {
+    await actionBrowser.waitForActiveMembership(actionMultiAdmin.memberships[0].id);
+  } catch (error) {
+    const status = [...appOutput.matchAll(/QR004_LOCAL_ADMIN_ACTION_RESULT:(ALLOWED|DENIED)/g)].at(-1)?.[1] ?? "NOT_OBSERVED";
+    throw new Error(`local valid-company switch did not commit cookie; Server Action result: ${status}`, { cause: error });
+  }
   membershipCookie = (await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id");
   assert.equal(membershipCookie?.value, actionMultiAdmin.memberships[0].id, "setAdminMembership switches to the caller's own active admin membership");
   await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(adminB.memberships[0].id)}`);
@@ -655,7 +665,12 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal((await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id")?.value, actionMultiAdmin.memberships[0].id, "chooseMembership cannot replace a valid cookie with an inactive/revoked membership");
   await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(actionMultiAdmin.memberships[1].id)}`);
   await actionBrowser.runForm("#set-admin-membership");
-  await actionBrowser.waitForActiveMembership(actionMultiAdmin.memberships[1].id);
+  try {
+    await actionBrowser.waitForActiveMembership(actionMultiAdmin.memberships[1].id);
+  } catch (error) {
+    const status = [...appOutput.matchAll(/QR004_LOCAL_ADMIN_ACTION_RESULT:(ALLOWED|DENIED)/g)].at(-1)?.[1] ?? "NOT_OBSERVED";
+    throw new Error(`local valid-company switch did not commit cookie; Server Action result: ${status}`, { cause: error });
+  }
   membershipCookie = (await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id");
   assert.equal(membershipCookie?.value, actionMultiAdmin.memberships[1].id, "a remaining active membership can replace a revoked selection");
   await service.from("company_memberships").update({ active: true }).eq("id", actionMultiAdmin.memberships[0].id);
