@@ -6,12 +6,22 @@ Este inventario inicial contiene candidatos a investigar, no eliminaciones autor
 
 | Candidato | Evidencia observada | Qué comprobar antes de decidir | Riesgo |
 |---|---|---|---|
-| Componentes grandes, empezando por `src/components/schedules/schedule-management.tsx` (424 líneas), `src/components/admin/user-access-management.tsx` (323) y `src/components/employees/employee-credentials.tsx` (280). | Conteo de líneas estático. | Responsabilidades, estados, referencias/imports, interacciones y pruebas; determinar si la división reduce complejidad real. | Refactor puede alterar permisos, formularios o estados. |
+| Componentes con responsabilidades combinadas: `src/components/schedules/schedule-management.tsx` (424 líneas), `src/components/admin/user-access-management.tsx` (372), `src/components/employees/employee-credentials.tsx` (280) y `src/components/scanner/mobile-scanner.tsx` (311). | Conteos, estados/hooks y operaciones observadas en la auditoría QR-007; no son por sí solos defectos. | Responsabilidades, dependencias, interacciones y pruebas antes de plantear extracción; medir impacto cuando se alegue rendimiento. | Refactor puede alterar permisos, formularios, tokens o ciclo de cámara. |
 | Dependencias declaradas en `package.json`. | Manifiesto y lockfile presentes. | Imports directos, carga dinámica, scripts, plugins Next/PostCSS y uso de build/servidor; calcular impacto de dependencias transitivas. | Eliminar paquetes puede romper build o módulos nativos. |
 | Documentos operativos por etapas en la raíz. | Hay reportes históricos de backup, despliegue, seguridad y reconciliación; README enlaza solo parte. | Fecha, vigencia, enlaces entrantes, secretos/IDs, relación con runbooks actuales y valor como historial. | Borrar evidencia operativa o pasos aún vigentes. |
 | Directorios con `.gitkeep` y scripts/tests de integración. | Placeholders visibles en `src/**`, Supabase y rutas API; scripts existen bajo `scripts/`/`tests/`. | Convenciones de generación, uso externo/documental, referencias CI y propósito del placeholder. | Eliminar estructura requerida por rutas futuras o tests especializados. |
 
 No se comprobó ningún archivo como huérfano o dependencia sin uso en esta primera revisión; por eso no se propone borrar nada todavía.
+
+## Evidencia QR-007 (2026-10-30)
+
+La auditoría completa y su matriz de hallazgos están en [docs/QR-007-CODE-AUDIT.md](QR-007-CODE-AUDIT.md). La búsqueda estática no confirmó archivos o componentes huérfanos. argon2 es el único candidato a revisar por no encontrar imports en src, tests, scripts o workflows; requiere validar consumidores operativos y build antes de considerar retiro. No se eliminaron dependencias.
+
+Se registraron oportunidades de mantenibilidad para horarios, usuarios/accesos, credenciales y escáner. No se consideran errores por su tamaño. El escáner queda postergado hasta cerrar QR-006. Portal y reportes tienen oportunidades de rendimiento condicionales a mediciones; no hay baseline ni afirmación de cuello de botella.
+
+El informe de seguridad local aún cataloga braces@3.0.3 como High; GitHub Advisory Database muestra que GHSA-vfj7-8cjw-p6xm fue retirado el 2026-10-23. npm audit no pudo consultar registry.npmjs.org por DNS en esta auditoría, así que sigue pendiente verificar el árbol completo y conciliar SECURITY-AUDIT.md. Este dato no equivale a afirmar que no existan vulnerabilidades.
+
+Estado: candidatos documentados, sin retiro/refactor aprobado. QR-008, QR-009 y QR-010 conservan implementación separada.
 
 ## Pruebas que deben protegerse
 
