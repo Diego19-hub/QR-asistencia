@@ -39,11 +39,24 @@ function stopVideoTracks(video: HTMLVideoElement | null, fallbackStream: MediaSt
 }
 
 function cameraErrorMessage(reason: unknown) {
-  const name = reason instanceof DOMException ? reason.name : "";
+  const name = reason instanceof Error ? reason.name : "";
   if (name === "NotFoundError" || name === "DevicesNotFoundError") return "No se encontró una cámara disponible en este dispositivo.";
   if (name === "NotAllowedError" || name === "SecurityError") return "Se denegó el permiso de cámara. Habilítalo en el navegador e inténtalo de nuevo.";
   if (name === "NotReadableError" || name === "TrackStartError") return "La cámara está ocupada por otra aplicación. Ciérrala e inténtalo de nuevo.";
+  if (name === "OverconstrainedError") return "La cámara no admite la configuración solicitada. Prueba otra cámara o dispositivo.";
   return "No se pudo abrir la cámara. Revisa el permiso del navegador y usa HTTPS o localhost.";
+}
+
+function contextErrorMessage(reason: unknown) {
+  if (!(reason instanceof ApiResponseError)) return "No fue posible validar el dispositivo. Revisa tu conexión e inténtalo de nuevo.";
+  if (reason.status === 401) return "Tu sesión expiró. Inicia sesión nuevamente para validar el escáner.";
+  if (reason.status === 403) return reason.code === "supervisor_forbidden"
+    ? "El acceso del dispositivo o de la membresía fue revocado. Contacta al administrador."
+    : "El dispositivo no está autorizado para esta empresa.";
+  if (reason.status === 409) return "Selecciona una empresa y el rol de supervisor antes de abrir el escáner.";
+  if (reason.status === 429) return "Hay demasiadas comprobaciones. Espera un momento y vuelve a validar el escáner.";
+  if (reason.status >= 500) return "El servicio de autorización está temporalmente indisponible. Se volverá a comprobar en breve.";
+  return "No fue posible validar el dispositivo. Revisa tu acceso e inténtalo de nuevo.";
 }
 
 export function MobileScanner() {
@@ -72,6 +85,7 @@ export function MobileScanner() {
   const contextRequestRef = useRef<AbortController | null>(null);
   const contextRequestIdRef = useRef(0);
   const contextLoadedOnceRef = useRef(false);
+  const pollContextRef = useRef(true);
   const cameraStartingRef = useRef(false);
   const cameraGenerationRef = useRef(0);
   const lastContextCompanyIdRef = useRef<string | null>(null);
@@ -108,6 +122,7 @@ export function MobileScanner() {
       setContexts(body.contexts);
       setCompanyId((current) => body.contexts.some((item) => item.companyId === current) ? current : body.contexts[0]?.companyId ?? "");
       setError("");
+      pollContextRef.current = true;
       contextLoadedOnceRef.current = true;
       setContextLoadState("loaded");
     } catch (reason) {
@@ -115,10 +130,11 @@ export function MobileScanner() {
       // A stale authorization must never keep the camera usable when the server
       // cannot confirm the current membership/device context.
       contextAuthorizedRef.current = false;
+      if (reason instanceof ApiResponseError && [401, 403, 409].includes(reason.status)) pollContextRef.current = false;
       setContexts([]);
       setCompanyId("");
       setContextLoadState("error");
-      setError(reason instanceof Error ? reason.message : "No fue posible validar el dispositivo.");
+      setError(contextErrorMessage(reason));
     } finally {
       if (requestId === contextRequestIdRef.current) contextRequestRef.current = null;
     }
@@ -126,7 +142,7 @@ export function MobileScanner() {
 
   useEffect(() => {
     const initialLoad = window.setTimeout(() => void loadContext(), 0);
-    const interval = window.setInterval(() => void loadContext(), 12000);
+    const interval = window.setInterval(() => { if (pollContextRef.current) void loadContext(); }, 12000);
     const video = videoRef.current;
     return () => {
       contextRequestIdRef.current += 1;
@@ -167,6 +183,7 @@ export function MobileScanner() {
       setError("Sin conexión. La autorización del escáner se comprobará al recuperar la red.");
     }
     function refreshContext() {
+      pollContextRef.current = true;
       void loadContext();
     }
     window.addEventListener("offline", handleOffline);
@@ -281,7 +298,7 @@ export function MobileScanner() {
     {!contexts.length && contextLoadState === "loading" ? <p role="status" className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-600">Cargando la asignación de supervisor…</p> : null}
     {!contexts.length && contextLoadState === "loaded" ? <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900"><strong>Sin asignación de supervisor.</strong><p className="mt-1">No se encontró una membresía activa de supervisor. Contacta al administrador de tu empresa.</p></section> : null}
     {context && !context.branches.length ? <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900"><strong>Sin sucursal asignada.</strong><p className="mt-1">Tu membresía de supervisor no tiene sucursales activas asignadas.</p></section> : null}
-    {context && context.branches.length > 0 && !context.authorized ? <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-xl bg-amber-50 text-amber-700"><Smartphone size={19} /></div><div><h2 className="font-semibold text-slate-900">Dispositivo sin autorización</h2><p className="mt-0.5 text-xs text-slate-500">{context.supervisorName} · {context.companyName}</p></div></div><p className="text-sm text-slate-600">Un administrador debe aprobar este navegador antes de habilitar la cámara y el registro de asistencia.</p>{context.requestStatus === "pending" ? <p role="status" className="rounded-xl bg-blue-50 p-3 text-sm text-blue-800">Solicitud enviada. Esta página comprobará la aprobación automáticamente.</p> : <><label className="block text-xs font-medium text-slate-600">Sucursal<select value={selectedBranchId} onChange={(event) => setBranchId(event.target.value)} className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm">{context.branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label><label className="block text-xs font-medium text-slate-600">Nombre del dispositivo<input value={deviceLabel || `Celular de ${context.supervisorName}`} onChange={(event) => setDeviceLabel(event.target.value)} maxLength={100} className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm" /></label><button disabled={busy || !selectedBranchId} onClick={() => void requestDevice()} className={buttonClass}>{busy ? <LoaderCircle className="animate-spin" size={17} /> : <Smartphone size={17} />}Solicitar autorización</button></>}</section> : null}
+    {context && context.branches.length > 0 && !context.authorized ? <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-xl bg-amber-50 text-amber-700"><Smartphone size={19} /></div><div><h2 className="font-semibold text-slate-900">Dispositivo sin autorización</h2><p className="mt-0.5 text-xs text-slate-500">{context.supervisorName} · {context.companyName}</p></div></div><p className="text-sm text-slate-600">Un administrador debe aprobar este navegador antes de habilitar la cámara y el registro de asistencia.</p>{context.requestStatus === "rejected" ? <p role="status" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">La solicitud anterior fue rechazada. Revisa la sucursal y puedes enviar una nueva solicitud.</p> : null}{context.requestStatus === "revoked" ? <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">La autorización anterior fue revocada. Puedes solicitar una nueva autorización.</p> : null}{context.requestStatus === "pending" ? <p role="status" className="rounded-xl bg-blue-50 p-3 text-sm text-blue-800">Solicitud enviada. Esta página comprobará la aprobación automáticamente.</p> : <><label className="block text-xs font-medium text-slate-600">Sucursal<select value={selectedBranchId} onChange={(event) => setBranchId(event.target.value)} className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm">{context.branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label><label className="block text-xs font-medium text-slate-600">Nombre del dispositivo<input value={deviceLabel || `Celular de ${context.supervisorName}`} onChange={(event) => setDeviceLabel(event.target.value)} maxLength={100} className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm" /></label><button disabled={busy || !selectedBranchId} onClick={() => void requestDevice()} className={buttonClass}>{busy ? <LoaderCircle className="animate-spin" size={17} /> : <Smartphone size={17} />}Solicitar autorización</button></>}</section> : null}
     {context?.authorized ? <>
       <section className="flex items-center justify-between rounded-2xl border border-emerald-200 bg-emerald-50 p-4"><div><p className="text-sm font-semibold text-emerald-900">{context.companyName} · {context.branchName}</p><p className="mt-1 text-xs text-emerald-800">{context.supervisorName} · Dispositivo autorizado</p></div><span className="rounded-full bg-emerald-100 px-3 py-1 text-[11px] font-semibold text-emerald-800">ACTIVO</span></section>
       {success ? <section role="status" className="rounded-2xl border border-emerald-200 bg-white p-5 shadow-sm"><div className="flex items-start gap-3"><CheckCircle2 className="mt-0.5 shrink-0 text-emerald-600" size={23} /><div><h2 className="font-semibold text-slate-950">Movimiento registrado</h2><p className="mt-1 text-sm text-slate-700">{success.employeeName} · {eventLabels[success.eventType]}</p><p className="mt-1 text-xs text-slate-500">Hora oficial: {new Intl.DateTimeFormat("es-MX", { dateStyle: "medium", timeStyle: "short", timeZone: context.timezone ?? undefined }).format(new Date(success.occurredAt))}</p>{success.duplicate ? <p className="mt-1 text-xs text-slate-500">Se devolvió el registro existente por reintento.</p> : null}</div></div><button onClick={clearEmployee} className={`${buttonClass} mt-5 w-full`}><RotateCcw size={17} />Volver al escáner</button></section> : null}

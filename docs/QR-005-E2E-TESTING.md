@@ -42,7 +42,7 @@ Los datos temporales nunca se guardan en el repositorio. La configuración desac
 | Empresas | Usuario admin con dos empresas, cambio explícito, datos del tenant seleccionado y rechazo de una membresía de otra identidad. |
 | Portal | Empleado vinculado con datos sintéticos de su empresa; portal sin expediente; rechazo de acceso a administración/escáner; cierre de sesión y revocación de membresía. |
 | Escáner/dispositivo | Supervisor con/sin sucursal; selección del contexto entre dos empresas; solicitud, aprobación, revocación del dispositivo y revocación de membresía. |
-| Cámara y red | Cámara simulada sin dispositivo y permiso denegado, posterior recuperación con dispositivo fake; error y reintento de red local. Se comprueba que no se invoque `/api/attendance/scan`. |
+| Cámara y red | Cámara simulada sin dispositivo, permiso denegado, cámara ocupada y restricciones incompatibles; adquisición demorada, cierre/liberación, revocación tardía, pérdida/recuperación de red y errores HTTP contextualizados. Comprobación de respuestas antiguas y viewport de 320/390/430/768 px. Se comprueba que no se invoque `/api/attendance/scan`. |
 
 Los tests usan selectores accesibles de roles, nombres y labels. No dependen de orden global; cada prueba crea un contexto de navegador nuevo. Las identidades se crean para una ejecución y la base se destruye completa.
 
@@ -58,11 +58,11 @@ El workflow conserva todas las suites existentes y agrega un paso separado para 
 
 ## Criterios pendientes
 
-- **Ejecución ampliada (2026-10-30):** `QR004_CHROME_BIN='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm run test:e2e` pasó 16/16 pruebas de navegador en 55.8 s con Supabase desechable. El runner confirmó eliminación del stack y datos temporales y preservación de los recursos Docker preexistentes.
+- **Ejecución QR-006 (2026-10-30):** `QR004_CHROME_BIN='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm run test:e2e` pasó 22/22 en Chromium en 1.6 minutos con Supabase local desechable. El runner confirmó teardown y conservación de recursos Docker preexistentes.
 - **Hallazgo de UI QR-005:** la prueba interactiva con un 503 sintético del endpoint dashboard reprodujo que el dashboard conservaba el mensaje de error después de una consulta válida de reintento. Causa: el estado `error` no se limpiaba en el camino exitoso del efecto. Se corrigió limpiándolo cuando se recibe una respuesta válida y la regresión E2E pasa. Severidad funcional: baja; el panel mantenía el estado visual de error y ocultaba los datos hasta actualizar la vista.
 - **Regresión y calidad (2026-10-30):** `npm run test:security:matrix:local` finalizó con éxito: 201 aserciones pgTAP, matrices HTTP/Auth/Server Actions y teardown local verificado. `npm test`: 80 aprobadas, 0 fallidas y 1 omitida porque el sandbox bloqueó el socket local del agente GnuPG.
 - **Validaciones estáticas/build (2026-10-30):** `npm run lint` y `npm run typecheck` pasaron. `npm run build` en un directorio temporal aislado pasó y generó 41/41 páginas/rutas. Next mostró una advertencia conocida: 27 traces no entraron al output standalone porque `node_modules` estaba enlazado desde el checkout; no se conservó el artefacto temporal.
-- **Cobertura actual:** 16 casos de navegador locales; sesión/roles, navegación del dashboard, error/reintento, selección y rechazo de membresía ajena, portal vinculado/no vinculado/inactivo, autorización y revocación de dispositivo, supervisor sin sucursal, contexto supervisor entre empresas, fallas de red y cámara simulada.
+- **Cobertura actual:** 22 casos de navegador locales, incluidos estados de dispositivo pendiente/rechazado/aprobado/revocado, errores HTTP seguros, carreras de contexto, viewports móviles/tablet y cierre/liberación de cámara. Evidencia: `docs/QR-006-SCANNER-STABILITY.md`.
 - `npm audit` reportó 0 vulnerabilidades en la revisión previa de dependencias parcheadas.
 - GitHub Actions debe completar con el nuevo commit antes de considerar QR-005 lista para revisión final.
 - Las pruebas de cámara usan mocks de `getUserMedia` y dispositivo fake de Chromium; no representan hardware físico ni permisos de un navegador móvil real.
