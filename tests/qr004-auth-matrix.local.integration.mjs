@@ -14,6 +14,7 @@ import { launchServerActionBrowser } from "./qr004-server-actions.browser.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "node_modules/.bin/supabase");
+const e2eOnly = process.argv.includes("--e2e-only");
 const projectId = `qr004_disposable_${randomBytes(6).toString("hex")}`;
 // Keep Mailpit enabled. Auth invite email is captured locally and cannot leave this stack.
 const excluded = "realtime,storage-api,imgproxy,postgres-meta,studio,edge-runtime,logflare,vector,supavisor";
@@ -116,6 +117,27 @@ async function waitForNext(url) {
     await new Promise((resolveWait) => setTimeout(resolveWait, 500));
   }
   throw new Error("temporary Next.js server did not become ready");
+}
+async function runPlaywrightLocal(env, secrets) {
+  const playwrightArgs = [join(root, "node_modules/@playwright/test/cli.js"), "test", "--config", join(root, "playwright.config.ts")];
+  if (process.argv.includes("--ui")) playwrightArgs.push("--ui");
+  const child = spawn(process.execPath, playwrightArgs, {
+    cwd: root,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.on("data", (chunk) => { output = (output + chunk.toString()).slice(-16_000); });
+  child.stderr.on("data", (chunk) => { output = (output + chunk.toString()).slice(-16_000); });
+  const exitCode = await new Promise((resolveExit, rejectExit) => {
+    child.once("error", () => rejectExit(new Error("could not start the local Playwright runner")));
+    child.once("exit", (code) => resolveExit(code ?? 1));
+  });
+  for (const secret of secrets.filter(Boolean)) output = output.split(secret).join("[redacted synthetic credential]");
+  output = output.replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted JWT]")
+    .replace(/(?:sb_(?:publishable|secret)_[A-Za-z0-9_-]{8,}|postgres(?:ql)?:\/\/[^\s)]+)/gi, "[redacted local credential]");
+  if (output.trim()) process.stdout.write(output);
+  if (exitCode !== 0) throw new Error(`local Playwright suite failed (exit ${exitCode}); credentials were redacted from its output`);
 }
 async function stopNext() {
   if (!appServer || appServer.exitCode !== null) return;
@@ -271,7 +293,7 @@ try {
   safeCli(["start", "--exclude", excluded]);
   safeCli(["db", "reset", "--local"]);
   process.stdout.write("PASS fresh disposable database with repository migrations applied locally\n");
-  for (const suite of suites) {
+  for (const suite of e2eOnly ? [] : suites) {
     const output = safeCli(["test", "db", "--local", `supabase/tests/${suite}`]);
     const sql = await readFile(join(workdir, "supabase/tests", suite), "utf8");
     const plan = Number(sql.match(/select\s+plan\s*\(\s*(\d+)\s*\)/i)?.[1]);
@@ -292,8 +314,10 @@ try {
   service = createClient(apiUrl, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
   const mailpitReady = await fetch(new URL("/api/v1/messages?limit=1", mailpitUrl));
   assert.equal(mailpitReady.status, 200, "isolated local Mailpit API is reachable");
-  const companyAResult = await service.from("companies").insert({ name: `QR004 HTTP Synthetic A ${randomUUID()}` }).select("id").single();
-  const companyBResult = await service.from("companies").insert({ name: `QR004 HTTP Synthetic B ${randomUUID()}` }).select("id").single();
+  const companyAName = `QR004 HTTP Synthetic A ${randomUUID()}`;
+  const companyBName = `QR004 HTTP Synthetic B ${randomUUID()}`;
+  const companyAResult = await service.from("companies").insert({ name: companyAName }).select("id").single();
+  const companyBResult = await service.from("companies").insert({ name: companyBName }).select("id").single();
   if (companyAResult.error || companyBResult.error) throw new Error("failed creating synthetic HTTP test companies");
   const companyA = companyAResult.data.id, companyB = companyBResult.data.id;
   const branchAResult = await service.from("branches").insert({ company_id: companyA, name: `HTTP Branch A ${randomUUID()}`, timezone: "America/Mexico_City" }).select("id").single();
@@ -319,6 +343,7 @@ try {
   if (supervisorRecord.error) throw new Error(`failed creating synthetic supervisor record (${supervisorRecord.error.code ?? "unknown"})`);
   const assignedBranch = await service.from("supervisor_branches").insert({ company_id: companyA, membership_id: supervisorA.memberships[0].id, branch_id: branchA });
   if (assignedBranch.error) throw new Error(`failed preparing synthetic supervisor branch scope (${assignedBranch.error.code ?? "unknown"})`);
+  if (!e2eOnly) {
   const sessionNow = new Date();
   const sessionBase = { company_id: companyA, employee_id: employeeA.employeeId, local_work_date: sessionNow.toISOString().slice(0, 10), timezone: "America/Mexico_City", status: "closed", started_at: new Date(sessionNow.getTime() - 60_000).toISOString(), ended_at: sessionNow.toISOString(), scheduled_minutes: 480 };
   const sessionAResult = await service.from("attendance_sessions").insert({ ...sessionBase, branch_id: branchA }).select("id").single();
@@ -363,6 +388,7 @@ try {
   assert.equal(adminAdjustmentDenied.error?.code, "42501", "company.read alone cannot substitute for attendance.adjust");
   assert.deepEqual(await snapshot(companyA), beforeAdminAdjustmentDenial, "specific permission denial leaves correction and audit state unchanged");
   await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "attendance.adjust");
+  }
   const nextPort = await freePort(base + 20); appUrl = `http://127.0.0.1:${nextPort}`;
   const appRoot = join(temp, "next-app"); await mkdir(appRoot, { recursive: true });
   await cp(join(root, "src"), join(appRoot, "src"), { recursive: true });
@@ -410,6 +436,89 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   };
   await startNext();
   process.stdout.write("PASS local Auth users and temporary Next.js server use only the disposable Supabase loopback endpoints\n");
+
+  if (e2eOnly) {
+    const unassigned = await createHttpIdentity(`e2e-unassigned-${randomUUID()}@qr-asistencia.invalid`);
+    const unlinkedEmployee = await createHttpUser("e2e-unlinked-employee", "employee", companyA);
+    const inactiveMembership = await createHttpUser("e2e-inactive-supervisor", "supervisor", companyA);
+    const inactiveUpdate = await service.from("company_memberships").update({ active: false }).eq("id", inactiveMembership.memberships[0].id);
+    if (inactiveUpdate.error) throw new Error("could not seed an inactive synthetic membership");
+    const inactiveEmployee = await createHttpUser("e2e-inactive-employee", "employee", companyA, { employee: true, branchId: branchA });
+    const inactiveEmployeeUpdate = await service.from("company_memberships").update({ active: false }).eq("id", inactiveEmployee.memberships[0].id);
+    if (inactiveEmployeeUpdate.error) throw new Error("could not seed an inactive synthetic employee membership");
+    const noBranchSupervisor = await createHttpUser("e2e-no-branch-supervisor", "supervisor", companyA);
+    const noBranchRecord = await service.from("supervisors").insert({ company_id: companyA, membership_id: noBranchSupervisor.memberships[0].id });
+    if (noBranchRecord.error) throw new Error("could not seed a supervisor without a branch");
+    const networkSupervisor = await createHttpUser("e2e-network-supervisor", "supervisor", companyA);
+    const networkSupervisorRecord = await service.from("supervisors").insert({ company_id: companyA, membership_id: networkSupervisor.memberships[0].id });
+    const networkSupervisorBranch = await service.from("supervisor_branches").insert({ company_id: companyA, membership_id: networkSupervisor.memberships[0].id, branch_id: branchA });
+    if (networkSupervisorRecord.error || networkSupervisorBranch.error) throw new Error("could not seed network-retry synthetic supervisor");
+    const revokedSupervisor = await createHttpUser("e2e-revoked-supervisor", "supervisor", companyA);
+    const revokedRecord = await service.from("supervisors").insert({ company_id: companyA, membership_id: revokedSupervisor.memberships[0].id });
+    const revokedBranch = await service.from("supervisor_branches").insert({ company_id: companyA, membership_id: revokedSupervisor.memberships[0].id, branch_id: branchA });
+    if (revokedRecord.error || revokedBranch.error) throw new Error("could not seed a revocable synthetic supervisor");
+    const multiSupervisor = await createHttpUser("e2e-multi-supervisor", "supervisor", companyA, { extraMemberships: [[companyB, "supervisor"]] });
+    for (const [companyId, membership, branchId] of [[companyA, multiSupervisor.memberships[0], branchA], [companyB, multiSupervisor.memberships[1], branchB]]) {
+      const supervisor = await service.from("supervisors").insert({ company_id: companyId, membership_id: membership.id });
+      const branch = await service.from("supervisor_branches").insert({ company_id: companyId, membership_id: membership.id, branch_id: branchId });
+      if (supervisor.error || branch.error) throw new Error("could not seed multi-company synthetic supervisor scope");
+    }
+
+    const childEnv = {
+      PATH: process.env.PATH ?? "",
+      ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
+      ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}),
+      ...(process.env.CI ? { CI: process.env.CI } : {}),
+      ...(process.env.QR004_CHROME_BIN ? { QR004_CHROME_BIN: process.env.QR004_CHROME_BIN } : {}),
+      ...(process.env.QR004_CHROME_NO_SANDBOX === "1" ? { QR004_CHROME_NO_SANDBOX: "1" } : {}),
+      QR005_BASE_URL: appUrl,
+      QR005_SUPABASE_URL: apiUrl,
+      QR005_RESULTS_DIR: join(temp, "playwright-results"),
+      QR005_ADMIN_EMAIL: adminA.email,
+      QR005_ADMIN_PASSWORD: adminA.password,
+      QR005_SUPERVISOR_EMAIL: supervisorA.email,
+      QR005_SUPERVISOR_PASSWORD: supervisorA.password,
+      QR005_SUPERVISOR_MEMBERSHIP_ID: supervisorA.memberships[0].id,
+      QR005_EMPLOYEE_EMAIL: employeeA.email,
+      QR005_EMPLOYEE_PASSWORD: employeeA.password,
+      QR005_UNLINKED_EMPLOYEE_EMAIL: unlinkedEmployee.email,
+      QR005_UNLINKED_EMPLOYEE_PASSWORD: unlinkedEmployee.password,
+      QR005_NO_MEMBERSHIP_EMAIL: unassigned.email,
+      QR005_NO_MEMBERSHIP_PASSWORD: unassigned.password,
+      QR005_INACTIVE_MEMBERSHIP_EMAIL: inactiveMembership.email,
+      QR005_INACTIVE_MEMBERSHIP_PASSWORD: inactiveMembership.password,
+      QR005_INACTIVE_EMPLOYEE_EMAIL: inactiveEmployee.email,
+      QR005_INACTIVE_EMPLOYEE_PASSWORD: inactiveEmployee.password,
+      QR005_MULTI_ADMIN_EMAIL: multiAdmin.email,
+      QR005_MULTI_ADMIN_PASSWORD: multiAdmin.password,
+      QR005_MULTI_SUPERVISOR_EMAIL: multiSupervisor.email,
+      QR005_MULTI_SUPERVISOR_PASSWORD: multiSupervisor.password,
+      QR005_NO_BRANCH_SUPERVISOR_EMAIL: noBranchSupervisor.email,
+      QR005_NO_BRANCH_SUPERVISOR_PASSWORD: noBranchSupervisor.password,
+      QR005_NETWORK_SUPERVISOR_EMAIL: networkSupervisor.email,
+      QR005_NETWORK_SUPERVISOR_PASSWORD: networkSupervisor.password,
+      QR005_REVOKED_SUPERVISOR_EMAIL: revokedSupervisor.email,
+      QR005_REVOKED_SUPERVISOR_PASSWORD: revokedSupervisor.password,
+      QR005_REVOKED_SUPERVISOR_MEMBERSHIP_ID: revokedSupervisor.memberships[0].id,
+      QR005_COMPANY_A_ID: companyA,
+      QR005_COMPANY_B_ID: companyB,
+      QR005_BRANCH_A_ID: branchA,
+      QR005_COMPANY_A_NAME: companyAName,
+      QR005_COMPANY_B_NAME: companyBName,
+      QR005_FOREIGN_MEMBERSHIP_ID: adminB.memberships[0].id,
+    };
+    await mkdir(childEnv.QR005_RESULTS_DIR, { recursive: true, mode: 0o700 });
+    await runPlaywrightLocal(childEnv, [
+      adminA.email, adminA.password, supervisorA.email, supervisorA.password, employeeA.email, employeeA.password,
+      unlinkedEmployee.email, unlinkedEmployee.password, unassigned.email, unassigned.password,
+      inactiveMembership.email, inactiveMembership.password, multiAdmin.email, multiAdmin.password,
+      multiSupervisor.email, multiSupervisor.password,
+      networkSupervisor.email, networkSupervisor.password,
+      noBranchSupervisor.email, noBranchSupervisor.password, revokedSupervisor.email, revokedSupervisor.password,
+      serviceKey, anonKey, dbUrl,
+    ]);
+    process.stdout.write("PASS QR-005 browser tests used disposable Auth identities, loopback services, and temporary reports only\n");
+  } else {
 
   // Exercise real Server Actions through forms rendered and submitted by
   // Chrome/React/Next. The action-harness route exists only inside appRoot.
@@ -2035,6 +2144,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const revokedIdentity = await revokedClient.auth.getUser(); assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships where company_id=$1 and user_id=$2", [companyA, revokedIdentity.data.user.id])).rows[0].n), 0);
   const auditRevoke = await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_REVOKED'", [companyA, revokedInvite.data]); assert.equal(auditRevoke.rows[0].n, 1);
   process.stdout.write("PASS invitation RPC enforces recipient, expiry, revocation, single-use and audit semantics with local JWT identities\n");
+  }
 } catch (error) {
   primaryError = error;
 } finally {

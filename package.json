@@ -23,6 +23,9 @@
     "test:reports:lease:local": "node tests/reports-export-lease.local.integration.mjs",
     "test:security:matrix": "npm run test:security:matrix:local",
     "test:security:matrix:local": "node tests/qr004-auth-matrix.local.integration.mjs",
+    "test:e2e": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only",
+    "test:e2e:local": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only",
+    "test:e2e:ui": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only --ui",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test:security:jwt": "node tests/security-jwt-matrix.integration.mjs"
@@ -35,7 +38,7 @@
     "argon2": "^0.45.1",
     "exceljs": "4.4.0",
     "lucide-react": "^1.55.0",
-    "next": "^16.4.0",
+    "next": "^16.4.3",
     "pdfkit": "0.17.2",
     "pg": "^8.23.1",
     "postcss": "^8.5.28",
@@ -44,9 +47,10 @@
     "react-dom": "^19.2.8",
     "recharts": "2.15.4",
     "tailwindcss": "^4.3.3",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "@types/node": "^26.6.5",
     "@types/pdfkit": "^0.17.6",
     "@types/pg": "^8.23.1",
@@ -54,7 +58,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "eslint": "^9.39.5",
-    "eslint-config-next": "^16.4.0",
+    "eslint-config-next": "^16.4.3",
     "supabase": "2.120.0",
     "typescript": "^5.9.3"
   },
