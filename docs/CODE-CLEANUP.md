@@ -23,6 +23,12 @@ El informe de seguridad local aún cataloga braces@3.0.3 como High; GitHub Advis
 
 Estado: candidatos documentados, sin retiro/refactor aprobado. QR-008, QR-009 y QR-010 conservan implementación separada.
 
+## Inventario QR-008 (2026-10-30)
+
+La revisión posterior al merge de QR-007 está registrada en [docs/QR-008-SAFE-CLEANUP.md](QR-008-SAFE-CLEANUP.md). `argon2@0.45.1` permanece como dependencia directa: `npm explain` no encontró dependientes transitivos y las búsquedas del repositorio no hallaron imports/cargas de la API; el Dockerfile sí menciona módulos nativos como argon2 y el historial/documentación de despliegue registran sus lifecycle scripts. No es suficiente evidencia para descartar uso operativo, por lo que no se elimina.
+
+No se confirmó ningún import, símbolo, script, prueba, placeholder, recurso o documento obsoleto que pueda retirarse con riesgo bajo. Se conservaron las pruebas de seguridad y los documentos operativos. QR-008 avanza como inventario documentado sin eliminaciones; volver a evaluar dependencias solo con evidencia de todos sus consumidores, incluidos los externos al código fuente.
+
 ## Pruebas que deben protegerse
 
 Mantener cobertura de aislamiento entre empresas, RLS/permisos, JWT, Auth/invitaciones, PIN y lockout, credenciales QR, dispositivos, integridad temporal de asistencia, concurrencia de exportaciones y preparación de despliegue. El inventario en `tests/` y `supabase/tests/` es evidencia de pruebas críticas que requieren análisis antes de consolidar.
