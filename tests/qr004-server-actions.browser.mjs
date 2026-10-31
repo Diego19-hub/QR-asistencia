@@ -179,21 +179,21 @@ export async function launchServerActionBrowser(appUrl) {
     async function runForm(selector, values = {}) {
       const encoded = JSON.stringify(values).replaceAll("<", "\\u003c");
       const expression = `(() => { const form = document.querySelector(${JSON.stringify(selector)}); if (!(form instanceof HTMLFormElement)) throw new Error('rendered form missing'); const values = ${encoded}; for (const [name, value] of Object.entries(values)) { const fields = [...form.elements].filter((field) => field.name === name); if (!fields.length) throw new Error('rendered field missing'); fields[0].value = value; } const submit = form.querySelector('button[type=submit],button:not([type])'); if (submit instanceof HTMLButtonElement) submit.disabled = false; form.requestSubmit(submit ?? undefined); return true; })()`;
+      // For Next.js Server Action redirects CDP can emit loadingFailed
+      // net::ERR_ABORTED on the POST as navigation replaces the document.
+      // Observe response headers as the transport signal, and separately
+      // verify resulting session/cookie state in positive security assertions.
       const actionResult = new Promise((resolveAction, rejectAction) => {
-        let requestId, responseStatus = null;
+        let requestId;
         const timeout = setTimeout(() => { cleanup(); rejectAction(new Error("Next.js Server Action form did not complete locally")); }, 20_000);
-        const cleanup = () => { clearTimeout(timeout); offRequest(); offResponse(); offFinished(); offFailed(); };
+        const cleanup = () => { clearTimeout(timeout); offRequest(); offResponse(); offFailed(); };
         const offRequest = page.on("Network.requestWillBeSent", (event) => {
           if (event.request.method === "POST" && new URL(event.request.url).origin === origin) requestId = event.requestId;
         });
         const offResponse = page.on("Network.responseReceived", (event) => {
-          if (event.requestId === requestId) responseStatus = event.response.status;
-        });
-        // CDP responseReceived observes headers, not full response processing.
-        const offFinished = page.on("Network.loadingFinished", (event) => {
-          if (event.requestId !== requestId || responseStatus === null) return;
+          if (event.requestId !== requestId) return;
           cleanup();
-          if (responseStatus >= 500) rejectAction(new Error(`Next.js returned HTTP ${responseStatus} for a local Server Action`));
+          if (event.response.status >= 500) rejectAction(new Error(`Next.js returned HTTP ${event.response.status} for a local Server Action`));
           else resolveAction(true);
         });
         const offFailed = page.on("Network.loadingFailed", (event) => {

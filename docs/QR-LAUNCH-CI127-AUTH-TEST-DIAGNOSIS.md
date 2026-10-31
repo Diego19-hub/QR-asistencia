@@ -39,3 +39,7 @@ El propietario autorizó continuar con el lanzamiento. Se permite la ejecución 
 ## Evidencia del CI #130 (31-oct-2026)
 
 En `push` sobre `17bf0a9`, el check **superó** npm ci, lint, typecheck, npm test (incluida la regresión), restore-local, reports-lease y los pgTAP iniciales de la matriz. **Falló** por timeout de 10 segundos esperando la cookie exacta en el primer cambio legítimo de empresa. Esto demuestra que la sincronización posterior a los headers, por sí sola, **no corrige** el comportamiento. Una nueva instrumentación *exclusivamente en el harness temporal* registra únicamente `ALLOWED`/`DENIED` del Server Action, sin IDs ni credenciales, y muestra ese marcador si el cambio vuelve a fallar. No se altera aplicación ni se reduce ninguna aserción de autorización. **El nuevo diagnóstico tampoco representa un PASS hasta ejecutarse.**
+
+## Evidencia del CI #132/#133 y ajuste del harness
+
+Las ejecuciones sobre `f9a7d86` alcanzaron las suites de seguridad, pero la espera genérica a `Network.loadingFinished` rompió un flujo previo de navegación de Server Action: Chrome registró `net::ERR_ABORTED` al reemplazar la página, que no prueba fallo de autorización. Para continuar el diagnóstico, `runForm` vuelve a usar `Network.responseReceived` como señal de transporte y mantiene **una verificación separada, acotada y exacta de la cookie** en los cambios positivos de empresa. La instrumentación `ALLOWED/DENIED` sigue activa únicamente en el harness temporal. **Ninguna suite o denegación se deshabilita; no hay PASS demostrado de la nueva cabeza.**
