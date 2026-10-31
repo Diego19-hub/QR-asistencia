@@ -469,7 +469,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     const readAttendanceSnapshot = async () => {
       const snapshot = {};
       for (const table of ["attendance_sessions", "attendance_events"]) {
-        const result = await service.from(table).select("*").eq("company_id", companyA).order("id");
+        const result = await service.from(table).select("*").order("id");
         if (result.error) throw new Error(`could not inspect local synthetic ${table} snapshot (${result.error.code ?? "unknown"})`);
         snapshot[table] = result.data ?? [];
       }
@@ -514,6 +514,11 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       process.stdout.write("PASS SQL benchmark fixture: 500 synthetic employees in local company A; no attendance rows created\n");
     }
     const performanceAttendanceSnapshot = performanceOnly ? await readAttendanceSnapshot() : null;
+    if (performanceOnly) {
+      for (const table of ["attendance_sessions", "attendance_events"]) {
+        assert.deepEqual(performanceAttendanceSnapshot[table], [], `QR-009 performance-only requires an empty local ${table} table before browsing`);
+      }
+    }
     const childEnv = {
       PATH: process.env.PATH ?? "",
       ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
@@ -578,7 +583,10 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     if (performanceOnly) {
       const after = await readAttendanceSnapshot();
       assert.deepEqual(after, performanceAttendanceSnapshot, "QR-009 performance-only must not create or modify attendance sessions/events");
-      process.stdout.write("PASS QR-009 performance-only preserved local attendance session/event row counts\n");
+      for (const table of ["attendance_sessions", "attendance_events"]) {
+        assert.deepEqual(after[table], [], `QR-009 performance-only must leave local ${table} empty after browsing`);
+      }
+      process.stdout.write("PASS QR-009 performance-only preserved full local attendance snapshots; both tables remain empty\n");
     }
     process.stdout.write(`PASS ${performanceOnly ? "QR-009 performance" : "QR-005 browser"} tests used disposable Auth identities, loopback services, and temporary reports only\n`);
   } else {

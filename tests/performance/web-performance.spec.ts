@@ -15,7 +15,7 @@ const routeApiPath: Record<string, string> = { "/admin": "/api/dashboard/summary
 type Metric = {
   route: string;
   profile: string;
-  cache: "cold" | "warm";
+  cache: "cold" | "repeated-no-cache";
   sample: number;
   navigationMs: number | null;
   ttfbMs: number | null;
@@ -67,7 +67,7 @@ async function waitForPageReady(page: Page, route: string) {
   await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 }
 
-async function measure(page: Page, route: string, profile: "desktop" | "mobile-emulated", cache: "cold" | "warm", sample: number, session: Awaited<ReturnType<typeof configureProfile>>): Promise<Metric> {
+async function measure(page: Page, route: string, profile: "desktop" | "mobile-emulated", cache: "cold" | "repeated-no-cache", sample: number, session: Awaited<ReturnType<typeof configureProfile>>): Promise<Metric> {
   if (cache === "cold") await session.send("Network.clearBrowserCache");
   const api: Metric["api"] = [];
   const scriptResponseIds = new Set<string>();
@@ -224,25 +224,38 @@ test("captura baseline web y PostgreSQL local con identidades y datos sintético
   const records: Metric[] = [];
   const contexts: BrowserContext[] = [];
   const scanRequests: string[] = [];
+  const monitorSensitiveRequests = (context: BrowserContext) => {
+    context.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/attendance/scan" || path.startsWith("/api/attendance/scan/")) {
+        scanRequests.push("attendance scan endpoint");
+      }
+      if (path.startsWith("/api/") && /(?:^|\/)pin(?:\/|$)/i.test(path)) {
+        scanRequests.push("employee PIN endpoint");
+      }
+    });
+  };
   try {
     const anonymousContext = await newGuardedContext(browser, { width: 1440, height: 900 });
     contexts.push(anonymousContext);
+    monitorSensitiveRequests(anonymousContext);
     const anonymousPage = await anonymousContext.newPage();
     const desktopSession = await configureProfile(anonymousPage, "desktop");
     records.push(await measure(anonymousPage, "/login", "desktop", "cold", 1, desktopSession));
     for (let sample = 2; sample <= sampleCount; sample++) records.push(await measure(anonymousPage, "/login", "desktop", "cold", sample, desktopSession));
-    await measure(anonymousPage, "/login", "desktop", "warm", 0, desktopSession);
-    for (let sample = 1; sample <= sampleCount; sample++) records.push(await measure(anonymousPage, "/login", "desktop", "warm", sample, desktopSession));
+    await measure(anonymousPage, "/login", "desktop", "repeated-no-cache", 0, desktopSession);
+    for (let sample = 1; sample <= sampleCount; sample++) records.push(await measure(anonymousPage, "/login", "desktop", "repeated-no-cache", sample, desktopSession));
     const mobileLoginSession = await configureProfile(anonymousPage, "mobile-emulated");
     await measure(anonymousPage, "/login", "mobile-emulated", "cold", 0, mobileLoginSession);
     for (let sample = 1; sample <= sampleCount; sample++) records.push(await measure(anonymousPage, "/login", "mobile-emulated", "cold", sample, mobileLoginSession));
-    await measure(anonymousPage, "/login", "mobile-emulated", "warm", 0, mobileLoginSession);
-    for (let sample = 1; sample <= sampleCount; sample++) records.push(await measure(anonymousPage, "/login", "mobile-emulated", "warm", sample, mobileLoginSession));
+    await measure(anonymousPage, "/login", "mobile-emulated", "repeated-no-cache", 0, mobileLoginSession);
+    for (let sample = 1; sample <= sampleCount; sample++) records.push(await measure(anonymousPage, "/login", "mobile-emulated", "repeated-no-cache", sample, mobileLoginSession));
 
     const adminContext = await newGuardedContext(browser, { width: 1440, height: 900 });
     const supervisorContext = await newGuardedContext(browser, { width: 1440, height: 900 });
     const employeeContext = await newGuardedContext(browser, { width: 1440, height: 900 });
     contexts.push(adminContext, supervisorContext, employeeContext);
+    for (const context of [adminContext, supervisorContext, employeeContext]) monitorSensitiveRequests(context);
     const adminPage = await adminContext.newPage();
     const supervisorPage = await supervisorContext.newPage();
     const employeePage = await employeeContext.newPage();
@@ -250,14 +263,6 @@ test("captura baseline web y PostgreSQL local con identidades y datos sintético
     await signIn(supervisorPage, qr.fixture("SUPERVISOR_EMAIL"), qr.fixture("SUPERVISOR_PASSWORD"), /\/scanner(?:\?.*)?$/);
     await expect(supervisorPage.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible({ timeout: 30_000 });
     await signIn(employeePage, qr.fixture("EMPLOYEE_EMAIL"), qr.fixture("EMPLOYEE_PASSWORD"), /\/mi-qr(?:\?.*)?$/);
-
-    for (const context of [adminContext, supervisorContext, employeeContext]) {
-      context.on("request", (request) => {
-        const path = new URL(request.url()).pathname;
-        if (path === "/api/attendance/scan") scanRequests.push("attendance scan endpoint");
-        if (/^\/api\/employees\/[^/]+\/pin$/.test(path)) scanRequests.push("employee PIN endpoint");
-      });
-    }
 
     const routeActors = [
       { page: adminPage, routes: ["/admin", "/admin/reportes"] },
@@ -270,8 +275,8 @@ test("captura baseline web y PostgreSQL local con identidades y datos sintético
         for (const route of routes) {
           await measure(page, route, profile, "cold", 0, session);
           for (let sample = 1; sample <= sampleCount; sample++) records.push(await measure(page, route, profile, "cold", sample, session));
-          await measure(page, route, profile, "warm", 0, session);
-          for (let sample = 1; sample <= sampleCount; sample++) records.push(await measure(page, route, profile, "warm", sample, session));
+          await measure(page, route, profile, "repeated-no-cache", 0, session);
+          for (let sample = 1; sample <= sampleCount; sample++) records.push(await measure(page, route, profile, "repeated-no-cache", sample, session));
         }
       }
     }

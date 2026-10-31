@@ -14,11 +14,11 @@ El runner genera un JSON agregado con permisos `0600` bajo el directorio tempora
 
 ## Protocolo
 
-- Código de aplicación: sin cambios desde `38652df09a8996e5baf3641e1d611e669760db3d`. Benchmark ejecutado localmente sobre el commit revisado `e95ff37b72348082654b5b16840ee2b84e711c8c` más los cambios aún no confirmados de este follow-up; no se modificó código de producto.
+- Código de aplicación: sin cambios desde `38652df09a8996e5baf3641e1d611e669760db3d`. La evidencia numérica procede de una corrida local sobre `e95ff37b72348082654b5b16840ee2b84e711c8c` con ajustes de seguimiento incorporados después en `9464f9f89b7023cc701951415e3b047d5f01f7bd`. El seguimiento de auditoría posterior corrige comprobaciones y metadatos, pero no constituye una nueva corrida de esas 100 muestras. No se modificó código de producto.
 - App: build de producción aislado de Next.js, sin `.env*`, con URLs/keys de Supabase loopback efímeras.
 - Navegador: Google Chrome 156.0.8078.79, Playwright 1.64.1, Node 24.18.0, npm 11.16.0.
 - Rutas: `/login`, `/admin`, `/admin/reportes`, `/scanner`, `/mi-qr`.
-- Muestras corregidas: **100/100**, 5 por ruta/perfil/estado, incluyendo `/login` desktop y móvil. La corrida anterior de 90 mediciones omitía login móvil y queda sustituida; se conserva en el historial del PR. “Fría” ejecuta `Network.clearBrowserCache` antes de cada muestra. “Repetida” navega sin limpiar. La investigación confirma que el guard de origen `browserContext.route("**/*")` de Playwright deshabilita HTTP cache, así que “repetida” no representa un cache hit.
+- Muestras corregidas: **100/100**, 5 por ruta/perfil/estado, incluyendo `/login` desktop y móvil. El JSON utiliza `cache: "cold"` (caché limpiada explícitamente) y `cache: "repeated-no-cache"` (navegación repetida sin caché HTTP efectiva). La corrida anterior de 90 mediciones omitía login móvil y queda sustituida; se conserva en el historial del PR. “Fría” ejecuta `Network.clearBrowserCache` antes de cada muestra. “Repetida” navega sin limpiar. La investigación confirma que el guard de origen `browserContext.route("**/*")` de Playwright deshabilita HTTP cache, así que “repetida” no representa un cache hit.
 - Next ejecuta `next build --webpack` y `next start` con `NODE_ENV=production` solo en `--performance-only`; el runner E2E ordinario conserva `next dev` y `NODE_ENV=development`.
 - Desktop: 1440×900, CPU 1×, red local sin limitación. Móvil emulado: 390×844, CPU 4×, RTT 40 ms, 1.6 Mbps descarga y 750 Kbps subida.
 - Métricas: navegación/load, TTFB, FCP, LCP, CLS, tareas largas, bytes de transferencia total y JavaScript desde `PerformanceResourceTiming`; APIs seleccionadas se cronometra aparte con timestamp request/response. INP no se simula ni se infiere de tareas largas.
