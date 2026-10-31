@@ -26,6 +26,7 @@
     "test:e2e": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only",
     "test:e2e:local": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only",
     "test:e2e:ui": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only --ui",
+    "benchmark:qr009:local": "node tests/qr004-auth-matrix.local.integration.mjs --performance-only",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test:security:jwt": "node tests/security-jwt-matrix.integration.mjs"

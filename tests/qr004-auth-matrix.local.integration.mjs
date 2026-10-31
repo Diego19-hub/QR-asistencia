@@ -15,6 +15,9 @@ import { launchServerActionBrowser } from "./qr004-server-actions.browser.mjs";
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "node_modules/.bin/supabase");
 const e2eOnly = process.argv.includes("--e2e-only");
+const performanceOnly = process.argv.includes("--performance-only");
+const browserOnly = e2eOnly || performanceOnly;
+const performanceResultsFile = process.env.QR009_RESULTS_FILE ?? join(tmpdir(), `qr009-runtime-${Date.now()}.json`);
 const projectId = `qr004_disposable_${randomBytes(6).toString("hex")}`;
 // Keep Mailpit enabled. Auth invite email is captured locally and cannot leave this stack.
 const excluded = "realtime,storage-api,imgproxy,postgres-meta,studio,edge-runtime,logflare,vector,supavisor";
@@ -120,6 +123,7 @@ async function waitForNext(url) {
 }
 async function runPlaywrightLocal(env, secrets) {
   const playwrightArgs = [join(root, "node_modules/@playwright/test/cli.js"), "test", "--config", join(root, "playwright.config.ts")];
+  if (performanceOnly) playwrightArgs.push("tests/performance/web-performance.spec.ts");
   if (process.argv.includes("--ui")) playwrightArgs.push("--ui");
   const child = spawn(process.execPath, playwrightArgs, {
     cwd: root,
@@ -293,7 +297,7 @@ try {
   safeCli(["start", "--exclude", excluded]);
   safeCli(["db", "reset", "--local"]);
   process.stdout.write("PASS fresh disposable database with repository migrations applied locally\n");
-  for (const suite of e2eOnly ? [] : suites) {
+  for (const suite of browserOnly ? [] : suites) {
     const output = safeCli(["test", "db", "--local", `supabase/tests/${suite}`]);
     const sql = await readFile(join(workdir, "supabase/tests", suite), "utf8");
     const plan = Number(sql.match(/select\s+plan\s*\(\s*(\d+)\s*\)/i)?.[1]);
@@ -343,7 +347,7 @@ try {
   if (supervisorRecord.error) throw new Error(`failed creating synthetic supervisor record (${supervisorRecord.error.code ?? "unknown"})`);
   const assignedBranch = await service.from("supervisor_branches").insert({ company_id: companyA, membership_id: supervisorA.memberships[0].id, branch_id: branchA });
   if (assignedBranch.error) throw new Error(`failed preparing synthetic supervisor branch scope (${assignedBranch.error.code ?? "unknown"})`);
-  if (!e2eOnly) {
+  if (!browserOnly) {
   const sessionNow = new Date();
   const sessionBase = { company_id: companyA, employee_id: employeeA.employeeId, local_work_date: sessionNow.toISOString().slice(0, 10), timezone: "America/Mexico_City", status: "closed", started_at: new Date(sessionNow.getTime() - 60_000).toISOString(), ended_at: sessionNow.toISOString(), scheduled_minutes: 480 };
   const sessionAResult = await service.from("attendance_sessions").insert({ ...sessionBase, branch_id: branchA }).select("id").single();
@@ -406,14 +410,16 @@ import { signOutEmployee } from "@/app/(employee)/mi-qr/actions";
 export default async function ServerActionHarness({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const query = await searchParams;
   const value = (name: string) => typeof query[name] === "string" ? query[name] as string : "";
+  async function employeeSignOut() { "use server"; await signOutEmployee(); }
+  async function updateAdminMembership() { "use server"; await setAdminMembership(value("adminMembershipId")); }
   return <main>
     <form id="sign-in" action={signIn}><input name="email" type="email" /><input name="password" type="password" /><input type="hidden" name="next" value={value("next")} /><button type="submit">Sign in</button></form>
     <form id="sign-out" action={signOut}><button type="submit">Sign out</button></form>
-    <form id="sign-out-employee" action={signOutEmployee}><button type="submit">Sign out employee</button></form>
+    <form id="sign-out-employee" action={employeeSignOut}><button type="submit">Sign out employee</button></form>
     <form id="choose-membership" action={chooseMembership}><input type="hidden" name="membershipId" value={value("membershipId")} /><input type="hidden" name="next" value={value("next")} /><button type="submit">Choose membership</button></form>
     <form id="accept-invitation" action={acceptInvitation}><input type="hidden" name="invitationId" value={value("invitationId")} /><button type="submit">Accept invitation</button></form>
     <form id="set-invitation-password" action={setInvitationPassword}><input name="password" type="password" /><input name="confirmation" type="password" /><button type="submit">Set invitation password</button></form>
-    <form id="set-admin-membership" action={setAdminMembership.bind(null, value("adminMembershipId"))}><button type="submit">Set admin membership</button></form>
+    <form id="set-admin-membership" action={updateAdminMembership}><button type="submit">Set admin membership</button></form>
   </main>;
 }
 `, { mode: 0o600 });
@@ -421,7 +427,29 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   await symlink(join(root, "node_modules"), join(appRoot, "node_modules"), "dir");
   const startNext = async (adminServiceKey = serviceKey) => {
     appOutput = "";
-    appServer = spawn(process.execPath, [join(root, "node_modules/next/dist/bin/next"), "dev", "--webpack", "--hostname", "127.0.0.1", "--port", String(nextPort)], {
+    const nextArgs = performanceOnly
+      ? [join(root, "node_modules/next/dist/bin/next"), "start", "--hostname", "127.0.0.1", "--port", String(nextPort)]
+      : [join(root, "node_modules/next/dist/bin/next"), "dev", "--webpack", "--hostname", "127.0.0.1", "--port", String(nextPort)];
+    if (performanceOnly) {
+      const build = spawn(process.execPath, [join(root, "node_modules/next/dist/bin/next"), "build", "--webpack"], {
+        cwd: appRoot,
+        env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1", NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey, SUPABASE_SERVICE_ROLE_KEY: adminServiceKey, APP_BASE_URL: appUrl },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let buildOutput = "";
+      build.stdout.on("data", (chunk) => { buildOutput = (buildOutput + chunk.toString()).slice(-8_000); });
+      build.stderr.on("data", (chunk) => { buildOutput = (buildOutput + chunk.toString()).slice(-8_000); });
+      const buildExit = await new Promise((resolveExit, rejectExit) => {
+        build.once("error", () => rejectExit(new Error("could not start isolated Next.js production build")));
+        build.once("exit", (code) => resolveExit(code ?? 1));
+      });
+      if (buildExit !== 0) {
+        for (const secret of [anonKey, adminServiceKey, dbUrl].filter(Boolean)) buildOutput = buildOutput.split(secret).join("[redacted]");
+        throw new Error(`isolated Next.js production build failed (${buildExit}): ${buildOutput.replace(/https?:\/\/[^\s)]+/g, "[url]").split(/\r?\n/).filter(Boolean).slice(-8).join(" | ").slice(0, 800)}`);
+      }
+      process.stdout.write("PASS isolated Next.js production build completed with loopback-only Supabase configuration\n");
+    }
+    appServer = spawn(process.execPath, nextArgs, {
       cwd: appRoot,
       env: {
         PATH: process.env.PATH, NODE_ENV: "development", NEXT_TELEMETRY_DISABLED: "1",
@@ -437,7 +465,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   await startNext();
   process.stdout.write("PASS local Auth users and temporary Next.js server use only the disposable Supabase loopback endpoints\n");
 
-  if (e2eOnly) {
+  if (browserOnly) {
     const unassigned = await createHttpIdentity(`e2e-unassigned-${randomUUID()}@qr-asistencia.invalid`);
     const unlinkedEmployee = await createHttpUser("e2e-unlinked-employee", "employee", companyA);
     const inactiveMembership = await createHttpUser("e2e-inactive-supervisor", "supervisor", companyA);
@@ -464,6 +492,18 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       if (supervisor.error || branch.error) throw new Error("could not seed multi-company synthetic supervisor scope");
     }
 
+    if (performanceOnly) {
+      const perfEmployees = Array.from({ length: 500 }, (_, index) => ({
+        company_id: companyA, branch_id: branchA,
+        employee_number: `QR009-${String(index + 1).padStart(4, "0")}`,
+        first_name: "Synthetic", last_name: `Benchmark${index + 1}`, active: true,
+      }));
+      for (let offset = 0; offset < perfEmployees.length; offset += 100) {
+        const inserted = await service.from("employees").insert(perfEmployees.slice(offset, offset + 100));
+        if (inserted.error) throw new Error(`could not prepare synthetic SQL benchmark rows (${inserted.error.code ?? "unknown"})`);
+      }
+      process.stdout.write("PASS SQL benchmark fixture: 500 synthetic employees in local company A; no attendance rows created\n");
+    }
     const childEnv = {
       PATH: process.env.PATH ?? "",
       ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
@@ -506,6 +546,14 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       QR005_COMPANY_A_NAME: companyAName,
       QR005_COMPANY_B_NAME: companyBName,
       QR005_FOREIGN_MEMBERSHIP_ID: adminB.memberships[0].id,
+      ...(performanceOnly ? {
+        QR009_PERFORMANCE_ONLY: "1",
+        QR009_BASE_COMMIT: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
+        QR009_DATABASE_URL: dbUrl,
+        QR009_RESULTS_FILE: performanceResultsFile,
+        QR009_ADMIN_USER_ID: adminA.userId,
+        QR009_BRANCH_ID: branchA,
+      } : {}),
     };
     await mkdir(childEnv.QR005_RESULTS_DIR, { recursive: true, mode: 0o700 });
     await runPlaywrightLocal(childEnv, [
@@ -517,7 +565,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       noBranchSupervisor.email, noBranchSupervisor.password, revokedSupervisor.email, revokedSupervisor.password,
       serviceKey, anonKey, dbUrl,
     ]);
-    process.stdout.write("PASS QR-005 browser tests used disposable Auth identities, loopback services, and temporary reports only\n");
+    process.stdout.write(`PASS ${performanceOnly ? "QR-009 performance" : "QR-005 browser"} tests used disposable Auth identities, loopback services, and temporary reports only\n`);
   } else {
 
   // Exercise real Server Actions through forms rendered and submitted by
