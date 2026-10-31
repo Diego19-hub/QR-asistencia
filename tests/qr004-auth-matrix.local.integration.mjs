@@ -410,10 +410,13 @@ import { signOutEmployee } from "@/app/(employee)/mi-qr/actions";
 export default async function ServerActionHarness({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const query = await searchParams;
   const value = (name: string) => typeof query[name] === "string" ? query[name] as string : "";
+  // Capturing a primitive is serializable for the nested Server Action; do
+  // not close over the helper function itself in the encrypted action payload.
+  const requestedAdminMembershipId = value("adminMembershipId");
   async function employeeSignOut() { "use server"; await signOutEmployee(); }
   async function updateAdminMembership() {
     "use server";
-    const allowed = await setAdminMembership(value("adminMembershipId"));
+    const allowed = await setAdminMembership(requestedAdminMembershipId);
     // Only synthetic test action result; never log IDs, tokens or cookies.
     console.info("QR004_LOCAL_ADMIN_ACTION_RESULT:" + (allowed ? "ALLOWED" : "DENIED"));
   }
