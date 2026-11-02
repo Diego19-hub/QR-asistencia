@@ -5,13 +5,13 @@ if (!process.env.QR005_BASE_URL || !process.env.QR005_SUPABASE_URL || !process.e
 }
 
 export default defineConfig({
-  testDir: "./tests/e2e",
-  testMatch: "**/*.spec.ts",
+  testDir: process.env.QR009_PERFORMANCE_ONLY === "1" ? "./tests/performance" : "./tests/e2e",
+  testMatch: process.env.QR009_PERFORMANCE_ONLY === "1" ? "web-performance.spec.ts" : "**/*.spec.ts",
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
   workers: 1,
-  timeout: 45_000,
+  timeout: process.env.QR009_PERFORMANCE_ONLY === "1" ? 1_200_000 : 45_000,
   expect: { timeout: 8_000 },
   reporter: process.env.CI ? "line" : "list",
   outputDir: process.env.QR005_RESULTS_DIR,
@@ -20,7 +20,7 @@ export default defineConfig({
     browserName: "chromium",
     headless: true,
     actionTimeout: 10_000,
-    navigationTimeout: 15_000,
+    navigationTimeout: process.env.QR009_PERFORMANCE_ONLY === "1" ? 90_000 : 15_000,
     screenshot: "off",
     trace: "off",
     video: "off",
