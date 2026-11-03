@@ -6,6 +6,7 @@ import { guardBrowserOrigins, qr005Environment } from "../helpers/qr005-env.mjs"
 type QR005Environment = {
   baseUrl: URL;
   supabaseUrl: URL;
+  mailpitUrl: URL;
   allowedOrigins: Set<string>;
   fixture: (name: string) => string;
   signIn: (page: Page, email: string, password: string) => Promise<void>;

@@ -138,6 +138,7 @@ async function runPlaywrightLocal(env, secrets) {
     child.once("exit", (code) => resolveExit(code ?? 1));
   });
   for (const secret of secrets.filter(Boolean)) output = output.split(secret).join("[redacted synthetic credential]");
+  output = output.replace(/([?&]token_hash=)[^&#\s"']+/gi, "$1[redacted]");
   output = output.replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted JWT]")
     .replace(/(?:sb_(?:publishable|secret)_[A-Za-z0-9_-]{8,}|postgres(?:ql)?:\/\/[^\s)]+)/gi, "[redacted local credential]");
   if (output.trim()) process.stdout.write(output);
@@ -279,6 +280,11 @@ try {
   for (const suite of suites) await cp(join(root, "supabase/tests", suite), join(workdir, "supabase/tests", suite));
   let config = await readFile(join(root, "supabase/config.toml"), "utf8");
   const base = await freePortBlock();
+  const nextPort = await freePort(base + 20);
+  appUrl = `http://127.0.0.1:${nextPort}`;
+  const defaultSiteUrl = 'site_url = "http://127.0.0.1:3000"';
+  assert.ok(config.includes(defaultSiteUrl), "temporary Auth site_url setting exists");
+  config = config.replace(defaultSiteUrl, `site_url = "${appUrl}"`);
   config = config.replace('project_id = "codigo_QR"', `project_id = "${projectId}"`)
     .replace("port = 54321", `port = ${base}`).replace("port = 54322", `port = ${base + 1}`)
     .replace("shadow_port = 54320", `shadow_port = ${base + 2}`).replace("port = 54323", `port = ${base + 3}`)
@@ -393,7 +399,6 @@ try {
   assert.deepEqual(await snapshot(companyA), beforeAdminAdjustmentDenial, "specific permission denial leaves correction and audit state unchanged");
   await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "attendance.adjust");
   }
-  const nextPort = await freePort(base + 20); appUrl = `http://127.0.0.1:${nextPort}`;
   const appRoot = join(temp, "next-app"); await mkdir(appRoot, { recursive: true });
   await cp(join(root, "src"), join(appRoot, "src"), { recursive: true });
   // This route exists only in the isolated temporary app. It renders actual
@@ -536,9 +541,12 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       ...(process.env.QR004_CHROME_NO_SANDBOX === "1" ? { QR004_CHROME_NO_SANDBOX: "1" } : {}),
       QR005_BASE_URL: appUrl,
       QR005_SUPABASE_URL: apiUrl,
+      QR005_MAILPIT_URL: mailpitUrl,
       QR005_RESULTS_DIR: join(temp, "playwright-results"),
       QR005_ADMIN_EMAIL: adminA.email,
       QR005_ADMIN_PASSWORD: adminA.password,
+      QR005_ADMIN_B_EMAIL: adminB.email,
+      QR005_ADMIN_B_PASSWORD: adminB.password,
       QR005_SUPERVISOR_EMAIL: supervisorA.email,
       QR005_SUPERVISOR_PASSWORD: supervisorA.password,
       QR005_SUPERVISOR_MEMBERSHIP_ID: supervisorA.memberships[0].id,
@@ -566,6 +574,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       QR005_COMPANY_A_ID: companyA,
       QR005_COMPANY_B_ID: companyB,
       QR005_BRANCH_A_ID: branchA,
+      QR005_BRANCH_B_ID: branchB,
       QR005_COMPANY_A_NAME: companyAName,
       QR005_COMPANY_B_NAME: companyBName,
       QR005_FOREIGN_MEMBERSHIP_ID: adminB.memberships[0].id,
