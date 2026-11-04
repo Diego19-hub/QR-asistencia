@@ -16,12 +16,14 @@ const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "node_modules/.bin/supabase");
 const e2eOnly = process.argv.includes("--e2e-only");
 const performanceOnly = process.argv.includes("--performance-only");
+const supervisorDeviceRlsOnly = process.argv.includes("--supervisor-device-rls-only");
+assert.ok(!(supervisorDeviceRlsOnly && (e2eOnly || performanceOnly)), "supervisor/device RLS-only mode cannot be combined with browser modes");
 const browserOnly = e2eOnly || performanceOnly;
 const performanceResultsFile = process.env.QR009_RESULTS_FILE ?? join(tmpdir(), `qr009-runtime-${Date.now()}.json`);
 const projectId = `qr004_disposable_${randomBytes(6).toString("hex")}`;
 // Keep Mailpit enabled. Auth invite email is captured locally and cannot leave this stack.
 const excluded = "realtime,storage-api,imgproxy,postgres-meta,studio,edge-runtime,logflare,vector,supavisor";
-const suites = [
+const generalSuites = [
   "attendance_integrity_test.sql",
   "employee_portal_rls_behavior_test.sql",
   "company_user_access_behavior_test.sql",
@@ -31,6 +33,7 @@ const suites = [
   "qr004_scanner_authorization_test.sql",
   "schedule_integrity_test.sql",
 ];
+const suites = supervisorDeviceRlsOnly ? ["qr007_supervisor_device_rls_test.sql"] : generalSuites;
 let temp;
 let startAttempted = false;
 let appServer, actionBrowser, dbPool, service, apiUrl, anonKey, serviceKey, dbUrl, appUrl, mailpitUrl, appOutput = "";
@@ -275,7 +278,16 @@ try {
   const workdir = join(temp, "project");
   await mkdir(join(workdir, "supabase", "migrations"), { recursive: true });
   await mkdir(join(workdir, "supabase", "tests"), { recursive: true });
-  await cp(join(root, "supabase/migrations"), join(workdir, "supabase/migrations"), { recursive: true });
+  if (supervisorDeviceRlsOnly) {
+    const canonicalMigrations = execFileSync("git", ["ls-files", "-z", "supabase/migrations/*.sql"], { cwd: root, encoding: "utf8" })
+      .split("\0").filter(Boolean);
+    assert.equal(canonicalMigrations.length, 27, "supervisor RLS validation requires exactly 27 versioned canonical migrations");
+    for (const migration of canonicalMigrations) {
+      await cp(join(root, migration), join(workdir, migration));
+    }
+  } else {
+    await cp(join(root, "supabase/migrations"), join(workdir, "supabase/migrations"), { recursive: true });
+  }
   await cp(join(root, "supabase/templates"), join(workdir, "supabase/templates"), { recursive: true });
   for (const suite of suites) await cp(join(root, "supabase/tests", suite), join(workdir, "supabase/tests", suite));
   let config = await readFile(join(root, "supabase/config.toml"), "utf8");
@@ -313,6 +325,10 @@ try {
       ?? `${plan} pgTAP assertions passed (CLI exited successfully)`;
     process.stdout.write(`PASS ${suite}: ${summary}\n`);
   }
+
+  if (supervisorDeviceRlsOnly) {
+    process.stdout.write("PASS isolated supervisor/device RLS-only run; no HTTP app, scan, PIN, or attendance flow started\n");
+  } else {
 
   // Exercise the same API and Server Component guards used by the app. The
   // app receives only loopback Supabase endpoints and an ephemeral local key.
@@ -2244,6 +2260,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const revokedIdentity = await revokedClient.auth.getUser(); assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships where company_id=$1 and user_id=$2", [companyA, revokedIdentity.data.user.id])).rows[0].n), 0);
   const auditRevoke = await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_REVOKED'", [companyA, revokedInvite.data]); assert.equal(auditRevoke.rows[0].n, 1);
   process.stdout.write("PASS invitation RPC enforces recipient, expiry, revocation, single-use and audit semantics with local JWT identities\n");
+  }
   }
 } catch (error) {
   primaryError = error;

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { BrowserContext } from "@playwright/test";
 import { expect, test } from "./fixtures/qr005-test";
 
 type MailpitMessage = {
@@ -34,8 +35,15 @@ async function invitationConfirmationUrl(mailpitUrl: URL, email: string, appOrig
   return url.toString();
 }
 
+async function blockAttendanceScan(context: BrowserContext, attempts: string[]) {
+  await context.route("**/api/attendance/scan**", async (route) => {
+    attempts.push("/api/attendance/scan");
+    await route.abort("blockedbyclient");
+  });
+}
+
 test("invitación de supervisor, sucursal y dispositivo completan su ciclo sin registrar asistencia", async ({ browser, qr }) => {
-  const attendanceRequests: string[] = [];
+  const blockedEndpoints: string[] = [];
 
   const adminContext = await browser.newContext();
   const inviteeContext = await browser.newContext();
@@ -52,12 +60,12 @@ test("invitación de supervisor, sucursal y dispositivo completan su ciclo sin r
   await qr.guardBrowserOrigins(adminContext);
   await qr.guardBrowserOrigins(inviteeContext);
   await qr.guardBrowserOrigins(otherSupervisorContext);
+  await blockAttendanceScan(adminContext, blockedEndpoints);
+  await blockAttendanceScan(inviteeContext, blockedEndpoints);
+  await blockAttendanceScan(otherSupervisorContext, blockedEndpoints);
   const adminPage = await adminContext.newPage();
   const inviteePage = await inviteeContext.newPage();
   const otherSupervisorPage = await otherSupervisorContext.newPage();
-  inviteePage.on("request", (request) => {
-    if (new URL(request.url()).pathname === "/api/attendance/scan") attendanceRequests.push(request.url());
-  });
   try {
     await qr.signIn(adminPage, qr.fixture("ADMIN_EMAIL"), qr.fixture("ADMIN_PASSWORD"));
     await expect(adminPage).toHaveURL(/\/admin(?:\?|$)/);
@@ -176,6 +184,7 @@ test("invitación de supervisor, sucursal y dispositivo completan su ciclo sin r
 
     const adminBContext = await browser.newContext();
     await qr.guardBrowserOrigins(adminBContext);
+    await blockAttendanceScan(adminBContext, blockedEndpoints);
     const adminBPage = await adminBContext.newPage();
     try {
       await qr.signIn(adminBPage, qr.fixture("ADMIN_B_EMAIL"), qr.fixture("ADMIN_B_PASSWORD"));
@@ -238,7 +247,7 @@ test("invitación de supervisor, sucursal y dispositivo completan su ciclo sin r
     await expect(inviteePage.getByText("Dispositivo sin autorización")).toBeVisible();
     await expect.poll(() => inviteePage.evaluate(() => (window as Window & { __qr7Tracks?: MediaStreamTrack[] }).__qr7Tracks?.every((track) => track.readyState === "ended"))).toBe(true);
     expect(contextAfterRevocation.authorized).toBe(false);
-    expect(attendanceRequests).toHaveLength(0);
+    expect(blockedEndpoints, `Se intentó llamar al endpoint bloqueado: ${blockedEndpoints.join(", ")}`).toEqual([]);
   } finally {
     await adminContext.close();
     await inviteeContext.close();
