@@ -43,30 +43,32 @@ Resultado observado: **27/27 aserciones PASS**. Se imprimió el resultado de mig
 
 El build se ejecutó en una copia temporal fuera del repositorio. Se excluyeron `.git`, `node_modules` original, `.next`, archivos `.env*`, resultados de pruebas y cobertura; las dependencias se clonaron localmente para que el trazado standalone permaneciera dentro del directorio aislado. Se usaron valores placeholder de Supabase y no se inició conexión remota. El directorio temporal se eliminó al terminar.
 
-No se ejecutaron `npm test`, `test:security:matrix:local`, `test:pin-lockout:db`, la integración de lease ni GitHub Actions en esta tarea.
+En local no se ejecutaron `npm test`, la matriz general QR-004 ni la integración de lease; esas tres validaciones sí se ejecutaron como parte del CI autorizado y usaron únicamente fixtures/infraestructura desechables. No se ejecutó `test:pin-lockout:db` como suite separada.
 
 ## CI, límites y riesgos
 
-En GitHub se observan para el SHA publicado `133b356`:
+Para el commit funcional `400656f3edba50427cb7961da524fda169bd3661`, GitHub Actions completó ambos eventos:
 
-- Push CI [#41737544381](https://github.com/Diego19-hub/QR-asistencia/actions/runs/41737544381): **SUCCESS**.
-- PR CI [#41737573922](https://github.com/Diego19-hub/QR-asistencia/actions/runs/41737573922): **CANCELLED** durante `test:reports:lease:local`; después quedaron omitidas la matriz general, E2E y build.
+- Push CI [#41758490615](https://github.com/Diego19-hub/QR-asistencia/actions/runs/41758490615): **SUCCESS**.
+- PR CI [#41758496829](https://github.com/Diego19-hub/QR-asistencia/actions/runs/41758496829): **SUCCESS**.
 
-El check exitoso pertenece exclusivamente a `133b356`; no valida esta suite o runner que ese SHA no contiene. El workflow general se dispara en `push` y `pull_request`. Incluye pruebas unitarias de PIN, fixtures sintéticas de sesiones/eventos en `test:reports:lease:local`, y la matriz QR-004 con pruebas locales de autorización de escáner que pueden llamar RPC con identidades y PIN sintéticos. La autorización recibida para esta publicación cubre esas pruebas solamente dentro de la instancia local desechable. El runner general elimina variables heredadas de Supabase/Postgres, requiere loopback, crea un proyecto local aleatorio y limita su limpieza a sus propios recursos. El workflow se conserva sin cambios.
+Los dos workflows completaron `npm ci`, lint, typecheck, `npm test`, restauración sintética, lease de reportes, matriz de seguridad, E2E y build sin fallos. Los runs anteriores del SHA `133b356` (push SUCCESS y PR CANCELLED) no cubrían estos cambios.
 
-No fue posible confirmar checks obligatorios de `main`: GitHub respondió 403 al endpoint de protección de rama. La lectura de rulesets visibles devolvió `[]`, lo que no prueba que no existan otras reglas de protección. Se requiere confirmación del administrador del repositorio sobre los checks requeridos y la ruta aceptable para una validación acotada.
+El workflow general se dispara en `push` y `pull_request`. Incluye pruebas unitarias de PIN, fixtures sintéticas de sesiones/eventos en `test:reports:lease:local`, y la matriz QR-004 con pruebas locales de autorización de escáner que pueden llamar RPC con identidades y PIN sintéticos. La autorización recibida cubrió estas pruebas dentro de infraestructura local desechable. El runner general elimina variables heredadas de Supabase/Postgres, requiere loopback, crea un proyecto local aleatorio y limita su limpieza a sus propios recursos. El workflow se conserva sin cambios.
+
+No fue posible confirmar qué checks son obligatorios en `main`: GitHub respondió 403 al endpoint de protección de rama. La lectura de rulesets visibles devolvió `[]`, lo que no prueba que no existan otras reglas. Los dos runs de CI del PR están verdes; la política de protección continúa sin verificarse.
 
 Limitaciones:
 
 - La suite nueva cubre PostgreSQL/RLS, no sustituye Auth HTTP ni el E2E, y no es una revisión remota segregada.
 - El build demuestra compilación en el árbol copiado; no verifica despliegue.
-- No se ejecutaron pruebas dinámicas de PIN, escaneo ni registros de asistencia. QR-003 continúa P0 y NO-GO.
+- El CI general sí ejecutó las pruebas de escáner/PIN/asistencia autorizadas con identidades y datos sintéticos en el stack local desechable. No se ejecutó la suite separada `test:pin-lockout:db`, no se accedió a Testing o Producción y QR-003 continúa P0/NO-GO para despliegue.
 - QR-004 permanece en curso.
 
 ## Publicación y decisión
 
-Se revisó el workflow antes de publicar. La autorización vigente permite ejecutar el workflow general porque sus operaciones de asistencia/PIN se limitan a fixtures sintéticas y recursos locales desechables. Se publican solo los cinco archivos enumerados en el diff del cierre de Fase 7. Los resultados de Actions corresponden al nuevo SHA y se registran una vez terminen.
+Se revisó el workflow antes de publicar. La autorización vigente permite ejecutar el workflow general porque sus operaciones de asistencia/PIN se limitan a fixtures sintéticas y recursos locales desechables. El commit `400656f` actualizó los cinco archivos del cierre de Fase 7; el cambio documental de este informe consigna los resultados reales de Actions para ese commit. No se publica otra modificación funcional.
 
 No fue posible confirmar checks obligatorios de `main`: GitHub respondió 403 al endpoint de protección de rama. La lectura de rulesets visibles devolvió `[]`, lo que no demuestra que no haya otras reglas. No se cambia ninguna protección.
 
-**Recomendación: mantener PR #28 sin merge hasta que finalicen y se revisen los checks asociados al nuevo SHA.** No se accedió a Supabase Testing ni Producción. QR-003 continúa P0/NO-GO; QR-004 permanece en curso.
+**Recomendación: los checks de CI están aprobados para el SHA funcional `400656f`; PR #28 queda listo para revisión/merge, sin que se haya realizado merge aquí.** No se accedió a Supabase Testing ni Producción. QR-003 continúa P0/NO-GO; QR-004 permanece en curso.
