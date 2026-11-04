@@ -17,12 +17,15 @@ const cli = join(root, "node_modules/.bin/supabase");
 const e2eOnly = process.argv.includes("--e2e-only");
 const performanceOnly = process.argv.includes("--performance-only");
 const supervisorDeviceRlsOnly = process.argv.includes("--supervisor-device-rls-only");
-assert.ok(!(supervisorDeviceRlsOnly && (e2eOnly || performanceOnly)), "supervisor/device RLS-only mode cannot be combined with browser modes");
+const privilegedRpcAuditOnly = process.argv.includes("--privileged-rpc-audit-only");
+assert.ok(!(supervisorDeviceRlsOnly && (e2eOnly || performanceOnly || privilegedRpcAuditOnly)), "supervisor/device RLS-only mode cannot be combined with another mode");
+assert.ok(!(privilegedRpcAuditOnly && (e2eOnly || performanceOnly)), "privileged RPC audit-only mode cannot be combined with browser modes");
 const browserOnly = e2eOnly || performanceOnly;
 const performanceResultsFile = process.env.QR009_RESULTS_FILE ?? join(tmpdir(), `qr009-runtime-${Date.now()}.json`);
 const projectId = `qr004_disposable_${randomBytes(6).toString("hex")}`;
 // Keep Mailpit enabled. Auth invite email is captured locally and cannot leave this stack.
 const excluded = "realtime,storage-api,imgproxy,postgres-meta,studio,edge-runtime,logflare,vector,supavisor";
+const auditOnlyExcluded = "gotrue,realtime,storage-api,imgproxy,kong,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor,mailpit";
 const generalSuites = [
   "attendance_integrity_test.sql",
   "employee_portal_rls_behavior_test.sql",
@@ -33,7 +36,8 @@ const generalSuites = [
   "qr004_scanner_authorization_test.sql",
   "schedule_integrity_test.sql",
 ];
-const suites = supervisorDeviceRlsOnly ? ["qr007_supervisor_device_rls_test.sql"] : generalSuites;
+const suites = supervisorDeviceRlsOnly ? ["qr007_supervisor_device_rls_test.sql"]
+  : privilegedRpcAuditOnly ? ["qr004_privileged_rpc_authorization_test.sql", "qr007_supervisor_device_rls_test.sql"] : generalSuites;
 let temp;
 let startAttempted = false;
 let appServer, actionBrowser, dbPool, service, apiUrl, anonKey, serviceKey, dbUrl, appUrl, mailpitUrl, appOutput = "";
@@ -278,10 +282,10 @@ try {
   const workdir = join(temp, "project");
   await mkdir(join(workdir, "supabase", "migrations"), { recursive: true });
   await mkdir(join(workdir, "supabase", "tests"), { recursive: true });
-  if (supervisorDeviceRlsOnly) {
+  if (supervisorDeviceRlsOnly || privilegedRpcAuditOnly) {
     const canonicalMigrations = execFileSync("git", ["ls-files", "-z", "supabase/migrations/*.sql"], { cwd: root, encoding: "utf8" })
       .split("\0").filter(Boolean);
-    assert.equal(canonicalMigrations.length, 27, "supervisor RLS validation requires exactly 27 versioned canonical migrations");
+    assert.equal(canonicalMigrations.length, 27, "isolated RLS/RPC audit requires exactly 27 versioned canonical migrations");
     for (const migration of canonicalMigrations) {
       await cp(join(root, migration), join(workdir, migration));
     }
@@ -312,7 +316,7 @@ try {
   // A failed `start` may still have created some project containers. Always
   // attempt the scoped stop after invoking start, including partial failures.
   startAttempted = true;
-  safeCli(["start", "--exclude", excluded]);
+  safeCli(["start", "--exclude", privilegedRpcAuditOnly ? auditOnlyExcluded : excluded]);
   safeCli(["db", "reset", "--local"]);
   process.stdout.write("PASS fresh disposable database with repository migrations applied locally\n");
   for (const suite of browserOnly ? [] : suites) {
@@ -328,6 +332,59 @@ try {
 
   if (supervisorDeviceRlsOnly) {
     process.stdout.write("PASS isolated supervisor/device RLS-only run; no HTTP app, scan, PIN, or attendance flow started\n");
+  } else if (privilegedRpcAuditOnly) {
+    const values = parseEnv(safeCli(["status", "--output", "env"]));
+    dbUrl = values.DB_URL;
+    localUrl(dbUrl, "Supabase database URL");
+    dbPool = new pg.Pool({ connectionString: dbUrl, max: 1 });
+    const { rows } = await dbPool.query(`
+      select n.nspname as schema_name, p.proname as function_name,
+             p.oid::regprocedure::text as identity_arguments,
+             pg_get_function_result(p.oid) as result_type,
+             pg_get_userbyid(p.proowner) as owner,
+             coalesce(p.proconfig, array[]::text[]) as settings,
+             coalesce((select jsonb_agg(jsonb_build_object(
+               'grantee', case when a.grantee = 0 then 'PUBLIC' else r.rolname end,
+               'privilege', a.privilege_type, 'grantable', a.is_grantable
+             ) order by case when a.grantee = 0 then '' else r.rolname end, a.privilege_type)
+               from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+               left join pg_roles r on r.oid = a.grantee), '[]'::jsonb) as acl,
+             has_function_privilege('anon', p.oid, 'EXECUTE') as anon_execute,
+             has_function_privilege('authenticated', p.oid, 'EXECUTE') as authenticated_execute,
+             has_function_privilege('service_role', p.oid, 'EXECUTE') as service_role_execute,
+             has_schema_privilege('anon', n.oid, 'USAGE') as anon_schema_usage,
+             has_schema_privilege('authenticated', n.oid, 'USAGE') as authenticated_schema_usage,
+             has_schema_privilege('service_role', n.oid, 'USAGE') as service_role_schema_usage,
+             pg_get_functiondef(p.oid) as definition
+        from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+       where p.prosecdef and p.prokind = 'f'
+         and n.nspname not in ('information_schema')
+       order by n.nspname, p.proname, p.oid::regprocedure::text
+    `);
+    const { rows: viewRows } = await dbPool.query(`
+      select n.nspname as schema_name, c.relname as view_name,
+             coalesce(c.reloptions, array[]::text[]) as options,
+             pg_get_userbyid(c.relowner) as owner,
+             coalesce((select jsonb_agg(jsonb_build_object(
+               'grantee', case when a.grantee = 0 then 'PUBLIC' else r.rolname end,
+               'privilege', a.privilege_type
+             ) order by case when a.grantee = 0 then '' else r.rolname end, a.privilege_type)
+               from aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a
+               left join pg_roles r on r.oid = a.grantee), '[]'::jsonb) as acl
+        from pg_class c join pg_namespace n on n.oid = c.relnamespace
+       where c.relkind = 'v' and n.nspname not in ('information_schema','pg_catalog')
+       order by n.nspname, c.relname
+    `);
+    const inventoryPath = process.env.QR004_PHASE8_CATALOG_FILE;
+    if (inventoryPath) {
+      const destination = resolve(inventoryPath);
+      assert.ok(destination.startsWith("/private/tmp/"), "catalog output must stay outside the repository under /private/tmp");
+      await writeFile(destination, JSON.stringify({ functions: rows, views: viewRows }, null, 2), { mode: 0o600 });
+    }
+    const summary = rows.map((row) => Object.fromEntries(Object.entries(row).filter(([key]) => key !== "definition")));
+    process.stdout.write(`PRIVILEGED_RPC_CATALOG_COUNT=${rows.length}\n`);
+    process.stdout.write(`PRIVILEGED_RPC_CATALOG_JSON=${JSON.stringify(summary)}\n`);
+    process.stdout.write("PASS effective SECURITY DEFINER catalog read from disposable local PostgreSQL only; no HTTP Auth, scan, PIN, or attendance flow started\n");
   } else {
 
   // Exercise the same API and Server Component guards used by the app. The
