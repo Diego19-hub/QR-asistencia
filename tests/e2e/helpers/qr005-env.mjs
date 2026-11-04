@@ -1,5 +1,6 @@
 const baseUrl = new URL(required("QR005_BASE_URL"));
 const supabaseUrl = new URL(required("QR005_SUPABASE_URL"));
+const mailpitUrl = new URL(required("QR005_MAILPIT_URL"));
 const allowedOrigins = new Set([baseUrl.origin, supabaseUrl.origin]);
 
 function required(name) {
@@ -20,6 +21,7 @@ function assertLoopbackUrl(value, label) {
 
 assertLoopbackUrl(baseUrl.href, "Next.js URL");
 assertLoopbackUrl(supabaseUrl.href, "Supabase URL");
+assertLoopbackUrl(mailpitUrl.href, "Mailpit URL");
 
 export function fixture(name) {
   const value = process.env[`QR005_${name}`];
@@ -42,5 +44,5 @@ export async function guardBrowserOrigins(context) {
 }
 
 export function qr005Environment() {
-  return { baseUrl, supabaseUrl, allowedOrigins, fixture, signIn, guardBrowserOrigins };
+  return { baseUrl, supabaseUrl, mailpitUrl, allowedOrigins, fixture, signIn, guardBrowserOrigins };
 }

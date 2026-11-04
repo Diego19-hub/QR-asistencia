@@ -16,12 +16,14 @@ const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "node_modules/.bin/supabase");
 const e2eOnly = process.argv.includes("--e2e-only");
 const performanceOnly = process.argv.includes("--performance-only");
+const supervisorDeviceRlsOnly = process.argv.includes("--supervisor-device-rls-only");
+assert.ok(!(supervisorDeviceRlsOnly && (e2eOnly || performanceOnly)), "supervisor/device RLS-only mode cannot be combined with browser modes");
 const browserOnly = e2eOnly || performanceOnly;
 const performanceResultsFile = process.env.QR009_RESULTS_FILE ?? join(tmpdir(), `qr009-runtime-${Date.now()}.json`);
 const projectId = `qr004_disposable_${randomBytes(6).toString("hex")}`;
 // Keep Mailpit enabled. Auth invite email is captured locally and cannot leave this stack.
 const excluded = "realtime,storage-api,imgproxy,postgres-meta,studio,edge-runtime,logflare,vector,supavisor";
-const suites = [
+const generalSuites = [
   "attendance_integrity_test.sql",
   "employee_portal_rls_behavior_test.sql",
   "company_user_access_behavior_test.sql",
@@ -31,6 +33,7 @@ const suites = [
   "qr004_scanner_authorization_test.sql",
   "schedule_integrity_test.sql",
 ];
+const suites = supervisorDeviceRlsOnly ? ["qr007_supervisor_device_rls_test.sql"] : generalSuites;
 let temp;
 let startAttempted = false;
 let appServer, actionBrowser, dbPool, service, apiUrl, anonKey, serviceKey, dbUrl, appUrl, mailpitUrl, appOutput = "";
@@ -138,6 +141,7 @@ async function runPlaywrightLocal(env, secrets) {
     child.once("exit", (code) => resolveExit(code ?? 1));
   });
   for (const secret of secrets.filter(Boolean)) output = output.split(secret).join("[redacted synthetic credential]");
+  output = output.replace(/([?&]token_hash=)[^&#\s"']+/gi, "$1[redacted]");
   output = output.replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted JWT]")
     .replace(/(?:sb_(?:publishable|secret)_[A-Za-z0-9_-]{8,}|postgres(?:ql)?:\/\/[^\s)]+)/gi, "[redacted local credential]");
   if (output.trim()) process.stdout.write(output);
@@ -274,11 +278,25 @@ try {
   const workdir = join(temp, "project");
   await mkdir(join(workdir, "supabase", "migrations"), { recursive: true });
   await mkdir(join(workdir, "supabase", "tests"), { recursive: true });
-  await cp(join(root, "supabase/migrations"), join(workdir, "supabase/migrations"), { recursive: true });
+  if (supervisorDeviceRlsOnly) {
+    const canonicalMigrations = execFileSync("git", ["ls-files", "-z", "supabase/migrations/*.sql"], { cwd: root, encoding: "utf8" })
+      .split("\0").filter(Boolean);
+    assert.equal(canonicalMigrations.length, 27, "supervisor RLS validation requires exactly 27 versioned canonical migrations");
+    for (const migration of canonicalMigrations) {
+      await cp(join(root, migration), join(workdir, migration));
+    }
+  } else {
+    await cp(join(root, "supabase/migrations"), join(workdir, "supabase/migrations"), { recursive: true });
+  }
   await cp(join(root, "supabase/templates"), join(workdir, "supabase/templates"), { recursive: true });
   for (const suite of suites) await cp(join(root, "supabase/tests", suite), join(workdir, "supabase/tests", suite));
   let config = await readFile(join(root, "supabase/config.toml"), "utf8");
   const base = await freePortBlock();
+  const nextPort = await freePort(base + 20);
+  appUrl = `http://127.0.0.1:${nextPort}`;
+  const defaultSiteUrl = 'site_url = "http://127.0.0.1:3000"';
+  assert.ok(config.includes(defaultSiteUrl), "temporary Auth site_url setting exists");
+  config = config.replace(defaultSiteUrl, `site_url = "${appUrl}"`);
   config = config.replace('project_id = "codigo_QR"', `project_id = "${projectId}"`)
     .replace("port = 54321", `port = ${base}`).replace("port = 54322", `port = ${base + 1}`)
     .replace("shadow_port = 54320", `shadow_port = ${base + 2}`).replace("port = 54323", `port = ${base + 3}`)
@@ -307,6 +325,10 @@ try {
       ?? `${plan} pgTAP assertions passed (CLI exited successfully)`;
     process.stdout.write(`PASS ${suite}: ${summary}\n`);
   }
+
+  if (supervisorDeviceRlsOnly) {
+    process.stdout.write("PASS isolated supervisor/device RLS-only run; no HTTP app, scan, PIN, or attendance flow started\n");
+  } else {
 
   // Exercise the same API and Server Component guards used by the app. The
   // app receives only loopback Supabase endpoints and an ephemeral local key.
@@ -393,7 +415,6 @@ try {
   assert.deepEqual(await snapshot(companyA), beforeAdminAdjustmentDenial, "specific permission denial leaves correction and audit state unchanged");
   await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "attendance.adjust");
   }
-  const nextPort = await freePort(base + 20); appUrl = `http://127.0.0.1:${nextPort}`;
   const appRoot = join(temp, "next-app"); await mkdir(appRoot, { recursive: true });
   await cp(join(root, "src"), join(appRoot, "src"), { recursive: true });
   // This route exists only in the isolated temporary app. It renders actual
@@ -536,9 +557,12 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       ...(process.env.QR004_CHROME_NO_SANDBOX === "1" ? { QR004_CHROME_NO_SANDBOX: "1" } : {}),
       QR005_BASE_URL: appUrl,
       QR005_SUPABASE_URL: apiUrl,
+      QR005_MAILPIT_URL: mailpitUrl,
       QR005_RESULTS_DIR: join(temp, "playwright-results"),
       QR005_ADMIN_EMAIL: adminA.email,
       QR005_ADMIN_PASSWORD: adminA.password,
+      QR005_ADMIN_B_EMAIL: adminB.email,
+      QR005_ADMIN_B_PASSWORD: adminB.password,
       QR005_SUPERVISOR_EMAIL: supervisorA.email,
       QR005_SUPERVISOR_PASSWORD: supervisorA.password,
       QR005_SUPERVISOR_MEMBERSHIP_ID: supervisorA.memberships[0].id,
@@ -566,6 +590,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       QR005_COMPANY_A_ID: companyA,
       QR005_COMPANY_B_ID: companyB,
       QR005_BRANCH_A_ID: branchA,
+      QR005_BRANCH_B_ID: branchB,
       QR005_COMPANY_A_NAME: companyAName,
       QR005_COMPANY_B_NAME: companyBName,
       QR005_FOREIGN_MEMBERSHIP_ID: adminB.memberships[0].id,
@@ -2235,6 +2260,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const revokedIdentity = await revokedClient.auth.getUser(); assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships where company_id=$1 and user_id=$2", [companyA, revokedIdentity.data.user.id])).rows[0].n), 0);
   const auditRevoke = await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_REVOKED'", [companyA, revokedInvite.data]); assert.equal(auditRevoke.rows[0].n, 1);
   process.stdout.write("PASS invitation RPC enforces recipient, expiry, revocation, single-use and audit semantics with local JWT identities\n");
+  }
   }
 } catch (error) {
   primaryError = error;
