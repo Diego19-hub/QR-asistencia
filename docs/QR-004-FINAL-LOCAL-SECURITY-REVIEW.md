@@ -195,3 +195,16 @@ Producción se confirmó `INACTIVE`; migraciones, funciones, grants, políticas 
 Nota de validación: una invocación accidental de `npm test -- --help` ejecutó el chain local con salida suprimida; no es un resultado utilizable ni cuenta como PASS.
 
 **Dictamen:** **NOT READY**. R10-05 mantiene huecos por operación/filtro/carrera; falta comparar completamente RLS/grants/Auth de Testing y la revisión de Producción está bloqueada. QR-004 permanece En curso, QR-003 P0/NO-GO y QR-011 P1/Bloqueada.
+
+
+### Revisión remota de solo lectura — 2026-11-05, posterior al CI del SHA 719a319
+
+El CI general terminó SUCCESS para el commit funcional `83a643847961aca31294390a231b2608353600cd` ([run 42097068385](https://github.com/Diego19-hub/QR-asistencia/actions/runs/42097068385)) y para este commit documental ([run 42099012378](https://github.com/Diego19-hub/QR-asistencia/actions/runs/42099012378)). Incluyeron la matriz general en stack desechable; no se consultó Testing ni Producción desde esos jobs.
+
+**Testing** `llxyziffgtqnzlguxhyt` continúa `ACTIVE_HEALTHY`. El ledger registra 27 migraciones frente a las 29 de esta rama. Las dos ausentes son `20261105044818_supervisor_device_request_revocation_guard` y `20261105172831_supervisor_device_request_authorization_lock`. En la revisión de catálogo: 25/25 tablas públicas tienen RLS; hay 45 políticas públicas; `anon` tiene grant SELECT en `company_pay_period_rules`, pero no hay política aplicable a `anon` para esa tabla; ninguna función SECURITY DEFINER pública resulta ejecutable por `anon`, y el rol `anon` no tiene USAGE del esquema `private`.
+
+Cuatro cuerpos SECURITY DEFINER que ya se habían identificado por hash como distintos son `private.scanner_device`, `public.request_supervisor_device`, `public.review_supervisor_device_request` y `public.set_supervisor_branch`. La inspección focal actual confirma que Testing todavía no incluye la comprobación de sucursal activa de `scanner_device`, ni el `FOR SHARE` de `request_supervisor_device` y `review_supervisor_device_request`. La función remota `set_supervisor_branch` sí muestra limpieza de solicitudes y revocación de dispositivos, pero su cuerpo difiere del canónico local; no se declara equivalencia completa. La revisión de expresiones RLS, todos los grants y la configuración Auth administrada sigue incompleta. El resultado sobre `anon` es de catálogo, no una consulta de filas.
+
+**Producción** `jawdrhewabqajxnswhkn` se confirmó `INACTIVE`; por esa razón no fue posible leer su catálogo en esta sesión. No se infiere paridad con Testing ni con la rama local. No se aplicaron migraciones, no hubo DDL/DML ni cambios de configuración en ninguno de los dos proyectos.
+
+**Dictamen:** QR-004 permanece **En curso / NOT READY**. Aún faltan cobertura dinámica de otros métodos y carreras, comparación canónica completa de Testing (incluida Auth), y recuperación/revisión de Producción. QR-003 sigue **P0/NO-GO** y QR-011 **P1/Bloqueada**.

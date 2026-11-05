@@ -140,3 +140,12 @@ La evidencia de la prueba enfocada local de 194 aserciones corresponde a HEAD `d
 - Método no probado funcionalmente: `PUT /api/employees/[id]/pin` (solo protección/denegaciones en CI; QR-003). `POST /api/attendance/scan` se ejecutó únicamente en CI por autorización y no cuenta para cierre QR-004.
 - `GET /api/healthz` tiene prueba de handler unitario, no HTTP end-to-end.
 - La presencia de evidencia por método no cierra combinaciones de rol × tenant × sucursal × filtro ni carreras; R10-05 sigue **PARCIAL / NOT READY**.
+
+
+### Addendum de validación y estado de entornos — SHA funcional 83a6438 / docs 719a319
+
+La lectura HTTP/Auth del calendario semanal quedó ejercitada en el CI general del SHA `83a643847961aca31294390a231b2608353600cd` ([run 42097068385](https://github.com/Diego19-hub/QR-asistencia/actions/runs/42097068385)): anónimo 401, roles insuficientes denegados, aislamiento entre empresas, filtro de sucursal ajena/inactiva sin filas ni metadatos, fechas y UUID inválidos rechazados, no-store y snapshots A/B intactos. El CI del commit documental `719a3190a149224a6d485888e8d2b50c513e60a8` ([run 42099012378](https://github.com/Diego19-hub/QR-asistencia/actions/runs/42099012378)) también terminó SUCCESS.
+
+La consulta de catálogo de Testing (solo lectura) encontró 25/25 tablas públicas con RLS, 45 políticas y un grant SELECT a `anon` en `company_pay_period_rules` sin política para ese rol. El ledger tiene 27 migraciones frente a 29 locales, y las dos migraciones de guardas de dispositivos permanecen sin aplicar. La matriz no interpreta esto como paridad ni cierre: aún faltan comparar por completo las expresiones RLS, grants y configuración Auth, además de otras operaciones/carreras. Producción se confirmó INACTIVE y no se inspeccionaron sus datos. No se hicieron escrituras remotas.
+
+R10-05 sigue **PARCIAL / NOT READY**; QR-004 continúa **En curso**.
