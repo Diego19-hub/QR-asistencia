@@ -216,3 +216,22 @@ La revisión de `GET /api/schedules/overtime` encontró que el esquema solo comp
 CI general del SHA funcional `71dce32b21023c357772e8b1021ef08808c82e4a` terminó SUCCESS ([run 42106689611](https://github.com/Diego19-hub/QR-asistencia/actions/runs/42106689611)): lint, typecheck, npm test, restauración local, reportes, matriz general, RPC, Fase 10, E2E y build. La prueba usa solo infraestructura y datos desechables; no toca Testing ni Producción. La matriz se actualiza con ese resultado en el commit documental siguiente.
 
 El hallazgo corrige un caso de entrada del endpoint, pero no cierra R10-05 ni cambia el estado de las diferencias remotas de Testing o la inaccesibilidad de Producción. QR-004 sigue **En curso / NOT READY**.
+
+
+### Revisión de catálogo Testing ampliada — 2026-11-05
+
+La consulta de solo lectura se amplió a políticas RLS, grants de tablas y metadatos de funciones. Testing sigue `ACTIVE_HEALTHY` (PostgreSQL 17.11). El ledger contiene 27 migraciones y la rama 29; continúan ausentes `20261105044818_supervisor_device_request_revocation_guard` y `20261105172831_supervisor_device_request_authorization_lock`. No ejecuté migraciones.
+
+Resultados de catálogo:
+
+- Las 25 tablas públicas tienen RLS habilitada; hay 45 políticas públicas. Ninguna política pública observada concede acceso a `anon` o `public`.
+- `anon` conserva únicamente un grant de tabla: `SELECT` en `company_pay_period_rules`; esa tabla no tiene una política aplicable a `anon`. Esta es una lectura de metadatos: no consulté filas ni probé una solicitud con credenciales anon.
+- Se contaron 46 funciones `SECURITY DEFINER` en `public` y `private`; las 46 deniegan `EXECUTE` a `anon` y tienen un `search_path` explícito. Eso no reemplaza revisar sus cuerpos ni permisos efectivos por cada rol.
+- La inspección focal confirmó que los cuerpos remotos de `private.scanner_device`, `public.request_supervisor_device` y `public.review_supervisor_device_request` aún no contienen, respectivamente, la verificación de sucursal activa o los locks `FOR SHARE` incorporados localmente. `public.set_supervisor_branch` limpia solicitudes/dispositivos al desasignar, pero su cuerpo no se declaró equivalente al canónico local.
+- No se pudo inspeccionar la configuración administrada de Auth ni comparar cada expresión de política/grant contra un snapshot local canónico. Por ello, esta revisión mejora la evidencia de catálogo, pero la comparación segregada de Testing permanece parcial.
+
+**Producción** `jawdrhewabqajxnswhkn` sigue `INACTIVE`; no hay revisión de catálogo disponible. No se infiere paridad. No se realizaron escrituras, DDL/DML, consultas de filas, cambios de Auth ni pruebas de PIN/escaneo/asistencia en Testing o Producción.
+
+El CI documental previo del SHA `55cc42361d6249c79a8d60954732f5e925b0b624` completó en SUCCESS en el segundo intento ([run 42108779367](https://github.com/Diego19-hub/QR-asistencia/actions/runs/42108779367)). El primer intento tuvo un fallo intermitente en el navegador de Server Actions; el reintento pasó. No se atribuye a la revisión de catálogo ni se considera prueba exhaustiva de R10-05.
+
+**Dictamen actualizado:** QR-004 sigue **En curso / NOT READY** por las diferencias pendientes de Testing, la ausencia de revisión de Producción y los huecos dinámicos de R10-05. QR-003 permanece **P0/NO-GO** y QR-011 **P1/Bloqueada**.
