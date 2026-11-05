@@ -2439,7 +2439,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal((await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id")?.value, acceptedActionMembershipId, "invite acceptance leads to an explicit valid membership selection");
   await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(actionInviteId)}`);
   await actionBrowser.runForm("#accept-invitation");
-  await actionBrowser.waitForPath("/seleccionar-empresa");
+  await actionBrowser.waitForPath("error=expired", "replayed accepted invitation must be safely denied");
+  assert.match(await actionBrowser.bodyText(), /La invitación venció o fue revocada\. Solicita una nueva\./, "replayed invitation shows a safe denial message");
   assert.equal((await dbPool.query("select count(*)::int n from public.company_memberships where company_id=$1 and user_id=$2 and active", [companyA, actionInvitee.userId])).rows[0].n, 1, "replaying acceptInvitation does not duplicate membership");
   assert.equal((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_ACCEPTED'", [companyA, actionInviteId])).rows[0].n, 1, "replaying acceptInvitation does not duplicate audit entries");
   await actionBrowser.navigate("/mi-qr");
