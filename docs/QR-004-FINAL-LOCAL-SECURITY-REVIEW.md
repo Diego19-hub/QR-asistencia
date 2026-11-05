@@ -235,3 +235,39 @@ Resultados de catálogo:
 El CI documental previo del SHA `55cc42361d6249c79a8d60954732f5e925b0b624` completó en SUCCESS en el segundo intento ([run 42108779367](https://github.com/Diego19-hub/QR-asistencia/actions/runs/42108779367)). El primer intento tuvo un fallo intermitente en el navegador de Server Actions; el reintento pasó. No se atribuye a la revisión de catálogo ni se considera prueba exhaustiva de R10-05.
 
 **Dictamen actualizado:** QR-004 sigue **En curso / NOT READY** por las diferencias pendientes de Testing, la ausencia de revisión de Producción y los huecos dinámicos de R10-05. QR-003 permanece **P0/NO-GO** y QR-011 **P1/Bloqueada**.
+
+
+### Revisión remota de Producción de solo lectura — 2026-11-05
+
+Después de que el usuario reanudó el proyecto, Supabase informa `jawdrhewabqajxnswhkn` como `ACTIVE_HEALTHY` (PostgreSQL 17.11). Se compararon catálogos de Producción con Testing; no se leyeron filas de negocio y no se hicieron escrituras.
+
+**Diferencia de historial y esquema:** Producción registra 18 migraciones, Testing 27 y la rama local 29. Producción no tiene estas nueve migraciones ya presentes en Testing:
+
+- `20261011232050_distributed_report_export_rate_limit`
+- `20261012030630_scanner_branch_scope_and_legacy_rpc_lockdown`
+- `20261012050537_global_report_export_lease`
+- `20261012120000_employee_portal_self_service`
+- `20261012143000_company_user_access_management`
+- `20261018120000_persist_employee_pin_failures`
+- `20261028120000_share_company_invitations`
+- `20261030031019_scope_attendance_adjustment_branch`
+- `20261030220000_require_invitation_password_setup`
+
+Testing tampoco registra las dos migraciones de guardas de dispositivos de esta rama: `20261105044818_supervisor_device_request_revocation_guard` y `20261105172831_supervisor_device_request_authorization_lock`. Ninguna se aplicó desde esta revisión.
+
+**Comparación de catálogos:**
+
+| Catálogo | Producción | Testing |
+| --- | ---: | ---: |
+| Tablas públicas | 24 | 25 |
+| Tablas públicas con RLS | 24 | 25 |
+| Políticas públicas | 40 | 45 |
+| Funciones SECURITY DEFINER en `public/private` | 29 | 46 |
+
+La tabla `company_user_invitations` existe en Testing y no en Producción. En la comparación por nombre, Producción carece de ocho políticas de lectura propia para empleados presentes en Testing (empresa, sucursales, horarios, asignaciones y descansos). También conserva tres políticas directas de `INSERT/UPDATE/DELETE` sobre `company_memberships` que no aparecen en Testing. Sus expresiones requieren `company.manage`; un trigger impide reasignar identidad, protege la asignación de rol owner y conserva al último owner. Aun con esas salvaguardas, el acceso directo de membresías es una diferencia relevante que necesita revisión contra el modelo de autorización vigente; **no se probó un bypass** en Producción.
+
+La política de membresías, el grant de `anon SELECT` sobre `company_pay_period_rules` y la lista de privilegios para las funciones existentes se inspeccionaron como metadatos. No se observó ninguna función SECURITY DEFINER ejecutable por `anon` en ninguno de los dos entornos. Las huellas agregadas de expresiones RLS, grants anon y cuerpos/configuración/ACL de funciones SECURITY DEFINER difieren entre Producción y Testing. La huella por sí sola no identifica todas las diferencias de grants de otros roles.
+
+**Conclusión operativa:** la revisión de Producción sí fue posible y queda evidencia de un desfase material respecto a Testing y a esta rama. No se debe tratar Producción como paritaria ni desplegar allí el código actual sin una conciliación planificada del esquema y una revisión de compatibilidad/seguridad. El usuario no autorizó escrituras en esos proyectos, por lo que no se aplicaron migraciones ni se modificaron políticas, grants, datos o Auth. No se hicieron consultas de PIN, escaneo o asistencia.
+
+La configuración administrada de Auth no está expuesta por las herramientas de catálogo usadas; la paridad de esa configuración sigue sin validar. QR-004 se mantiene **En curso / NOT READY** hasta completar las comprobaciones dinámicas restantes de R10-05 y acordar la remediación de la deriva remota por un proceso autorizado. QR-003 sigue **P0/NO-GO** y QR-011 **P1/Bloqueada**.
