@@ -208,3 +208,11 @@ Cuatro cuerpos SECURITY DEFINER que ya se habían identificado por hash como dis
 **Producción** `jawdrhewabqajxnswhkn` se confirmó `INACTIVE`; por esa razón no fue posible leer su catálogo en esta sesión. No se infiere paridad con Testing ni con la rama local. No se aplicaron migraciones, no hubo DDL/DML ni cambios de configuración en ninguno de los dos proyectos.
 
 **Dictamen:** QR-004 permanece **En curso / NOT READY**. Aún faltan cobertura dinámica de otros métodos y carreras, comparación canónica completa de Testing (incluida Auth), y recuperación/revisión de Producción. QR-003 sigue **P0/NO-GO** y QR-011 **P1/Bloqueada**.
+
+### Corrección del rango de fechas de horas extra — 2026-11-05
+
+La revisión de `GET /api/schedules/overtime` encontró que el esquema solo comprobaba el formato `AAAA-MM-DD`; una fecha sintácticamente correcta pero imposible podía llegar a PostgREST y producir un error de consulta en vez de 400. El handler ahora comprueba también que la fecha sobreviva una conversión ISO UTC sin normalizarse a otro día. El runner HTTP/Auth incorpora `from=2026-02-30` y espera 400 antes de consultar datos.
+
+CI general del SHA funcional `71dce32b21023c357772e8b1021ef08808c82e4a` terminó SUCCESS ([run 42106689611](https://github.com/Diego19-hub/QR-asistencia/actions/runs/42106689611)): lint, typecheck, npm test, restauración local, reportes, matriz general, RPC, Fase 10, E2E y build. La prueba usa solo infraestructura y datos desechables; no toca Testing ni Producción. La matriz se actualiza con ese resultado en el commit documental siguiente.
+
+El hallazgo corrige un caso de entrada del endpoint, pero no cierra R10-05 ni cambia el estado de las diferencias remotas de Testing o la inaccesibilidad de Producción. QR-004 sigue **En curso / NOT READY**.
