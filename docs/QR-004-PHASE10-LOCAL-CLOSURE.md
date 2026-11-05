@@ -124,3 +124,50 @@ Testing: se confirmó el ref `llxyziffgtqnzlguxhyt`, estado `ACTIVE_HEALTHY`, y 
 Producción: ref `jawdrhewabqajxnswhkn`, `INACTIVE`; el listado de migraciones expiró por timeout y el listado de tablas no estuvo disponible. No se obtuvieron catálogos ni configuración Auth y no se infirió paridad. Estos límites impiden completar la revisión segregada requerida.
 
 El estado de pruebas HTTP/Auth final fue 148 aserciones (el resultado inicial 27 quedó sustituido), más 59/59 y 115/115 pgTAP, E2E 23/23, unitarias compatibles 67/67, lint, typecheck y build aislado PASS. `npm test` y matriz general no ejecutados por los escenarios PIN/scan/asistencia explícitamente excluidos. La evidencia ampliada cubre credenciales QR, supervisores y dispositivos seleccionados; R10-05 y las carreras no son exhaustivos. QR-004 permanece **En curso / NOT READY**; QR-003 **P0/NO-GO**; QR-011 **P1/Bloqueada**.
+
+## Revalidación de cierre y ciclo de dispositivos — 2026-11-05
+
+**Base local:** `fda78477193bb675bbfb67af8dddf3b646c546fa`, rama `audit/qr-004-final-local-closure`, inicialmente limpia. Cambios de esta actualización: migración aditiva `20261105044818_supervisor_device_request_revocation_guard.sql` y ampliación del modo `--authorization-races-only` del runner. No se modificaron workflows ni migraciones históricas.
+
+### Hallazgo y arreglo
+
+La ejecución comparativa sobre 27 migraciones reprodujo que quitar la asignación de sucursal dejaba una solicitud de dispositivo pendiente. Esa solicitud podía aprobarse después. La revisión encontró además que el helper `private.scanner_device` no comprobaba que la sucursal siguiera activa. La migración nueva aplica tres guardas: revoca/rechaza solicitudes según su estado al desasignar sucursal; al aprobar, bloquea y vuelve a verificar membresía, asignación y sucursal activa antes de bloquear/actualizar la solicitud; y excluye sucursales inactivas del contexto autorizado de escáner. No llama a las RPC de escaneo ni altera reglas de asistencia/PIN.
+
+El modo local amplió la carrera a un orden reproducible: bloqueo inicial de la solicitud, petición HTTP de desasignación puesta en cola, aprobación HTTP puesta después, observación de ambas esperas y liberación del lock. Resultado: desasignación HTTP 200, aprobación HTTP 409, solicitud rechazada, cero dispositivos creados y cero auditorías de aprobación; se conserva una auditoría de desasignación y no cambia la empresa sintética B. Un caso separado confirmó que un dispositivo previamente activado pierde contexto autorizado tras desactivar la sucursal. También se verificó que un rechazo deja snapshots sin cambios.
+
+### Matriz R10-05: alcance y límite
+
+El inventario estático sigue registrando **33 Route Handlers y 50 métodos** en `QR-004-PHASE10-RESIDUAL-GAPS.md`; sus 50 filas se cotejaron como inventario contra los handlers/exportaciones existentes. La cobertura dinámica de la rama no equivale a 50 pruebas completas: cubre operaciones seleccionadas de access, branches, employees, schedules/assignments, supervisors/devices y credenciales QR, más snapshots y casos tenant/rol/sucursal. La ampliación actual aporta casos de transición de asignación y autorización de dispositivo y una carrera adicional. No se probó cada método/filtro/rol, los 50 casos no están cubiertos con una matriz dinámica individual, y las carreras no se generalizaron a cada handler. `GET` de estado QR y operaciones PIN siguen excluidos; no se inventaron llamadas HTTP para Server Actions. R10-05 permanece **PARCIAL y bloquea el cierre**.
+
+### Validaciones ejecutadas en esta actualización
+
+Todos los runners usaron Supabase/Next locales y desechables, IDs de proyecto aleatorios y datos sintéticos; inventariaron los recursos Docker antes/después y sólo detuvieron/eliminaron su stack temporal. Se preservaron los contenedores, volúmenes y redes preexistentes. No se leyó `.env.local`, no hubo enlace remoto ni se leyó/modificó Testing o Producción durante estas pruebas locales.
+
+| Validación | Resultado | Nota |
+|---|---|---|
+| `npm run test:security:authorization-races:local` | **165 aserciones PASS** | Incluye revocación y carrera de aprobación de dispositivos; teardown PASS. |
+| `npm test` | **PASS** | Suites Node completadas; no ejecuta el escaneo sintético reservado a la matriz general. |
+| `npm run test:security:matrix:local` | **201/201 pgTAP + HTTP/Auth PASS** | Incluye el caso sintético de PIN válido y `scan_employee_attendance` sólo en la instancia local desechable; no se hicieron intentos erróneos. |
+| `npm run test:security:rpc-ci:local` | **115/115 PASS** | Suite restringida; cleanup PASS. |
+| `npm run test:security:phase10-residual:local` | **59/59 PASS** | Cleanup PASS. |
+| `npm run test:security:privileged-rpc:local` | **PASS** | Incluye suites privilegiadas y supervisor/dispositivo; cleanup PASS. |
+| `npm run test:e2e` | **23/23 PASS** | Se usó Chrome headless shell ya presente tras fallo inicial por falta del build Playwright esperado; no se descargó navegador. Las pruebas bloquean `/api/attendance/scan`. |
+| `npm run lint`, `npm run typecheck`, `node --check tests/qr004-auth-matrix.local.integration.mjs`, `git diff --check` | **PASS** |  |
+| Build aislado `npm run build` | **PASS** | Copia temporal sin `.env*`; aviso conocido por `node_modules` enlazado fuera del tracing root. |
+
+El CI previamente conocido, run [41967735921](https://github.com/Diego19-hub/QR-asistencia/actions/runs/41967735921), corresponde al SHA base `fda7847`, no a esta migración ni al runner ampliado. Por tanto, **no valida estos cambios**. `.github/workflows/ci.yml` fue revisado y no alterado. La ejecución general local sí pasó para este diff; publicar la rama activará CI, cuyo caso sintético de PIN válido sólo opera en el stack desechable.
+
+### Revisión remota, por entorno
+
+| Entorno | Evidencia read-only | Comparación y límites |
+|---|---|---|
+| Testing `llxyziffgtqnzlguxhyt` | Identidad `QR-asistencia-testing`, estado activo/saludable. 27 migraciones listadas. SELECT de catálogos, sin filas de negocio. | 46/46 funciones `SECURITY DEFINER` presentes frente al catálogo local; mismo owner (`postgres`) y grants `EXECUTE` anon/authenticated/service_role comparados, con cero `anon EXECUTE`. Las definiciones difieren en `private.scanner_device(uuid,text)`, `public.review_supervisor_device_request(uuid,uuid,boolean)` y `public.set_supervisor_branch(uuid,uuid,uuid,boolean)`, precisamente la migración nueva todavía local. 45 políticas permisivas observadas; 32 relaciones `public/private`, 30 con RLS, ninguna FORCE, y dos tablas privadas sin RLS. Grants directos de esas dos tablas no se observaron para anon/authenticated/service_role; esto no sustituye análisis de accesos indirectos. No se completó una comparación exhaustiva de todas las expresiones de políticas, grants de tablas/secuencias ni configuración Auth; el catálogo de Auth no está disponible desde la herramienta conectada. |
+| Producción `jawdrhewabqajxnswhkn` | Proyecto identificado como `QR-asistencia`, estado `INACTIVE`; consulta de migraciones agotó timeout y tablas/catálogos no estuvieron disponibles. | No se obtuvieron funciones, grants, políticas ni configuración Auth. No se infirió paridad con Testing. |
+
+No se ejecutaron escrituras remotas, migraciones, operaciones PIN, escaneo o asistencia, ni se habilitó/reanudó ningún proyecto. La revisión segregada requerida sigue **incompleta** por la indisponibilidad de Producción y las partes no accesibles de Auth/grants/políticas en Testing.
+
+### Dictamen
+
+**NOT READY para cerrar QR-004.** Se corrigió una brecha demostrable del ciclo de autorización de dispositivos en la rama y se añadieron pruebas deterministas; queda pendiente aplicar/revisar la migración en los entornos únicamente bajo autorización separada. R10-05 sigue parcial en las 50 operaciones; cobertura de otras carreras, filtros, operaciones y Server Actions no es exhaustiva. Producción no es verificable y Testing tiene brechas de comparación de catálogo/Auth. QR-004 permanece **En curso**; QR-003 **P0/NO-GO**; QR-011 **P1/Bloqueada**, dependiente de QR-003 y QR-004.
+
+Los cambios locales no se han publicado todavía. No hubo commit, push, nueva ejecución de GitHub Actions, PR, merge ni despliegue en esta actualización.

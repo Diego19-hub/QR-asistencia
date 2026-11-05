@@ -303,7 +303,7 @@ try {
   if (supervisorDeviceRlsOnly || privilegedRpcAuditOnly || phase9RpcOnly || rpcSecurityCiOnly || phase10ResidualOnly || authorizationRacesOnly) {
     const canonicalMigrations = execFileSync("git", ["ls-files", "-z", "supabase/migrations/*.sql"], { cwd: root, encoding: "utf8" })
       .split("\0").filter(Boolean);
-    assert.equal(canonicalMigrations.length, 27, "isolated RLS/RPC audit requires exactly 27 versioned canonical migrations");
+    assert.equal(canonicalMigrations.length, 28, "isolated RLS/RPC audit requires the 27 existing canonical migrations plus the reviewed device lifecycle migration");
     for (const migration of canonicalMigrations) {
       await cp(join(root, migration), join(workdir, migration));
     }
@@ -1001,6 +1001,112 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     verify.equal(response.status, 409, "repeated device revocation is rejected");
     verify.deepEqual(await adminApiSnapshot(companyA), revokedSnapshot, "repeated device revocation does not duplicate audit or state changes");
     process.stdout.write("PASS R10-05 supervisor/device HTTP/Auth: branch assignment, request approval, tenant/role/permission denials, revocation and no-side-effect snapshots\n");
+
+    const seedAssignedSupervisor = async (label) => {
+      const user = await createHttpUser(label, "supervisor", companyA);
+      const supervisor = await service.from("supervisors").insert({ company_id: companyA, membership_id: user.memberships[0].id });
+      const branch = await service.from("supervisor_branches").insert({ company_id: companyA, membership_id: user.memberships[0].id, branch_id: branchA });
+      if (supervisor.error || branch.error) throw new Error("failed preparing a synthetic assigned supervisor");
+      return user;
+    };
+    const pendingSupervisor = await seedAssignedSupervisor("r1005-pending-device-supervisor");
+    const pendingChallenge = randomBytes(32).toString("base64url");
+    const pendingRequest = await pendingSupervisor.client.rpc("request_supervisor_device", {
+      p_company_id: companyA, p_branch_id: branchA, p_label: "Synthetic pending before branch removal", p_challenge: pendingChallenge,
+    });
+    verify.ok(!pendingRequest.error && pendingRequest.data?.requestId, "synthetic supervisor creates a pending device request before branch removal");
+    response = await request("/api/supervisors?companyId=" + companyA, {
+      user: adminA, method: "PATCH", body: { membershipId: pendingSupervisor.memberships[0].id, branchId: branchA, assigned: false },
+    });
+    verify.equal(response.status, 200, "authorized administrator can remove the synthetic supervisor branch");
+    const pendingAfterUnassignment = await dbPool.query(`select r.status,r.reviewed_at is not null reviewed,
+      r.reviewed_by is not null reviewer_recorded,
+      (select count(*)::int from public.authorized_devices d where d.company_id=r.company_id and d.membership_id=r.membership_id) devices,
+      (select count(*)::int from public.audit_log a where a.company_id=r.company_id and a.entity_id=r.id and a.action='DEVICE_AUTHORIZATION_APPROVED') approvals
+      from private.device_authorization_requests r where r.id=$1`, [pendingRequest.data.requestId]);
+    verify.deepEqual(pendingAfterUnassignment.rows[0], { status: "rejected", reviewed: true, reviewer_recorded: true, devices: 0, approvals: 0 }, "branch removal rejects an unresolved request without creating an authorized device");
+    const afterPendingUnassignment = await adminApiSnapshot(companyA);
+    response = await request("/api/supervisor-devices?companyId=" + companyA, {
+      user: adminA, method: "PATCH", body: { requestId: pendingRequest.data.requestId, approve: true },
+    });
+    verify.equal(response.status, 409, "a request cannot be approved after its supervisor loses the branch assignment");
+    verify.deepEqual(await adminApiSnapshot(companyA), afterPendingUnassignment, "post-unassignment approval rejection has no device, request, or audit side effects");
+
+    const raceSupervisor = await seedAssignedSupervisor("r1005-device-revocation-race-supervisor");
+    const branchRaceChallenge = randomBytes(32).toString("base64url");
+    const branchRaceRequest = await raceSupervisor.client.rpc("request_supervisor_device", {
+      p_company_id: companyA, p_branch_id: branchA, p_label: "Synthetic controlled branch revocation race", p_challenge: branchRaceChallenge,
+    });
+    verify.ok(!branchRaceRequest.error && branchRaceRequest.data?.requestId, "race fixture has a pending synthetic device request");
+    const deviceRaceBlocker = await dbPool.connect();
+    let deviceRaceBlockerCommitted = false;
+    let deviceUnassignmentPromise;
+    let deviceApprovalPromise;
+    const waitForDeviceRaceRpc = async (fragment) => {
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        const waiting = await dbPool.query("select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and query ilike $1 limit 1", [`%${fragment}%`]);
+        if (waiting.rowCount) return;
+        await new Promise((resolveWait) => setTimeout(resolveWait, 40));
+      }
+      throw new Error(`timed out waiting for local ${fragment} authorization transaction`);
+    };
+    try {
+      await deviceRaceBlocker.query("begin");
+      await deviceRaceBlocker.query("select id from private.device_authorization_requests where id=$1 for update", [branchRaceRequest.data.requestId]);
+      deviceUnassignmentPromise = request("/api/supervisors?companyId=" + companyA, {
+        user: adminA, method: "PATCH", body: { membershipId: raceSupervisor.memberships[0].id, branchId: branchA, assigned: false },
+      });
+      await waitForDeviceRaceRpc("set_supervisor_branch");
+      deviceApprovalPromise = request("/api/supervisor-devices?companyId=" + companyA, {
+        user: adminA, method: "PATCH", body: { requestId: branchRaceRequest.data.requestId, approve: true },
+      });
+      await waitForDeviceRaceRpc("review_supervisor_device_request");
+      await deviceRaceBlocker.query("commit");
+      deviceRaceBlockerCommitted = true;
+      const [unassignmentResponse, approvalResponse] = await Promise.all([deviceUnassignmentPromise, deviceApprovalPromise]);
+      verify.equal(unassignmentResponse.status, 200, "queued branch unassignment completes successfully");
+      verify.equal(approvalResponse.status, 409, "queued device approval observes the committed branch revocation and fails closed");
+    } finally {
+      if (!deviceRaceBlockerCommitted) await deviceRaceBlocker.query("rollback").catch(() => {});
+      await Promise.allSettled([deviceUnassignmentPromise, deviceApprovalPromise].filter(Boolean));
+      deviceRaceBlocker.release();
+    }
+    const branchRaceState = await dbPool.query(`select r.status,
+      (select count(*)::int from public.authorized_devices d where d.company_id=r.company_id and d.membership_id=r.membership_id) devices,
+      (select count(*)::int from public.authorized_devices d where d.company_id=r.company_id and d.membership_id=r.membership_id and d.active) active_devices,
+      (select count(*)::int from public.audit_log a where a.company_id=r.company_id and a.entity_id=r.id and a.action='DEVICE_AUTHORIZATION_APPROVED') approvals,
+      (select count(*)::int from public.audit_log a where a.company_id=r.company_id and a.entity_id=r.membership_id and a.action='SUPERVISOR_BRANCH_UNASSIGNED') unassignments
+      from private.device_authorization_requests r where r.id=$1`, [branchRaceRequest.data.requestId]);
+    verify.deepEqual(branchRaceState.rows[0], { status: "rejected", devices: 0, active_devices: 0, approvals: 0, unassignments: 1 }, "serialized branch revocation wins against approval without device or approval audit side effects");
+    verify.deepEqual((await adminApiSnapshot(companyB)).device_requests, [], "the device revocation race does not create state in the other synthetic tenant");
+
+    const inactiveBranch = await service.from("branches").insert({ company_id: companyA, name: `R1005 inactive supervisor branch ${randomUUID()}`, timezone: "America/Mexico_City", active: true }).select("id").single();
+    if (inactiveBranch.error || !inactiveBranch.data?.id) throw new Error("failed preparing a second synthetic supervisor branch");
+    const inactiveBranchSupervisor = await createHttpUser("r1005-inactive-device-branch-supervisor", "supervisor", companyA);
+    const inactiveSupervisorRecord = await service.from("supervisors").insert({ company_id: companyA, membership_id: inactiveBranchSupervisor.memberships[0].id });
+    const inactiveAssignment = await service.from("supervisor_branches").insert({ company_id: companyA, membership_id: inactiveBranchSupervisor.memberships[0].id, branch_id: inactiveBranch.data.id });
+    if (inactiveSupervisorRecord.error || inactiveAssignment.error) throw new Error("failed assigning synthetic supervisor to the temporary branch");
+    const inactiveChallenge = randomBytes(32).toString("base64url");
+    const inactiveRequest = await inactiveBranchSupervisor.client.rpc("request_supervisor_device", {
+      p_company_id: companyA, p_branch_id: inactiveBranch.data.id, p_label: "Synthetic device for inactive branch guard", p_challenge: inactiveChallenge,
+    });
+    verify.ok(!inactiveRequest.error && inactiveRequest.data?.requestId, "supervisor can request a device before the assigned branch is deactivated");
+    response = await request("/api/supervisor-devices?companyId=" + companyA, {
+      user: adminA, method: "PATCH", body: { requestId: inactiveRequest.data.requestId, approve: true },
+    });
+    verify.equal(response.status, 200, "authorized administrator approves a device while its branch remains active");
+    const inactiveRedeem = await inactiveBranchSupervisor.client.rpc("redeem_supervisor_device", { p_company_id: companyA, p_challenge: inactiveChallenge });
+    verify.equal(inactiveRedeem.data?.status, "authorized", "synthetic device challenge is redeemed before branch deactivation");
+    const activeContext = await inactiveBranchSupervisor.client.rpc("get_supervisor_scanner_context", { p_company_id: companyA, p_device_token: inactiveChallenge });
+    verify.equal(activeContext.data?.authorized, true, "active branch and assigned device are authorized before deactivation");
+    const beforeInactiveBranchUpdateB = await adminApiSnapshot(companyB);
+    response = await request("/api/branches?companyId=" + companyA, { user: adminA, method: "PATCH", body: { id: inactiveBranch.data.id, active: false } });
+    verify.equal(response.status, 200, "authorized administrator deactivates the assigned synthetic branch");
+    const inactiveContext = await inactiveBranchSupervisor.client.rpc("get_supervisor_scanner_context", { p_company_id: companyA, p_device_token: inactiveChallenge });
+    verify.equal(inactiveContext.data?.authorized, false, "scanner context stops authorizing a device when its branch is inactive");
+    verify.deepEqual(await adminApiSnapshot(companyB), beforeInactiveBranchUpdateB, "branch deactivation and device context checks do not affect tenant B");
+    process.stdout.write("PASS supervisor device lifecycle: pending revocation, ordered approval race, inactive branch denial and cross-tenant snapshots; no scan/PIN/attendance call\n");
 
     // QR credential issuance/revocation is tested without reading PIN status or
     // invoking either PIN endpoint. Snapshots contain only QR hashes in memory.

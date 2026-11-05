@@ -86,6 +86,25 @@ No se hizo commit, push, PR, merge, workflow ni despliegue. La rama local y los 
 3. Priorizar pruebas locales de los restantes casos P1 no bloqueados y planificar auditorías read-only separadas de Testing y Producción con autorización específica.
 4. Mantener QR-004 En curso hasta cubrir los dominios críticos restantes y la revisión remota segregada; mantener QR-003 P0/NO-GO.
 
+## Revalidación de la rama de cierre — 2026-11-05
+
+Sobre la base `fda78477193bb675bbfb67af8dddf3b646c546fa` se reprodujo una carrera de aprobación de dispositivo tras desasignar la sucursal. El arreglo quedó en una migración aditiva local, `20261105044818_supervisor_device_request_revocation_guard.sql`; el runner `--authorization-races-only` ahora verifica revocación de solicitud pendiente, aprobación concurrente denegada, sucursal inactiva y snapshots tenant A/B. Resultado: **165 aserciones PASS**. El caso no llama a scan/PIN ni escribe sesiones/eventos de asistencia.
+
+| Validación | Resultado | Aislamiento |
+|---|---|---|
+| `npm test` | PASS | Suites Node locales. |
+| `npm run test:security:matrix:local` | PASS, **201/201 pgTAP** + HTTP/Auth | Supabase local desechable; incluye PIN válido sintético y `scan_employee_attendance` sólo en el stack local. |
+| `npm run test:security:authorization-races:local` | PASS, **165 aserciones** | Stack temporal; cleanup y conservación de recursos Docker preexistentes PASS. |
+| `npm run test:security:rpc-ci:local` | PASS, **115/115** | Modo restringido; cleanup PASS. |
+| `npm run test:security:phase10-residual:local` | PASS, **59/59** | Stack temporal; cleanup PASS. |
+| `npm run test:security:privileged-rpc:local` | PASS | Catálogo y suites locales privilegiadas/supervisor-dispositivo; cleanup PASS. |
+| `npm run test:e2e` | PASS, **23/23** | Chrome headless shell existente; no se descargó browser. El test bloquea `/api/attendance/scan`. |
+| Lint, typecheck, `node --check`, build aislado, `git diff --check` | PASS | Sin variables remotas; build en copia temporal sin `.env*`. |
+
+La primera E2E no encontró el build de Chromium esperado y no inició casos; se repitió con el Chrome headless shell ya instalado y pasó 23/23. El build aislado emitió el aviso conocido de archivos externos al tracing por `node_modules` enlazado, sin fallo de compilación.
+
+El run general de Actions `41967735921` corresponde al SHA base, no al diff de esta actualización. El workflow se inspeccionó y no se modificó; cualquier publicación requiere validar el nuevo SHA. No se consultó ni modificó Producción y no hubo escrituras remotas. QR-004 continúa **En curso / NOT READY** por cobertura R10-05 parcial, carreras no exhaustivas y revisión segregada incompleta; QR-003 permanece **P0/NO-GO** y QR-011 **P1/Bloqueada**.
+
 ## Consolidación de Fase 10.3 — revisión local
 
 ### Revisión de la suite y el runner
