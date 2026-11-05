@@ -3061,16 +3061,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       JSON.stringify({ name: "Tenant B", secret: "must-not-leak" }),
       JSON.stringify({ name: "Tenant B changed", secret: "must-not-leak" })],
   ];
-  const auditValues = [];
-  const auditPlaceholders = auditRows.map((row, index) => {
-    const start = index * 8;
-    auditValues.push(...row);
-    return `(${start + 1}::uuid,${start + 2}::uuid,${start + 3},${start + 4},${start + 5}::uuid,${start + 6}::timestamptz,${start + 7}::jsonb,${start + 8}::jsonb)`;
-  });
-  await dbPool.query(
-    `insert into public.audit_log(company_id,actor_user_id,action,entity_table,entity_id,occurred_at,before_data,after_data) values ${auditPlaceholders.join(",")}`,
-    auditValues,
-  );
+  const auditInsertSql = `insert into public.audit_log(company_id,actor_user_id,action,entity_table,entity_id,occurred_at,before_data,after_data) values ($1::uuid,$2::uuid,$3,$4,$5::uuid,$6::timestamptz,$7::jsonb,$8::jsonb)`;
+  for (const row of auditRows) await dbPool.query(auditInsertSql, row);
   response = await request(`/api/admin/audit?companyId=${companyA}&from=${auditProbeDate}&to=${auditProbeDate}&action=${auditProbeAction}&page=0&pageSize=1`, { user: adminA });
   assert.equal(response.status, 200);
   let auditPage = await response.json();
