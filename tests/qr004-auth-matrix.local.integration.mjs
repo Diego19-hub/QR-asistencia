@@ -21,8 +21,9 @@ const privilegedRpcAuditOnly = process.argv.includes("--privileged-rpc-audit-onl
 const phase9RpcOnly = process.argv.includes("--phase9-rpc-auth-only");
 const rpcSecurityCiOnly = process.argv.includes("--rpc-security-ci-only");
 const phase10ResidualOnly = process.argv.includes("--phase10-residual-only");
-const isolatedModes = [supervisorDeviceRlsOnly, privilegedRpcAuditOnly, phase9RpcOnly, rpcSecurityCiOnly, phase10ResidualOnly].filter(Boolean);
-assert.ok(isolatedModes.length <= 1 && !(isolatedModes.length && (e2eOnly || performanceOnly)), "isolated RLS/RPC modes cannot be combined with another mode");
+const authorizationRacesOnly = process.argv.includes("--authorization-races-only");
+const isolatedModes = [supervisorDeviceRlsOnly, privilegedRpcAuditOnly, phase9RpcOnly, rpcSecurityCiOnly, phase10ResidualOnly, authorizationRacesOnly].filter(Boolean);
+assert.ok(isolatedModes.length <= 1 && !(isolatedModes.length && (e2eOnly || performanceOnly)), "isolated security modes cannot be combined with another mode");
 const browserOnly = e2eOnly || performanceOnly;
 const performanceResultsFile = process.env.QR009_RESULTS_FILE ?? join(tmpdir(), `qr009-runtime-${Date.now()}.json`);
 const projectId = `qr004_disposable_${randomBytes(6).toString("hex")}`;
@@ -49,7 +50,7 @@ const suites = supervisorDeviceRlsOnly ? ["qr007_supervisor_device_rls_test.sql"
   : privilegedRpcAuditOnly ? ["qr004_privileged_rpc_authorization_test.sql", "qr007_supervisor_device_rls_test.sql"]
     : phase9RpcOnly ? ["qr004_phase9_rpc_authorization_test.sql"]
       : rpcSecurityCiOnly ? rpcSecurityCiSuites
-        : phase10ResidualOnly ? phase10ResidualSuites : generalSuites;
+        : phase10ResidualOnly ? phase10ResidualSuites : authorizationRacesOnly ? [] : generalSuites;
 const rpcSecurityCiExpected = new Map([
   ["qr007_supervisor_device_rls_test.sql", 27],
   ["qr004_privileged_rpc_authorization_test.sql", 26],
@@ -299,7 +300,7 @@ try {
   const workdir = join(temp, "project");
   await mkdir(join(workdir, "supabase", "migrations"), { recursive: true });
   await mkdir(join(workdir, "supabase", "tests"), { recursive: true });
-  if (supervisorDeviceRlsOnly || privilegedRpcAuditOnly || phase9RpcOnly || rpcSecurityCiOnly || phase10ResidualOnly) {
+  if (supervisorDeviceRlsOnly || privilegedRpcAuditOnly || phase9RpcOnly || rpcSecurityCiOnly || phase10ResidualOnly || authorizationRacesOnly) {
     const canonicalMigrations = execFileSync("git", ["ls-files", "-z", "supabase/migrations/*.sql"], { cwd: root, encoding: "utf8" })
       .split("\0").filter(Boolean);
     assert.equal(canonicalMigrations.length, 27, "isolated RLS/RPC audit requires exactly 27 versioned canonical migrations");
@@ -449,7 +450,7 @@ try {
   apiUrl = values.API_URL; anonKey = values.ANON_KEY; serviceKey = values.SERVICE_ROLE_KEY; dbUrl = values.DB_URL;
   localUrl(apiUrl, "Supabase API URL"); localUrl(dbUrl, "Supabase database URL");
   assert.ok(anonKey && serviceKey && anonKey !== serviceKey, "local Supabase keys are available in memory");
-  dbPool = new pg.Pool({ connectionString: dbUrl, max: 2 }); await dbPool.query("select 1");
+  dbPool = new pg.Pool({ connectionString: dbUrl, max: authorizationRacesOnly ? 4 : 2 }); await dbPool.query("select 1");
   service = createClient(apiUrl, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
   const mailpitReady = await fetch(new URL("/api/v1/messages?limit=1", mailpitUrl));
   assert.equal(mailpitReady.status, 200, "isolated local Mailpit API is reachable");
@@ -482,7 +483,7 @@ try {
   if (supervisorRecord.error) throw new Error(`failed creating synthetic supervisor record (${supervisorRecord.error.code ?? "unknown"})`);
   const assignedBranch = await service.from("supervisor_branches").insert({ company_id: companyA, membership_id: supervisorA.memberships[0].id, branch_id: branchA });
   if (assignedBranch.error) throw new Error(`failed preparing synthetic supervisor branch scope (${assignedBranch.error.code ?? "unknown"})`);
-  if (!browserOnly) {
+  if (!browserOnly && !authorizationRacesOnly) {
   const sessionNow = new Date();
   const sessionBase = { company_id: companyA, employee_id: employeeA.employeeId, local_work_date: sessionNow.toISOString().slice(0, 10), timezone: "America/Mexico_City", status: "closed", started_at: new Date(sessionNow.getTime() - 60_000).toISOString(), ended_at: sessionNow.toISOString(), scheduled_minutes: 480 };
   const sessionAResult = await service.from("attendance_sessions").insert({ ...sessionBase, branch_id: branchA }).select("id").single();
@@ -735,6 +736,456 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       process.stdout.write("PASS QR-009 performance-only preserved full local attendance snapshots; both tables remain empty\n");
     }
     process.stdout.write(`PASS ${performanceOnly ? "QR-009 performance" : "QR-005 browser"} tests used disposable Auth identities, loopback services, and temporary reports only\n`);
+  } else if (authorizationRacesOnly) {
+    // Targeted local-only R10-05 coverage: administrative access route guards,
+    // real Next Server Actions, and a row-lock-controlled revoke/accept race.
+    // This mode deliberately does not seed or touch attendance rows or PIN state.
+    let targetedAssertions = 0;
+    const verify = Object.fromEntries(["equal", "notEqual", "deepEqual", "ok"].map((method) => [method, (...args) => {
+      targetedAssertions += 1;
+      return assert[method](...args);
+    }]));
+    const accessSnapshot = async (membershipIds, companyId) => {
+      const memberships = await dbPool.query("select id,role,active from public.company_memberships where id=any($1::uuid[]) order by id", [membershipIds]);
+      const audit = await dbPool.query("select action,entity_id from public.audit_log where company_id=$1 and entity_id=any($2::uuid[]) order by action,entity_id", [companyId, membershipIds]);
+      return { memberships: memberships.rows, audit: audit.rows };
+    };
+    const adminApiSnapshot = async (companyId) => {
+      const result = await dbPool.query(`select jsonb_build_object(
+        'branches',(select coalesce(jsonb_agg(to_jsonb(t) order by t.id),'[]'::jsonb) from (select id,name,timezone,active from public.branches where company_id=$1) t),
+        'employees',(select coalesce(jsonb_agg(to_jsonb(t) order by t.id),'[]'::jsonb) from (select id,employee_number,first_name,last_name,branch_id,active from public.employees where company_id=$1) t),
+        'templates',(select coalesce(jsonb_agg(to_jsonb(t) order by t.id),'[]'::jsonb) from (select id,branch_id,name,active from public.schedule_templates where company_id=$1) t),
+        'days',(select coalesce(jsonb_agg(to_jsonb(t) order by t.id),'[]'::jsonb) from (select id,template_id,iso_weekday,start_local,end_local,scheduled_minutes from public.schedule_template_days where company_id=$1) t),
+        'breaks',(select coalesce(jsonb_agg(to_jsonb(t) order by t.id),'[]'::jsonb) from (select id,template_day_id,break_rule_id,planned_start_local,planned_end_local,planned_minutes from public.schedule_template_breaks where company_id=$1) t),
+        'assignments',(select coalesce(jsonb_agg(to_jsonb(t) order by t.id),'[]'::jsonb) from (select id,employee_id,template_id,branch_id,starts_on,ends_on from public.schedule_assignments where company_id=$1) t),
+        'supervisors',(select coalesce(jsonb_agg(to_jsonb(t) order by t.membership_id),'[]'::jsonb) from (select membership_id,employee_id from public.supervisors where company_id=$1) t),
+        'supervisor_branches',(select coalesce(jsonb_agg(to_jsonb(t) order by t.membership_id,t.branch_id),'[]'::jsonb) from (select membership_id,branch_id from public.supervisor_branches where company_id=$1) t),
+        'devices',(select coalesce(jsonb_agg(to_jsonb(t) order by t.id),'[]'::jsonb) from (select id,membership_id,branch_id,active,revoked_at from public.authorized_devices where company_id=$1) t),
+        'device_requests',(select coalesce(jsonb_agg(to_jsonb(t) order by t.id),'[]'::jsonb) from (select id,membership_id,branch_id,status,device_id,redeemed_at from private.device_authorization_requests where company_id=$1) t),
+        'audit',(select coalesce(jsonb_agg(jsonb_build_object('id',id,'action',action,'entity_table',entity_table,'entity_id',entity_id) order by id),'[]'::jsonb) from public.audit_log where company_id=$1)
+      ) state`, [companyId]);
+      return result.rows[0].state;
+    };
+    const targetB = await createHttpUser("r1005-foreign-target", "employee", companyB);
+    const targetA = await createHttpUser("r1005-authorized-target", "employee", companyA);
+    let response = await request(`/api/admin/access?companyId=${companyA}`);
+    verify.equal(response.status, 401, "anonymous admin access read is rejected");
+    response = await request(`/api/admin/access?companyId=${companyA}`, { user: supervisorA });
+    verify.equal(response.status, 403, "supervisor role cannot read administrative access data");
+    response = await request(`/api/admin/access?companyId=${companyB}`, { user: adminA });
+    verify.equal(response.status, 403, "company A administrator cannot query company B access data");
+    const foreignBefore = await accessSnapshot([targetB.memberships[0].id], companyB);
+    response = await request(`/api/admin/access?companyId=${companyA}`, {
+      user: adminA, method: "PATCH", body: { action: "deactivate", membershipId: targetB.memberships[0].id },
+    });
+    verify.equal(response.status, 404, "foreign membership identifier is not found in the selected tenant");
+    verify.deepEqual(await accessSnapshot([targetB.memberships[0].id], companyB), foreignBefore, "foreign-ID rejection leaves membership and audit unchanged");
+    const permissionDenied = await service.from("membership_permission_overrides").insert({
+      company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "company.manage", allowed: false,
+    });
+    verify.equal(permissionDenied.error, null, "local fixture explicitly revokes company.manage");
+    const deniedBefore = await accessSnapshot([targetA.memberships[0].id], companyA);
+    response = await request(`/api/admin/access?companyId=${companyA}`, {
+      user: adminA, method: "PATCH", body: { action: "deactivate", membershipId: targetA.memberships[0].id },
+    });
+    verify.equal(response.status, 403, "revoked company.manage rejects membership mutation");
+    verify.deepEqual(await accessSnapshot([targetA.memberships[0].id], companyA), deniedBefore, "permission rejection has no membership or audit side effects");
+    verify.equal((await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "company.manage")).error, null);
+    response = await request(`/api/admin/access?companyId=${companyA}`, {
+      user: ownerA, method: "PATCH", body: { action: "deactivate", membershipId: targetA.memberships[0].id },
+    });
+    verify.equal(response.status, 200, "authorized owner can deactivate a same-tenant synthetic member");
+    const authorizedAfter = await accessSnapshot([targetA.memberships[0].id], companyA);
+    verify.equal(authorizedAfter.memberships[0]?.active, false, "authorized change persisted to PostgreSQL");
+    verify.equal(authorizedAfter.audit.filter((row) => row.action === "USER_ACCESS_DEACTIVATED").length, 1, "authorized change writes one audit record");
+    process.stdout.write("PASS R10-05 admin access HTTP: anonymous/role/tenant/foreign-ID/permission denials, no-side-effect snapshots, authorized write and audit\n");
+
+    // HTTP/Auth matrix for branch, employee, and schedule APIs. These fixtures
+    // intentionally omit attendance sessions/events and never call scan/PIN.
+    let apiBeforeA = await adminApiSnapshot(companyA);
+    let apiBeforeB = await adminApiSnapshot(companyB);
+    response = await request(`/api/branches?companyId=${companyA}`);
+    verify.equal(response.status, 401, "anonymous branch listing is rejected");
+    response = await request(`/api/branches?companyId=${companyA}`, { user: supervisorA });
+    verify.equal(response.status, 403, "supervisor cannot access administration branch list");
+    response = await request(`/api/branches?companyId=${companyA}`, { user: adminA });
+    verify.equal(response.status, 200, "active administrator can list own branches");
+    const branchList = await response.json();
+    verify.equal(branchList.items.some((branch) => branch.id === branchB), false, "branch listing excludes another tenant");
+    const inactiveBranchInsert = await service.from("branches").insert({ company_id: companyA, name: `R1005 inactive branch ${randomUUID()}`, timezone: "America/Mexico_City", active: false }).select("id").single();
+    if (inactiveBranchInsert.error || !inactiveBranchInsert.data?.id) throw new Error("failed preparing an inactive synthetic branch");
+    const inactiveBranchId = inactiveBranchInsert.data.id;
+    apiBeforeA = await adminApiSnapshot(companyA);
+    apiBeforeB = await adminApiSnapshot(companyB);
+    response = await request(`/api/branches?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { id: branchB, active: false } });
+    verify.equal(response.status, 404, "administrator cannot update a foreign branch by identifier");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "foreign branch update leaves tenant A and audit unchanged");
+    verify.deepEqual(await adminApiSnapshot(companyB), apiBeforeB, "foreign branch update leaves tenant B and audit unchanged");
+    response = await request(`/api/branches?companyId=${companyA}`, { user: adminA, method: "POST", body: { name: `R1005 invalid timezone ${randomUUID()}`, timezone: "Not/A_Real_Zone" } });
+    verify.equal(response.status, 422, "invalid IANA timezone is rejected");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "invalid branch input has no database or audit side effects");
+    const branchPermission = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "company.manage", allowed: false });
+    if (branchPermission.error) throw new Error("failed preparing synthetic company.manage denial for branch APIs");
+    response = await request(`/api/branches?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { id: branchA, active: false } });
+    verify.equal(response.status, 403, "revoked company.manage blocks branch update");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "branch permission rejection has no data or audit side effects");
+    await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "company.manage");
+    response = await request(`/api/branches?companyId=${companyA}`, { user: adminA, method: "POST", body: { name: `R1005 branch ${randomUUID()}`, timezone: "America/Mexico_City" } });
+    verify.equal(response.status, 201, "authorized administrator can create a branch");
+    const createdBranch = (await response.json()).item;
+    verify.equal((await dbPool.query("select company_id from public.branches where id=$1", [createdBranch.id])).rows[0]?.company_id, companyA, "created branch persists only in authorized tenant");
+    response = await request(`/api/branches?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { id: createdBranch.id, active: false } });
+    verify.equal(response.status, 200, "authorized administrator can deactivate a same-tenant branch");
+    response = await request(`/api/branches?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { id: createdBranch.id, active: true } });
+    verify.equal(response.status, 200, "authorized administrator can reactivate a same-tenant branch");
+
+    response = await request(`/api/employees?companyId=${companyA}`);
+    verify.equal(response.status, 401, "anonymous employee listing is rejected");
+    response = await request(`/api/employees?companyId=${companyA}`, { user: supervisorA });
+    verify.equal(response.status, 403, "supervisor cannot read the administrative employee list");
+    response = await request(`/api/employees?companyId=${companyA}`, { user: adminA });
+    verify.equal(response.status, 200, "active administrator can list employees in own tenant");
+    const employeeList = await response.json();
+    verify.equal(employeeList.items.some((employee) => employee.id === employeeB.employeeId), false, "employee listing excludes another tenant");
+    response = await request(`/api/employees?companyId=${companyA}&branchId=${branchB}`, { user: adminA });
+    verify.equal(response.status, 403, "employee filter rejects a branch from another company");
+    response = await request(`/api/employees/${employeeB.employeeId}?companyId=${companyA}`, { user: adminA });
+    verify.equal(response.status, 404, "foreign employee ID is not disclosed");
+    apiBeforeA = await adminApiSnapshot(companyA);
+    apiBeforeB = await adminApiSnapshot(companyB);
+    response = await request(`/api/employees?companyId=${companyA}`, { user: adminA, method: "POST", body: { employee_number: `R1005-X-${randomUUID()}`, first_name: "Synthetic", last_name: "Foreign Branch", branch_id: branchB } });
+    verify.equal(response.status, 422, "employee creation rejects a foreign branch");
+    response = await request(`/api/employees?companyId=${companyA}`, { user: adminA, method: "POST", body: { employee_number: `R1005-I-${randomUUID()}`, first_name: "Synthetic", last_name: "Inactive Branch", branch_id: inactiveBranchId } });
+    verify.equal(response.status, 422, "employee creation rejects an inactive branch");
+    response = await request(`/api/employees/${employeeA.employeeId}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { branch_id: branchB } });
+    verify.equal(response.status, 422, "employee update rejects cross-company reassignment");
+    response = await request(`/api/employees/${employeeB.employeeId}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { first_name: "Rejected foreign edit" } });
+    verify.equal(response.status, 404, "foreign employee update is not found in selected tenant");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "rejected employee writes leave tenant A and audit unchanged");
+    verify.deepEqual(await adminApiSnapshot(companyB), apiBeforeB, "rejected employee writes leave tenant B and audit unchanged");
+    response = await request(`/api/employees?companyId=${companyA}`, { user: adminA, method: "POST", body: { employee_number: `R1005-OK-${randomUUID()}`, first_name: "Synthetic", last_name: "Allowed Employee", branch_id: branchA } });
+    verify.equal(response.status, 201, "authorized administrator can create a synthetic employee");
+    const createdEmployee = (await response.json()).item;
+    response = await request(`/api/employees/${createdEmployee.id}?companyId=${companyA}`, { user: adminA });
+    verify.equal(response.status, 200, "authorized administrator can read a same-tenant employee record");
+    response = await request(`/api/employees/${createdEmployee.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { first_name: "Synthetic Edited" } });
+    verify.equal(response.status, 200, "authorized administrator can edit a same-tenant employee");
+    verify.equal((await response.json()).item.first_name, "Synthetic Edited", "authorized employee update persists");
+
+    const scheduleDate = new Date().toISOString().slice(0, 10);
+    const schedulePayload = (branchId, name) => ({ branchId, name, kind: "fixed", workdayType: "day", entryToleranceMinutes: 5, effectiveFrom: scheduleDate, effectiveTo: null, revisionOf: null, days: [{ weekday: 1, start: "09:00", end: "17:00", breaks: [] }] });
+    response = await request(`/api/schedules?companyId=${companyA}`);
+    verify.equal(response.status, 401, "anonymous schedule listing is rejected");
+    response = await request(`/api/schedules?companyId=${companyA}`, { user: supervisorA });
+    verify.equal(response.status, 403, "supervisor role cannot access administrative schedules");
+    response = await request(`/api/schedules?companyId=${companyA}`, { user: adminA });
+    verify.equal(response.status, 200, "administrator can read own schedules");
+    verify.equal((await response.json()).items.some((template) => template.branch_id === branchB), false, "schedule listing excludes a foreign tenant");
+    apiBeforeA = await adminApiSnapshot(companyA);
+    apiBeforeB = await adminApiSnapshot(companyB);
+    response = await request(`/api/schedules?companyId=${companyA}`, { user: adminA, method: "POST", body: schedulePayload(branchB, `R1005 foreign ${randomUUID()}`) });
+    verify.equal(response.status, 422, "schedule creation rejects a foreign branch");
+    response = await request(`/api/schedules?companyId=${companyA}`, { user: adminA, method: "POST", body: schedulePayload(inactiveBranchId, `R1005 inactive ${randomUUID()}`) });
+    verify.equal(response.status, 422, "schedule creation rejects an inactive branch");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "invalid schedule creates no template, assignment, or audit side effect");
+    verify.deepEqual(await adminApiSnapshot(companyB), apiBeforeB, "cross-company schedule denial leaves tenant B unchanged");
+    const schedulePermission = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "schedules.manage", allowed: false });
+    if (schedulePermission.error) throw new Error("failed preparing synthetic schedules.manage denial");
+    response = await request(`/api/schedules?companyId=${companyA}`, { user: adminA, method: "POST", body: schedulePayload(branchA, `R1005 denied ${randomUUID()}`) });
+    verify.equal(response.status, 403, "explicit schedules.manage revocation rejects schedule creation");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "permission-denied schedule write leaves templates, assignments, and audit unchanged");
+    await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "schedules.manage");
+    response = await request(`/api/schedules?companyId=${companyA}`, { user: adminA, method: "POST", body: schedulePayload(branchA, `R1005 allowed ${randomUUID()}`) });
+    verify.equal(response.status, 201, "authorized administrator can create a schedule in an active own branch");
+    const createdSchedule = (await response.json()).item;
+    verify.equal((await dbPool.query("select company_id from public.schedule_templates where id=$1", [createdSchedule.id])).rows[0]?.company_id, companyA, "created schedule persists only in selected tenant");
+    response = await request(`/api/schedules/${createdSchedule.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { active: false } });
+    verify.equal(response.status, 200, "authorized administrator can change schedule status");
+    response = await request(`/api/schedules/${createdSchedule.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { active: true } });
+    verify.equal(response.status, 200, "authorized administrator can restore schedule status");
+    response = await request(`/api/schedules/${createdSchedule.id}?companyId=${companyB}`, { user: adminB, method: "PATCH", body: { active: false } });
+    verify.equal(response.status, 404, "schedule identifier cannot cross tenant boundary");
+    response = await request(`/api/schedules/assignments?companyId=${companyA}`, { user: adminA, method: "POST", body: { branchId: branchA, templateId: createdSchedule.id, employeeIds: [createdEmployee.id], startsOn: scheduleDate, endsOn: null } });
+    verify.equal(response.status, 201, "authorized administrator can assign a schedule to a same-tenant employee");
+    verify.equal((await response.json()).items.length, 1, "schedule assignment persists one authorized assignment");
+    apiBeforeA = await adminApiSnapshot(companyA);
+    apiBeforeB = await adminApiSnapshot(companyB);
+    response = await request(`/api/schedules/assignments?companyId=${companyA}`, { user: adminA, method: "POST", body: { branchId: branchB, templateId: createdSchedule.id, employeeIds: [employeeB.employeeId], startsOn: scheduleDate, endsOn: null } });
+    verify.equal(response.status, 422, "schedule assignment rejects foreign tenant branch and employee IDs");
+    response = await request(`/api/schedules/assignments?companyId=${companyA}&employeeId=${employeeB.employeeId}`, { user: adminA });
+    verify.equal(response.status, 200, "assignment lookup for foreign employee stays within selected tenant");
+    verify.deepEqual((await response.json()).items, [], "assignment lookup does not disclose foreign employee assignments");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "rejected assignment leaves tenant A and audit unchanged");
+    verify.deepEqual(await adminApiSnapshot(companyB), apiBeforeB, "rejected assignment leaves tenant B and audit unchanged");
+
+    // Supervisor assignments and device administration are exercised here in
+    // isolation from scanner context, attendance, PIN, and scan operations.
+    apiBeforeA = await adminApiSnapshot(companyA);
+    apiBeforeB = await adminApiSnapshot(companyB);
+    response = await request(`/api/supervisors?companyId=${companyA}`);
+    verify.equal(response.status, 401, "anonymous supervisor assignment listing is rejected");
+    response = await request(`/api/supervisors?companyId=${companyA}`, { user: employeeA });
+    verify.equal(response.status, 403, "employee cannot read supervisor assignment administration");
+    response = await request(`/api/supervisors?companyId=${companyA}`, { user: adminA });
+    verify.equal(response.status, 200, "same-company administrator can list supervisor assignments");
+    verify.equal(response.headers.get("cache-control"), "no-store");
+    const supervisorList = await response.json();
+    verify.equal(supervisorList.data.supervisors.some((item) => item.membershipId === supervisorB.memberships[0].id), false, "supervisor list does not disclose another tenant membership");
+    response = await request(`/api/supervisors?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { membershipId: supervisorA.memberships[0].id, branchId: branchB, assigned: true } });
+    verify.equal(response.status, 409, "supervisor cannot be assigned to a branch from another tenant");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "foreign-branch supervisor assignment rejection has no data or audit side effects");
+    verify.deepEqual(await adminApiSnapshot(companyB), apiBeforeB, "foreign-branch assignment rejection leaves target tenant unchanged");
+    const noDeviceManage = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "devices.manage", allowed: false });
+    if (noDeviceManage.error) throw new Error("failed preparing synthetic devices.manage denial");
+    response = await request(`/api/supervisors?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { membershipId: supervisorA.memberships[0].id, branchId: branchA, assigned: false } });
+    verify.equal(response.status, 403, "revoked devices.manage prevents supervisor branch mutation");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "permission-denied supervisor assignment has no side effects");
+    verify.equal((await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "devices.manage")).error, null);
+    response = await request(`/api/supervisors?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { membershipId: supervisorA.memberships[0].id, branchId: branchA, assigned: false } });
+    verify.equal(response.status, 200, "authorized administrator can unassign a supervisor branch");
+    verify.equal((await adminApiSnapshot(companyA)).supervisor_branches.some((row) => row.membership_id === supervisorA.memberships[0].id && row.branch_id === branchA), false, "supervisor branch unassignment persists");
+    response = await request(`/api/supervisors?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { membershipId: supervisorA.memberships[0].id, branchId: branchA, assigned: true } });
+    verify.equal(response.status, 200, "authorized administrator can restore a supervisor branch assignment");
+
+    const deviceChallenge = randomBytes(32).toString("base64url");
+    const deviceRequestResult = await supervisorA.client.rpc("request_supervisor_device", { p_company_id: companyA, p_branch_id: branchA, p_label: "Synthetic QR-004 targeted device", p_challenge: deviceChallenge });
+    verify.ok(!deviceRequestResult.error && deviceRequestResult.data?.requestId, "active synthetic supervisor can request a device through its RPC");
+    const deviceRequestId = deviceRequestResult.data.requestId;
+    apiBeforeA = await adminApiSnapshot(companyA);
+    apiBeforeB = await adminApiSnapshot(companyB);
+    response = await request(`/api/supervisor-devices?companyId=${companyA}`);
+    verify.equal(response.status, 401, "anonymous device administration read is rejected");
+    response = await request(`/api/supervisor-devices?companyId=${companyA}`, { user: supervisorA });
+    verify.equal(response.status, 403, "supervisor cannot administer device requests");
+    response = await request(`/api/supervisor-devices?companyId=${companyA}`, { user: adminA });
+    verify.equal(response.status, 200, "authorized administrator can read device requests and devices");
+    const deviceList = await response.json();
+    verify.equal(deviceList.requests.some((item) => item.id === deviceRequestId && item.status === "pending"), true, "device request is scoped to its company");
+    verify.equal(JSON.stringify(deviceList).includes(deviceChallenge), false, "device administration response does not expose the raw challenge");
+    const deniedDeviceManage = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "devices.manage", allowed: false });
+    if (deniedDeviceManage.error) throw new Error("failed preparing synthetic devices.manage denial for device review");
+    response = await request(`/api/supervisor-devices?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { requestId: deviceRequestId, approve: true } });
+    verify.equal(response.status, 403, "revoked devices.manage blocks approval");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "revoked device permission leaves request, devices and audit unchanged");
+    verify.equal((await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "devices.manage")).error, null);
+    response = await request(`/api/supervisor-devices?companyId=${companyA}`, { user: adminB, method: "PATCH", body: { requestId: deviceRequestId, approve: true } });
+    verify.equal(response.status, 403, "administrator in another tenant cannot select company A to approve its request");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "foreign request review leaves source tenant unchanged");
+    verify.deepEqual(await adminApiSnapshot(companyB), apiBeforeB, "foreign request review leaves actor tenant unchanged");
+    response = await request(`/api/supervisor-devices?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { requestId: "not-a-uuid", approve: true } });
+    verify.equal(response.status, 422, "malformed device review input is rejected");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "malformed device review has no side effects");
+    response = await request(`/api/supervisor-devices?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { requestId: deviceRequestId, approve: true } });
+    verify.equal(response.status, 200, "authorized administrator can approve a same-company device request");
+    const approvedDeviceId = (await response.json()).request.deviceId;
+    verify.ok(approvedDeviceId, "approved request creates an authorized device");
+    verify.equal((await adminApiSnapshot(companyA)).device_requests.find((item) => item.id === deviceRequestId)?.status, "approved", "approval transition persists");
+    const approvedSnapshot = await adminApiSnapshot(companyA);
+    response = await request(`/api/supervisor-devices/${approvedDeviceId}?companyId=${companyA}`, { user: supervisorA, method: "DELETE" });
+    verify.equal(response.status, 403, "supervisor role cannot revoke an authorized device");
+    verify.deepEqual(await adminApiSnapshot(companyA), approvedSnapshot, "role-denied revocation has no effects");
+    const revokePermission = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "devices.manage", allowed: false });
+    if (revokePermission.error) throw new Error("failed preparing synthetic devices.manage denial for device revoke");
+    response = await request(`/api/supervisor-devices/${approvedDeviceId}?companyId=${companyA}`, { user: adminA, method: "DELETE" });
+    verify.equal(response.status, 403, "revoked devices.manage blocks device revocation");
+    verify.deepEqual(await adminApiSnapshot(companyA), approvedSnapshot, "permission-denied device revocation has no effects");
+    verify.equal((await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "devices.manage")).error, null);
+    response = await request(`/api/supervisor-devices/${approvedDeviceId}?companyId=${companyB}`, { user: adminB, method: "DELETE" });
+    verify.equal(response.status, 409, "another tenant cannot revoke device by foreign ID");
+    verify.deepEqual(await adminApiSnapshot(companyA), approvedSnapshot, "foreign device revoke leaves source tenant unchanged");
+    response = await request(`/api/supervisor-devices/${approvedDeviceId}?companyId=${companyA}`, { user: adminA, method: "DELETE" });
+    verify.equal(response.status, 200, "authorized administrator can revoke a same-company device");
+    verify.equal((await adminApiSnapshot(companyA)).devices.find((device) => device.id === approvedDeviceId)?.active, false, "device revocation is persisted");
+    const revokedSnapshot = await adminApiSnapshot(companyA);
+    response = await request(`/api/supervisor-devices/${approvedDeviceId}?companyId=${companyA}`, { user: adminA, method: "DELETE" });
+    verify.equal(response.status, 409, "repeated device revocation is rejected");
+    verify.deepEqual(await adminApiSnapshot(companyA), revokedSnapshot, "repeated device revocation does not duplicate audit or state changes");
+    process.stdout.write("PASS R10-05 supervisor/device HTTP/Auth: branch assignment, request approval, tenant/role/permission denials, revocation and no-side-effect snapshots\n");
+
+    // QR credential issuance/revocation is tested without reading PIN status or
+    // invoking either PIN endpoint. Snapshots contain only QR hashes in memory.
+    const qrPath = `/api/employees/${employeeA.employeeId}/qr?companyId=${companyA}`;
+    const qrSnapshot = async () => {
+      const result = await dbPool.query(`select
+        (select coalesce(jsonb_agg(jsonb_build_object('employee_id',q.employee_id,'issued_at',q.issued_at,'revoked_at',q.revoked_at) order by q.employee_id),'[]'::jsonb) from private.employee_qr_tokens q where q.employee_id=any($1::uuid[])) qr,
+        (select coalesce(jsonb_agg(jsonb_build_object('action',a.action,'entity_id',a.entity_id) order by a.id),'[]'::jsonb) from public.audit_log a where a.company_id=$2 and a.entity_id=any($1::uuid[]) and a.entity_table='employees') audit`, [[employeeA.employeeId, employeeB.employeeId], companyA]);
+      return result.rows[0];
+    };
+    apiBeforeA = await adminApiSnapshot(companyA);
+    apiBeforeB = await adminApiSnapshot(companyB);
+    let qrBefore = await qrSnapshot();
+    response = await request(qrPath, { method: "POST", body: {} });
+    verify.equal(response.status, 401, "anonymous QR credential issuance is rejected");
+    response = await request(qrPath, { user: employeeA, method: "POST", body: {} });
+    verify.equal(response.status, 403, "employee cannot issue an administrative QR credential");
+    response = await request(`/api/employees/${employeeB.employeeId}/qr?companyId=${companyA}`, { user: adminA, method: "POST", body: {} });
+    verify.equal(response.status, 404, "administrator cannot issue a credential for another tenant employee");
+    verify.deepEqual(await qrSnapshot(), qrBefore, "rejected QR credential requests leave credential state and audit unchanged");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "rejected QR requests leave tenant A admin state unchanged");
+    verify.deepEqual(await adminApiSnapshot(companyB), apiBeforeB, "foreign QR request leaves tenant B unchanged");
+    const noEmployeeManageCredential = await service.from("membership_permission_overrides").insert({ company_id: companyA, membership_id: adminA.memberships[0].id, permission_code: "employees.manage", allowed: false });
+    if (noEmployeeManageCredential.error) throw new Error("failed preparing synthetic employees.manage denial for QR credential");
+    response = await request(qrPath, { user: adminA, method: "POST", body: {} });
+    verify.equal(response.status, 403, "revoked employees.manage blocks QR credential issuance");
+    verify.deepEqual(await qrSnapshot(), qrBefore, "permission-denied QR issuance has no token or audit side effects");
+    verify.equal((await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "employees.manage")).error, null);
+    response = await request(qrPath, { user: adminA, method: "POST", body: {} });
+    verify.equal(response.status, 200, "authorized administrator can issue a QR credential");
+    verify.equal(response.headers.get("cache-control"), "no-store, private");
+    const issuedQr = await response.json();
+    verify.equal(typeof issuedQr.token, "string", "raw QR token is returned to the authorized caller once");
+    verify.equal(JSON.stringify(issuedQr.credential).includes(issuedQr.token), false, "credential metadata does not repeat raw QR token");
+    const issuedQrHash = createHash("sha256").update(issuedQr.token).digest("hex");
+    verify.equal((await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash === issuedQrHash, true, "only the QR token hash is persisted");
+    const activeQrSnapshot = await qrSnapshot();
+    response = await request(qrPath, { user: adminA, method: "POST", body: {} });
+    verify.equal(response.status, 409, "duplicate QR issuance requires explicit replacement");
+    verify.deepEqual(await qrSnapshot(), activeQrSnapshot, "duplicate QR issuance has no state or audit effect");
+    response = await request(qrPath, { user: adminA, method: "POST", body: { replace: true } });
+    verify.equal(response.status, 200, "authorized explicit QR replacement succeeds");
+    const replacementQr = await response.json();
+    verify.notEqual(replacementQr.token, issuedQr.token, "replacement rotates the raw QR token");
+    const replacedHash = (await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash;
+    verify.equal(replacedHash === createHash("sha256").update(replacementQr.token).digest("hex"), true, "replacement persists only the new token hash");
+    verify.equal(replacedHash !== issuedQrHash, true, "previous raw token hash is invalidated by replacement");
+    response = await request(qrPath, { user: adminA, method: "DELETE" });
+    verify.equal(response.status, 200, "authorized administrator can revoke a QR credential");
+    verify.ok((await dbPool.query("select revoked_at from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.revoked_at, "QR revocation timestamp is persisted");
+    process.stdout.write("PASS QR-004 employee QR credentials HTTP/Auth: tenant/role/permission guards, one-time token hashing, rotation, revocation and snapshots; PIN endpoints untouched\n");
+
+    const inactiveApiAdmin = await createHttpUser("r1005-inactive-admin", "admin", companyA);
+    await service.from("company_memberships").update({ active: false }).eq("id", inactiveApiAdmin.memberships[0].id);
+    apiBeforeA = await adminApiSnapshot(companyA);
+    response = await request(`/api/branches?companyId=${companyA}`, { user: inactiveApiAdmin });
+    verify.equal(response.status, 403, "inactive membership cannot read branches");
+    response = await request(`/api/employees?companyId=${companyA}`, { user: inactiveApiAdmin });
+    verify.equal(response.status, 403, "inactive membership cannot read employees");
+    response = await request(`/api/schedules?companyId=${companyA}`, { user: inactiveApiAdmin });
+    verify.equal(response.status, 403, "inactive membership cannot read schedules");
+    verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "inactive-membership denials have no business-data or audit effects");
+    process.stdout.write("PASS R10-05 HTTP/Auth priority routes: branches, employees and schedules enforce tenant, role, active-branch and permission boundaries with snapshots\n");
+
+    actionBrowser = await launchServerActionBrowser(appUrl);
+    const actionRaceUser = await createHttpUser("r1005-action-multi-admin", "admin", companyA, { extraMemberships: [[companyB, "admin"]] });
+    await actionBrowser.navigate("/login");
+    await actionBrowser.runForm("form", { email: actionRaceUser.email, password: actionRaceUser.password });
+    await actionBrowser.waitForPath("/seleccionar-empresa");
+    await actionBrowser.navigate(`/qr004-action-harness?membershipId=${encodeURIComponent(actionRaceUser.memberships[1].id)}`);
+    await actionBrowser.runForm("#choose-membership");
+    await actionBrowser.waitForPath("/admin");
+    verify.equal((await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id")?.value, actionRaceUser.memberships[1].id, "real chooseMembership action selects caller-owned active tenant B membership");
+    await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(actionRaceUser.memberships[0].id)}`);
+    await actionBrowser.runForm("#set-admin-membership");
+    await actionBrowser.waitForActiveMembership(actionRaceUser.memberships[0].id);
+    verify.equal((await actionBrowser.fetchJson(`/api/company?companyId=${companyA}`)).status, 200, "authorized Server Action membership switch grants the expected tenant context");
+    response = await request(`/api/admin/access?companyId=${companyA}`, {
+      user: ownerA, method: "PATCH", body: { action: "change-role", membershipId: actionRaceUser.memberships[0].id, role: "supervisor" },
+    });
+    verify.equal(response.status, 200, "owner can change the synthetic account role while its Auth session remains active");
+    verify.equal((await actionBrowser.fetchJson(`/api/company?companyId=${companyA}`)).status, 403, "role change invalidates stale administrative authority despite the active-membership cookie");
+    await actionBrowser.navigate(`/qr004-action-harness?adminMembershipId=${encodeURIComponent(actionRaceUser.memberships[0].id)}`);
+    await actionBrowser.runForm("#set-admin-membership");
+    verify.equal((await actionBrowser.getCookies()).find((cookie) => cookie.name === "qr_active_membership_id")?.value, actionRaceUser.memberships[0].id, "setAdminMembership does not replace the stale cookie after its membership loses admin role");
+    verify.equal((await actionBrowser.fetchJson(`/api/company?companyId=${companyA}`)).status, 403, "failed admin membership action cannot restore privilege after role revocation");
+    await actionBrowser.navigate(`/qr004-action-harness?membershipId=${encodeURIComponent(actionRaceUser.memberships[0].id)}`);
+    await actionBrowser.runForm("#choose-membership");
+    await actionBrowser.waitForPath("/scanner");
+    verify.equal((await actionBrowser.fetchJson(`/api/company?companyId=${companyA}`)).status, 403, "choosing an active supervisor membership does not restore administrative API access");
+    process.stdout.write("PASS real Next Server Actions: tenant selection, role-change stale-cookie denial, role-correct destination and server reauthorization\n");
+
+    const raceEmail = `r1005-revocation-race-${randomUUID()}@qr-asistencia.invalid`;
+    const raceInvite = await adminA.client.rpc("create_company_user_invitation", { p_company_id: companyA, p_email: raceEmail, p_role: "employee", p_employee_id: null });
+    verify.equal(raceInvite.error, null, "synthetic invitation is created through the authenticated administrator RPC");
+    const raceRecipient = await createHttpIdentity(raceEmail);
+    await actionBrowser.close();
+    actionBrowser = await launchServerActionBrowser(appUrl);
+    await actionBrowser.navigate("/login");
+    await actionBrowser.runForm("form", { email: raceRecipient.email, password: raceRecipient.password });
+    await actionBrowser.waitForPath("/invitacion");
+    await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(raceInvite.data)}`);
+    const blocker = await dbPool.connect();
+    const revoker = await dbPool.connect();
+    let acceptPromise;
+    let revokePromise;
+    let blockerCommitted = false;
+    let revokerCommitted = false;
+    try {
+      await blocker.query("begin");
+      await blocker.query("select id from public.company_user_invitations where id=$1 for update", [raceInvite.data]);
+      await revoker.query("begin");
+      await revoker.query("set local role authenticated");
+      await revoker.query("select set_config('request.jwt.claim.sub',$1,true), set_config('request.jwt.claim.role','authenticated',true), set_config('request.jwt.claims',$2,true)", [adminA.userId, JSON.stringify({ role: "authenticated", sub: adminA.userId })]);
+      revokePromise = revoker.query("select public.revoke_company_user_invitation($1,$2) as revoked", [companyA, raceInvite.data]);
+      const waitForDatabaseLock = async (fragment) => {
+        const deadline = Date.now() + 15_000;
+        while (Date.now() < deadline) {
+          const waiting = await dbPool.query("select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and query ilike $1 limit 1", [`%${fragment}%`]);
+          if (waiting.rowCount) return;
+          await new Promise((resolveWait) => setTimeout(resolveWait, 40));
+        }
+        throw new Error(`timed out waiting for the local ${fragment} transaction to queue on the invitation row`);
+      };
+      await waitForDatabaseLock("revoke_company_user_invitation");
+      acceptPromise = actionBrowser.runForm("#accept-invitation");
+      await waitForDatabaseLock("accept_company_user_invitation");
+      await blocker.query("commit");
+      blockerCommitted = true;
+      const revoked = await revokePromise;
+      verify.equal(revoked.rows[0]?.revoked, true, "authenticated SQL revocation wins the queued row-lock race");
+      await revoker.query("commit");
+      revokerCommitted = true;
+      await acceptPromise;
+      await actionBrowser.waitForPath("error=expired");
+    } finally {
+      if (!blockerCommitted) await blocker.query("rollback").catch(() => {});
+      if (!revokerCommitted) await revoker.query("rollback").catch(() => {});
+      await Promise.allSettled([revokePromise, acceptPromise].filter(Boolean));
+      blocker.release();
+      revoker.release();
+    }
+    const raceState = await dbPool.query(`select i.status,
+      (select count(*)::int from public.company_memberships m where m.company_id=i.company_id and m.user_id=$2 and m.active) memberships,
+      (select count(*)::int from public.audit_log a where a.company_id=i.company_id and a.entity_id=i.id and a.action='USER_INVITATION_ACCEPTED') accept_audit,
+      (select count(*)::int from public.audit_log a where a.company_id=i.company_id and a.entity_id=i.id and a.action='USER_INVITATION_REVOKED') revoke_audit
+      from public.company_user_invitations i where i.id=$1`, [raceInvite.data, raceRecipient.userId]);
+    verify.deepEqual(raceState.rows[0], { status: "revoked", memberships: 0, accept_audit: 0, revoke_audit: 1 }, "revocation-before-acceptance is atomic: no membership or acceptance audit is written");
+    process.stdout.write("PASS real Server Action acceptance loses a controlled two-session PostgreSQL row-lock race to prior revocation; no membership/acceptance audit side effects\n");
+
+    const setupEmail = `r1005-password-action-${randomUUID()}@qr-asistencia.invalid`;
+    const setupIdentity = await createHttpIdentity(setupEmail);
+    await dbPool.query("update auth.users set invited_at=clock_timestamp() where id=$1", [setupIdentity.userId]);
+    const setupInvite = await adminA.client.rpc("create_company_user_invitation", { p_company_id: companyA, p_email: setupEmail, p_role: "employee", p_employee_id: null });
+    verify.equal(setupInvite.error, null);
+    await actionBrowser.close();
+    actionBrowser = await launchServerActionBrowser(appUrl);
+    await actionBrowser.navigate("/login");
+    await actionBrowser.runForm("form", { email: setupIdentity.email, password: setupIdentity.password });
+    await actionBrowser.waitForPath("/invitacion");
+    const preSetup = await dbPool.query("select status from public.company_user_invitations where id=$1", [setupInvite.data]);
+    await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(setupInvite.data)}`);
+    await actionBrowser.runForm("#accept-invitation");
+    await actionBrowser.waitForPath("error=password");
+    const rejectedSetup = await dbPool.query(`select i.status,
+      (select count(*)::int from public.company_memberships m where m.company_id=i.company_id and m.user_id=$2 and m.active) memberships,
+      (select count(*)::int from public.audit_log a where a.company_id=i.company_id and a.entity_id=i.id and a.action='USER_INVITATION_ACCEPTED') accept_audit
+      from public.company_user_invitations i where i.id=$1`, [setupInvite.data, setupIdentity.userId]);
+    verify.deepEqual(rejectedSetup.rows[0], { status: "pending", memberships: 0, accept_audit: 0 }, "acceptInvitation Server Action rejects before password setup without side effects");
+    await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(setupInvite.data)}`);
+    await actionBrowser.runForm("#set-invitation-password", { password: "synthetic-final-password-123", confirmation: "synthetic-final-password-123" });
+    await actionBrowser.waitForPath("password=updated");
+    const appSetup = await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [setupIdentity.userId]);
+    verify.ok(appSetup.rows[0].marker, "password Server Action persists its server-owned setup marker");
+    verify.deepEqual(preSetup.rows, [{ status: "pending" }], "password setup alone does not accept or mutate the invitation");
+    await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(setupInvite.data)}`);
+    await actionBrowser.runForm("#accept-invitation");
+    await actionBrowser.waitForPath("/mi-qr");
+    const completedSetup = await dbPool.query(`select i.status,
+      (select count(*)::int from public.company_memberships m where m.company_id=i.company_id and m.user_id=$2 and m.active) memberships,
+      (select count(*)::int from public.audit_log a where a.company_id=i.company_id and a.entity_id=i.id and a.action='USER_INVITATION_ACCEPTED') accept_audit
+      from public.company_user_invitations i where i.id=$1`, [setupInvite.data, setupIdentity.userId]);
+    verify.deepEqual(completedSetup.rows[0], { status: "accepted", memberships: 1, accept_audit: 1 }, "password setup followed by the real acceptance Server Action commits one membership and audit");
+    process.stdout.write("PASS setInvitationPassword then acceptInvitation actions preserve the setup gate and single-accept transaction\n");
+    process.stdout.write(`PASS targeted local authorization race mode: ${targetedAssertions} assertions; no attendance sessions/events, PIN verification, scan, remote links, or remote credentials\n`);
   } else {
 
   // Exercise real Server Actions through forms rendered and submitted by

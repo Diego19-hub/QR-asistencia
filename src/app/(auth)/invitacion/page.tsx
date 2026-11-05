@@ -13,25 +13,26 @@ export default async function InvitationPage({ searchParams }: { searchParams: P
   const { data, error } = await supabase.rpc("list_my_pending_company_invitations");
   if (error) redirect("/login?error=service");
   const invitations = Array.isArray(data) ? data as Array<{ id: string; companyId: string; companyName: string; role: string; email: string; expiresAt: string; shareLinkAvailable?: boolean }> : [];
-  if (!invitations.length) {
-    const { data: memberships } = await supabase.from("company_memberships").select("id,role").eq("user_id", auth.user.id).eq("active", true);
-    if (memberships?.length === 1) redirect(memberships[0].role === "owner" || memberships[0].role === "admin" ? "/admin" : memberships[0].role === "supervisor" ? "/scanner" : "/mi-qr");
-    if (memberships && memberships.length > 1) redirect("/seleccionar-empresa");
-    redirect("/login?error=no-company");
-  }
   const errors: Record<string, string> = {
     invalid: "La invitación no es válida.",
     forbidden: "La invitación ya no puede aceptarse. Contacta al administrador de la empresa.",
     expired: "La invitación venció o fue revocada. Solicita una nueva.",
     password: "La contraseña no cumple los requisitos o las dos entradas no coinciden.",
   };
+  const errorMessage = query.error ? errors[query.error] : undefined;
+  if (!invitations.length && !errorMessage) {
+    const { data: memberships } = await supabase.from("company_memberships").select("id,role").eq("user_id", auth.user.id).eq("active", true);
+    if (memberships?.length === 1) redirect(memberships[0].role === "owner" || memberships[0].role === "admin" ? "/admin" : memberships[0].role === "supervisor" ? "/scanner" : "/mi-qr");
+    if (memberships && memberships.length > 1) redirect("/seleccionar-empresa");
+    redirect("/login?error=no-company");
+  }
   const needsPasswordSetup = Boolean(auth.user.invited_at && !auth.user.app_metadata?.access_setup_completed_at);
   return <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-10">
     <section className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-900/5 sm:p-9">
       <p className="text-xs font-semibold uppercase tracking-[.15em] text-blue-700">Asistencia QR</p>
       <h1 className="mt-2 text-2xl font-bold text-slate-950">Invitaciones de acceso</h1>
       <p className="mt-2 text-sm leading-6 text-slate-600">Sesión iniciada como {auth.user.email}. Acepta únicamente una invitación destinada a tu cuenta.</p>
-      {query.error && errors[query.error] ? <p role="alert" className="mt-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{errors[query.error]}</p> : null}
+      {errorMessage ? <p role="alert" className="mt-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{errorMessage}</p> : null}
       {query.accepted ? <p role="status" className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">Invitación aceptada.</p> : null}
       {query.password === "updated" ? <p role="status" className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">Contraseña configurada. Ya puedes aceptar la invitación.</p> : null}
       {needsPasswordSetup ? <form action={setInvitationPassword} className="mt-6 space-y-3 rounded-xl border border-blue-100 bg-blue-50 p-4">
