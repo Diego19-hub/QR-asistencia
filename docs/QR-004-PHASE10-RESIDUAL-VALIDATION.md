@@ -173,3 +173,11 @@ La primera reproducción del POST de alta de dispositivo durante una transacció
 La revisión remota del 2026-11-05 se registra en `QR-004-PHASE10-RESIDUAL-GAPS.md`: Testing está activo pero no tiene registradas las dos migraciones locales de lifecycle de dispositivos; la definición leída de `request_supervisor_device` carece del lock recién probado. Producción está `INACTIVE` y los catálogos/migraciones dieron timeout/no accesible. No se comparó la configuración remota de Auth. La matriz de 50 métodos está en `QR-004-R10-05-METHOD-MATRIX.md`; las brechas por método siguen vigentes.
 
 El CI previo del SHA `4c8d2d57413df1c8840365951620781d7d8e899b` fue SUCCESS; no valida esta migración/diff. La autorización vigente permite publicar la rama para ejecutar el CI general, incluido el scan sintético con PIN válido solo en Supabase desechable local. QR-004 sigue **En curso / NOT READY**; QR-003 sigue **P0/NO-GO**, QR-011 **P1/Bloqueada**.
+
+### Validación incremental tras el SHA cfce669 — 2026-11-05
+
+La rama estaba limpia en `cfce6698897a3931a6de5d14c73b2daa29f1ba08`; el CI general #42088289847 para ese SHA terminó SUCCESS. La suite local enfocada (stack desechable) se repitió después de añadir la prueba de `DELETE /api/schedules/[id]` y pasó **194 aserciones**, incluyendo denegaciones anon/tenant/permiso, snapshots sin efectos laterales en dos empresas, borrado permitido de horario sintético y audit. Cleanup preservó el stack `codigo_QR` y contenedores/volúmenes previos. Las suites de catálogo actuales en instancia local fresca pasaron 26/26 y 27/27.
+
+La nueva evidencia no completa los 50 métodos × roles × filtros × concurrencia. Testing conserva 27 migraciones y diverge en cuatro funciones respecto a las 29 locales; Producción sigue `INACTIVE`. Un grant SELECT anon permanece en `company_pay_period_rules` aunque RLS y la única policy catalogada no habilitan filas a anon; no se leyeron filas. Auth administrado no verificable.
+
+Una llamada accidental a `npm test -- --help` inició las pruebas unitarias con salida suprimida, por lo que se registra sin resultado y no se cuenta. No hubo Testing/Producción write, PIN/scan/asistencia local, commit ni publicación en esta validación. QR-004 continúa **En curso / NOT READY**.

@@ -181,3 +181,17 @@ Validaciones actuales: modo de carreras **180 PASS**; matriz general **201/201 p
 La revisión remota read-only halló Testing activo con 27 migraciones, dos migraciones locales de dispositivos pendientes, 46 funciones SECURITY DEFINER, 45 políticas, RLS en 25/25 relaciones públicas y 5/7 privadas, cero funciones definer ejecutables por anon y un `SELECT` sobrante de anon en `company_pay_period_rules` sin política visible para ese rol. No pudo verificarse configuración Auth administrada ni cada grant/cuerpo de función contra una instancia local de referencia. Production `jawdrhewabqajxnswhkn` sigue `INACTIVE`; migraciones y catálogo no accesibles. No se infiere paridad.
 
 La matriz por método (33 rutas/50 métodos) está en [QR-004-R10-05-METHOD-MATRIX.md](QR-004-R10-05-METHOD-MATRIX.md). La evidencia por método es parcial; siguen faltando escenarios/filtros/carreras para operaciones y Server Actions, y casos QR/PIN/asistencia están fuera de alcance. **Dictamen NOT READY**: QR-004 En curso, QR-003 P0/NO-GO, QR-011 P1/Bloqueada.
+
+### Continuación del cierre — revisión del SHA cfce669 (2026-11-05)
+
+CI #42088289847 para `cfce6698897a3931a6de5d14c73b2daa29f1ba08` terminó SUCCESS; `verify` pasó instalación, lint, typecheck, npm test, reportes, matriz general, RPC, Fase 10, E2E y build. La matriz general incluye el scan con PIN válido sintético autorizado exclusivamente en stack efímero CI.
+
+El runner local `--authorization-races-only` pasó **194 aserciones**. Además de la cobertura de carreras HTTP/Auth documentada antes, se probó `DELETE /api/schedules/[id]` con rechazo anónimo, administrador de otra empresa y permiso `schedules.manage` revocado, snapshots A/B sin cambios, eliminación autorizada de una plantilla sintética sin referencias y audit confirmado. Cleanup retiró el proyecto desechable y preservó recursos Docker existentes. El modo no creó asistencia ni invocó PIN/scan. La suite local de catálogo ejecutó 26+27 pgTAP aserciones y pasó.
+
+Testing, en lectura de catálogos, tiene 27 migraciones mientras la rama contiene 29. De 46 funciones `SECURITY DEFINER`, cuatro hashes de cuerpo difieren: `private.scanner_device`, `public.request_supervisor_device`, `public.review_supervisor_device_request` y `public.set_supervisor_branch`; owner, `search_path` y privilegios EXECUTE efectivos coinciden. Las diferencias corresponden a cambios locales de dispositivo que no están registrados en el historial remoto. La consulta devolvió 45 políticas RLS, pero no se produjo una comparación de todos los predicados/grants con un catálogo local actual. Auth administrado no estuvo disponible. `company_pay_period_rules` tiene un grant SELECT para anon, RLS activa, una política únicamente para authenticated y cero política permisiva para anon; no se consultaron filas. El grant es innecesario según ese catálogo y necesita decisión/cambio separado.
+
+Producción se confirmó `INACTIVE`; migraciones, funciones, grants, políticas y Auth no pudieron comprobarse. No se infiere paridad. No hubo escritura o cambio de configuración remoto.
+
+Nota de validación: una invocación accidental de `npm test -- --help` ejecutó el chain local con salida suprimida; no es un resultado utilizable ni cuenta como PASS.
+
+**Dictamen:** **NOT READY**. R10-05 mantiene huecos por operación/filtro/carrera; falta comparar completamente RLS/grants/Auth de Testing y la revisión de Producción está bloqueada. QR-004 permanece En curso, QR-003 P0/NO-GO y QR-011 P1/Bloqueada.
