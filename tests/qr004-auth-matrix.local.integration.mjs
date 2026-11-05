@@ -2463,7 +2463,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     await actionBrowser.waitForPath("error=no-company");
     await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(invitationId)}`);
     await actionBrowser.runForm("#accept-invitation");
-    await actionBrowser.waitForPath("error=no-company");
+    await actionBrowser.waitForPath("error=expired", `${state} invitation action must show a safe unavailable-invitation denial`);
+    assert.match(await actionBrowser.bodyText(), /La invitación venció o fue revocada\. Solicita una nueva\./, `${state} invitation displays the safe denial message`);
     assert.deepEqual(await snapshot(companyA), beforeRejectedState, `${state} Server Action rejection preserves invitation, membership and audit snapshots`);
     assert.equal((await dbPool.query("select count(*)::int n from public.company_memberships where company_id=$1 and user_id=$2", [companyA, identity.userId])).rows[0].n, 0, `${state} invitation cannot create membership`);
   }
