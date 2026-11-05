@@ -155,7 +155,7 @@ Todos los runners usaron Supabase/Next locales y desechables, IDs de proyecto al
 | `npm run lint`, `npm run typecheck`, `node --check tests/qr004-auth-matrix.local.integration.mjs`, `git diff --check` | **PASS** |  |
 | Build aislado `npm run build` | **PASS** | Copia temporal sin `.env*`; aviso conocido por `node_modules` enlazado fuera del tracing root. |
 
-El CI previamente conocido, run [41967735921](https://github.com/Diego19-hub/QR-asistencia/actions/runs/41967735921), corresponde al SHA base `fda7847`, no a esta migración ni al runner ampliado. Por tanto, **no valida estos cambios**. `.github/workflows/ci.yml` fue revisado y no alterado. La ejecución general local sí pasó para este diff; publicar la rama activará CI, cuyo caso sintético de PIN válido sólo opera en el stack desechable.
+El run anterior [41967735921](https://github.com/Diego19-hub/QR-asistencia/actions/runs/41967735921) corresponde al SHA base `fda7847` y no valida esta migración. Después de publicar el commit `8bde1c74a527739522c68f63daac89044ff2964a` en la misma rama, el run [41972450750](https://github.com/Diego19-hub/QR-asistencia/actions/runs/41972450750) terminó **SUCCESS**. Pasaron instalación, lint, typecheck, `npm test`, restauración sintética, lease de reportes, matriz general, regresiones RPC, Fase 10, E2E y build. `.github/workflows/ci.yml` se revisó y no se modificó; el PIN válido de la matriz se ejecutó únicamente en Supabase local desechable.
 
 ### Revisión remota, por entorno
 
@@ -170,4 +170,4 @@ No se ejecutaron escrituras remotas, migraciones, operaciones PIN, escaneo o asi
 
 **NOT READY para cerrar QR-004.** Se corrigió una brecha demostrable del ciclo de autorización de dispositivos en la rama y se añadieron pruebas deterministas; queda pendiente aplicar/revisar la migración en los entornos únicamente bajo autorización separada. R10-05 sigue parcial en las 50 operaciones; cobertura de otras carreras, filtros, operaciones y Server Actions no es exhaustiva. Producción no es verificable y Testing tiene brechas de comparación de catálogo/Auth. QR-004 permanece **En curso**; QR-003 **P0/NO-GO**; QR-011 **P1/Bloqueada**, dependiente de QR-003 y QR-004.
 
-Los cambios locales no se han publicado todavía. No hubo commit, push, nueva ejecución de GitHub Actions, PR, merge ni despliegue en esta actualización.
+Los cambios se publicaron en la rama existente con commit `8bde1c74a527739522c68f63daac89044ff2964a`; el árbol quedó limpio y el run asociado terminó SUCCESS. No se abrió PR, no hubo merge ni despliegue. Testing y Producción no recibieron escrituras.

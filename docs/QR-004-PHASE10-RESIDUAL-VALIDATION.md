@@ -103,7 +103,7 @@ Sobre la base `fda78477193bb675bbfb67af8dddf3b646c546fa` se reprodujo una carrer
 
 La primera E2E no encontró el build de Chromium esperado y no inició casos; se repitió con el Chrome headless shell ya instalado y pasó 23/23. El build aislado emitió el aviso conocido de archivos externos al tracing por `node_modules` enlazado, sin fallo de compilación.
 
-El run general de Actions `41967735921` corresponde al SHA base, no al diff de esta actualización. El workflow se inspeccionó y no se modificó; cualquier publicación requiere validar el nuevo SHA. No se consultó ni modificó Producción y no hubo escrituras remotas. QR-004 continúa **En curso / NOT READY** por cobertura R10-05 parcial, carreras no exhaustivas y revisión segregada incompleta; QR-003 permanece **P0/NO-GO** y QR-011 **P1/Bloqueada**.
+El run `41967735921` corresponde al SHA base. Tras publicar en la misma rama el commit `8bde1c74a527739522c68f63daac89044ff2964a`, GitHub Actions run [41972450750](https://github.com/Diego19-hub/QR-asistencia/actions/runs/41972450750) terminó **SUCCESS**. Sus pasos `npm ci`, lint, typecheck, `npm test`, restore, reports lease, matriz general, RPC restringida, Fase 10, E2E y build completaron exitosamente. La matriz mantuvo su caso de PIN válido sintético sólo en el stack local desechable. El workflow no fue modificado. No se consultó ni modificó Producción y no hubo escrituras remotas. QR-004 continúa **En curso / NOT READY** por cobertura R10-05 parcial, carreras no exhaustivas y revisión segregada incompleta; QR-003 permanece **P0/NO-GO** y QR-011 **P1/Bloqueada**.
 
 ## Consolidación de Fase 10.3 — revisión local
 
