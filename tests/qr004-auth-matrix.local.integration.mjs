@@ -2415,7 +2415,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   await actionBrowser.waitForPath("/admin");
   await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(actionInviteId)}`);
   await actionBrowser.runForm("#accept-invitation");
-  await actionBrowser.waitForPath("/admin");
+  await actionBrowser.waitForPath("error=expired", "wrong authenticated identity must receive the safe invitation denial");
+  assert.match(await actionBrowser.bodyText(), /La invitación venció o fue revocada\. Solicita una nueva\./, "wrong identity sees a safe invitation denial message");
   assert.deepEqual(await snapshot(companyA), beforeWrongActionAcceptance, "another authenticated identity cannot accept an invite or create audit/membership side effects");
   await actionBrowser.clickButtonText("Cerrar sesión");
   await actionBrowser.waitForPath("/login");
