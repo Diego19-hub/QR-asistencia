@@ -2206,6 +2206,35 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const calendar = await response.json();
   assert.equal(calendar.weekStart, weekStart);
   assert.ok(calendar.days.some((day) => day.rows.some((row) => row.employee.id === employeeA.employeeId && row.assignment?.templateName === templateA.name)));
+  assert.equal(response.headers.get("cache-control"), "no-store", "schedule calendar responses are not cached");
+  assert.equal(calendar.days.flatMap((day) => day.rows).some((row) => row.employee.id === employeeB.employeeId), false, "calendar does not disclose another tenant's employees");
+  assert.ok(calendar.branches.every((branch) => branch.active), "calendar branch metadata excludes inactive branches");
+
+  const calendarQuery = (companyId, start = weekStart, selectedBranch = branchA) =>
+    `/api/schedules/calendar?companyId=${companyId}&weekStart=${start}${selectedBranch ? `&branchId=${selectedBranch}` : ""}`;
+  const beforeCalendarDenialsA = await snapshot(companyA), beforeCalendarDenialsB = await snapshot(companyB);
+  response = await request(calendarQuery(companyA)); assert.equal(response.status, 401, "anonymous calendar request is denied");
+  response = await request(calendarQuery(companyA), { user: employeeA }); assert.equal(response.status, 403, "employee cannot read admin schedule calendar");
+  response = await request(calendarQuery(companyA), { user: supervisorA }); assert.equal(response.status, 403, "supervisor without admin schedule scope is denied");
+  response = await request(calendarQuery(companyA), { user: adminB }); assert.ok([403, 404].includes(response.status), "another tenant's admin cannot read tenant A calendar");
+  response = await request(calendarQuery(companyA, weekStart, branchB), { user: adminA });
+  assert.equal(response.status, 200, "foreign branch filter is safely scoped to the selected tenant");
+  const foreignBranchCalendar = await response.json();
+  assert.ok(foreignBranchCalendar.days.every((day) => day.rows.length === 0), "foreign branch filter returns no schedule rows");
+  assert.ok(foreignBranchCalendar.branches.every((branch) => branch.id !== branchB), "foreign branch metadata is not disclosed");
+  response = await request(calendarQuery(companyA, weekStart, inactiveBranchA), { user: adminA });
+  assert.equal(response.status, 200, "inactive branch filter is safely scoped");
+  const inactiveBranchCalendar = await response.json();
+  assert.ok(inactiveBranchCalendar.days.every((day) => day.rows.length === 0), "inactive branch filter returns no schedule rows");
+  assert.ok(inactiveBranchCalendar.branches.every((branch) => branch.id !== inactiveBranchA), "inactive branch metadata is excluded");
+  response = await request(calendarQuery(companyA, "2026-02-30", branchA), { user: adminA }); assert.equal(response.status, 400, "impossible calendar date is rejected");
+  const nonMonday = new Date(`${weekStart}T00:00:00.000Z`);
+  nonMonday.setUTCDate(nonMonday.getUTCDate() + 1);
+  response = await request(calendarQuery(companyA, nonMonday.toISOString().slice(0, 10), branchA), { user: adminA }); assert.equal(response.status, 400, "calendar week must start on Monday");
+  response = await request(calendarQuery(companyA, weekStart, "not-a-uuid"), { user: adminA }); assert.equal(response.status, 400, "malformed branch filter is rejected");
+  assert.deepEqual(await snapshot(companyA), beforeCalendarDenialsA, "calendar denials and non-matching filters do not mutate tenant A");
+  assert.deepEqual(await snapshot(companyB), beforeCalendarDenialsB, "calendar denials and non-matching filters do not mutate tenant B");
+
   const inactiveAdmin = await createHttpUser("inactive-admin", "admin", companyA);
   await service.from("company_memberships").update({ active: false }).eq("id", inactiveAdmin.memberships[0].id);
   const beforeInactiveAdmin = await snapshot(companyA);
