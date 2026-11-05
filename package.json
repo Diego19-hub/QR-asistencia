@@ -25,6 +25,8 @@
     "test:security:matrix:local": "node tests/qr004-auth-matrix.local.integration.mjs",
     "test:security:supervisor-devices:local": "node tests/qr004-auth-matrix.local.integration.mjs --supervisor-device-rls-only",
     "test:security:privileged-rpc:local": "node tests/qr004-auth-matrix.local.integration.mjs --privileged-rpc-audit-only",
+    "test:security:phase9-rpc:local": "node tests/qr004-auth-matrix.local.integration.mjs --phase9-rpc-auth-only",
+    "test:security:rpc-ci:local": "node tests/qr004-auth-matrix.local.integration.mjs --rpc-security-ci-only",
     "test:e2e": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only",
     "test:e2e:local": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only",
     "test:e2e:ui": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only --ui",

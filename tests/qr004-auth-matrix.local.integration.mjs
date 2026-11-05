@@ -18,8 +18,10 @@ const e2eOnly = process.argv.includes("--e2e-only");
 const performanceOnly = process.argv.includes("--performance-only");
 const supervisorDeviceRlsOnly = process.argv.includes("--supervisor-device-rls-only");
 const privilegedRpcAuditOnly = process.argv.includes("--privileged-rpc-audit-only");
-assert.ok(!(supervisorDeviceRlsOnly && (e2eOnly || performanceOnly || privilegedRpcAuditOnly)), "supervisor/device RLS-only mode cannot be combined with another mode");
-assert.ok(!(privilegedRpcAuditOnly && (e2eOnly || performanceOnly)), "privileged RPC audit-only mode cannot be combined with browser modes");
+const phase9RpcOnly = process.argv.includes("--phase9-rpc-auth-only");
+const rpcSecurityCiOnly = process.argv.includes("--rpc-security-ci-only");
+const isolatedModes = [supervisorDeviceRlsOnly, privilegedRpcAuditOnly, phase9RpcOnly, rpcSecurityCiOnly].filter(Boolean);
+assert.ok(isolatedModes.length <= 1 && !(isolatedModes.length && (e2eOnly || performanceOnly)), "isolated RLS/RPC modes cannot be combined with another mode");
 const browserOnly = e2eOnly || performanceOnly;
 const performanceResultsFile = process.env.QR009_RESULTS_FILE ?? join(tmpdir(), `qr009-runtime-${Date.now()}.json`);
 const projectId = `qr004_disposable_${randomBytes(6).toString("hex")}`;
@@ -36,8 +38,20 @@ const generalSuites = [
   "qr004_scanner_authorization_test.sql",
   "schedule_integrity_test.sql",
 ];
+const rpcSecurityCiSuites = [
+  "qr007_supervisor_device_rls_test.sql",
+  "qr004_privileged_rpc_authorization_test.sql",
+  "qr004_phase9_rpc_authorization_test.sql",
+];
 const suites = supervisorDeviceRlsOnly ? ["qr007_supervisor_device_rls_test.sql"]
-  : privilegedRpcAuditOnly ? ["qr004_privileged_rpc_authorization_test.sql", "qr007_supervisor_device_rls_test.sql"] : generalSuites;
+  : privilegedRpcAuditOnly ? ["qr004_privileged_rpc_authorization_test.sql", "qr007_supervisor_device_rls_test.sql"]
+    : phase9RpcOnly ? ["qr004_phase9_rpc_authorization_test.sql"]
+      : rpcSecurityCiOnly ? rpcSecurityCiSuites : generalSuites;
+const rpcSecurityCiExpected = new Map([
+  ["qr007_supervisor_device_rls_test.sql", 27],
+  ["qr004_privileged_rpc_authorization_test.sql", 26],
+  ["qr004_phase9_rpc_authorization_test.sql", 62],
+]);
 let temp;
 let startAttempted = false;
 let appServer, actionBrowser, dbPool, service, apiUrl, anonKey, serviceKey, dbUrl, appUrl, mailpitUrl, appOutput = "";
@@ -60,7 +74,7 @@ function safeCli(args, timeout = 900_000) {
       .replace(/sb_(?:publishable|secret)_[A-Za-z0-9_-]+/gi, "[supabase-key]")
       .replace(/(?:SUPABASE_SERVICE_ROLE_KEY|NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY|ANON_KEY|SERVICE_ROLE_KEY)\s*=\s*[^\s,]+/gi, "[credential-assignment]")
       .replace(/(?:service_role|anon|publishable)[=: ]+[A-Za-z0-9_.-]{24,}/gi, "[credential]")
-      .split(/\r?\n/).filter(Boolean).slice(-8).join(" | ").slice(0, 1000);
+      .split(/\r?\n/).filter(Boolean).slice(-30).join(" | ").slice(0, 4000);
     throw new Error(`isolated local Supabase command failed (${args.slice(0, 3).join(" ")}): ${detail || "no diagnostic"}`);
   }
 }
@@ -282,7 +296,7 @@ try {
   const workdir = join(temp, "project");
   await mkdir(join(workdir, "supabase", "migrations"), { recursive: true });
   await mkdir(join(workdir, "supabase", "tests"), { recursive: true });
-  if (supervisorDeviceRlsOnly || privilegedRpcAuditOnly) {
+  if (supervisorDeviceRlsOnly || privilegedRpcAuditOnly || phase9RpcOnly || rpcSecurityCiOnly) {
     const canonicalMigrations = execFileSync("git", ["ls-files", "-z", "supabase/migrations/*.sql"], { cwd: root, encoding: "utf8" })
       .split("\0").filter(Boolean);
     assert.equal(canonicalMigrations.length, 27, "isolated RLS/RPC audit requires exactly 27 versioned canonical migrations");
@@ -316,18 +330,34 @@ try {
   // A failed `start` may still have created some project containers. Always
   // attempt the scoped stop after invoking start, including partial failures.
   startAttempted = true;
-  safeCli(["start", "--exclude", privilegedRpcAuditOnly ? auditOnlyExcluded : excluded]);
+  safeCli(["start", "--exclude", privilegedRpcAuditOnly || phase9RpcOnly || rpcSecurityCiOnly ? auditOnlyExcluded : excluded]);
   safeCli(["db", "reset", "--local"]);
   process.stdout.write("PASS fresh disposable database with repository migrations applied locally\n");
+  let rpcSecurityCiTotal = 0;
   for (const suite of browserOnly ? [] : suites) {
     const output = safeCli(["test", "db", "--local", `supabase/tests/${suite}`]);
     const sql = await readFile(join(workdir, "supabase/tests", suite), "utf8");
     const plan = Number(sql.match(/select\s+plan\s*\(\s*(\d+)\s*\)/i)?.[1]);
     assert.ok(Number.isInteger(plan) && plan > 0, `${suite} must declare a pgTAP plan`);
+    if (rpcSecurityCiOnly) {
+      assert.match(sql, /^BEGIN\s*;/im, `${suite} must start an isolated fixture transaction`);
+      assert.match(sql, /^ROLLBACK\s*;/im, `${suite} must roll back its synthetic fixtures`);
+      const tapOkCount = [...output.matchAll(/^\s*ok\s+\d+(?:\s+-.*)?$/gim)].length;
+      const summaryCount = output.match(/\bTests=(\d+)\b/i)?.[1]
+        ?? output.match(/\bAll\s+(\d+)\s+tests?\s+passed\b/i)?.[1];
+      const observedCount = tapOkCount || (summaryCount ? Number(summaryCount) : null);
+      assert.equal(plan, rpcSecurityCiExpected.get(suite), `${suite} declares the expected pgTAP count`);
+      assert.equal(observedCount, plan, `${suite} must report every passing pgTAP assertion`);
+      rpcSecurityCiTotal += observedCount;
+    }
     const summary = output.match(/\bAll\s+(\d+)\s+tests?\s+passed\b/i)?.[0]
       ?? output.split(/\r?\n/).filter((line) => /tests? passed|Looks like you failed/i.test(line)).slice(-1)[0]
       ?? `${plan} pgTAP assertions passed (CLI exited successfully)`;
     process.stdout.write(`PASS ${suite}: ${summary}\n`);
+  }
+  if (rpcSecurityCiOnly) {
+    assert.deepEqual(suites, rpcSecurityCiSuites, "unified RPC CI mode runs only the three approved suites in order");
+    assert.equal(rpcSecurityCiTotal, 115, "unified RPC CI mode must pass exactly 115 pgTAP assertions");
   }
 
   if (supervisorDeviceRlsOnly) {
@@ -385,6 +415,10 @@ try {
     process.stdout.write(`PRIVILEGED_RPC_CATALOG_COUNT=${rows.length}\n`);
     process.stdout.write(`PRIVILEGED_RPC_CATALOG_JSON=${JSON.stringify(summary)}\n`);
     process.stdout.write("PASS effective SECURITY DEFINER catalog read from disposable local PostgreSQL only; no HTTP Auth, scan, PIN, or attendance flow started\n");
+  } else if (phase9RpcOnly) {
+    process.stdout.write("PASS isolated Phase 9.1 RPC authorization suite only; no HTTP Auth, QR processing, PIN verification, scan, or attendance flow started\n");
+  } else if (rpcSecurityCiOnly) {
+    process.stdout.write("PASS isolated RPC security CI suite: 27 + 26 + 62 = 115 pgTAP assertions; no HTTP Auth, Next.js, QR processing, PIN, scan, or attendance flow started\n");
   } else {
 
   // Exercise the same API and Server Component guards used by the app. The
