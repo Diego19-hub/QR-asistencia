@@ -3043,6 +3043,52 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/admin/audit?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
   response = await request(`/api/admin/audit?companyId=${companyB}`, { user: adminA }); assert.equal(response.status, 403);
   response = await request(`/api/admin/audit?companyId=${companyA}&from=not-a-date`, { user: adminA }); assert.equal(response.status, 400);
+  response = await request(`/api/admin/audit?companyId=${companyA}&from=2026-11-06&to=2026-11-05`, { user: adminA }); assert.equal(response.status, 400);
+  response = await request(`/api/admin/audit?companyId=${companyA}&action=not%20a%20valid%20action`, { user: adminA }); assert.equal(response.status, 400);
+
+  // Deterministic local fixtures exercise the action/date filters, tenant scope,
+  // safe changed-field projection, and clamped pagination without touching a
+  // hosted database. The whole stack is disposable and removed by this runner.
+  const auditProbeAction = `QR004_FILTER_${randomUUID().replaceAll("-", "")}`;
+  const auditProbeDate = new Date().toISOString().slice(0, 10);
+  const auditProbeTimestamp = `${auditProbeDate}T12:00:00.000Z`;
+  const auditAIds = Array.from({ length: 11 }, () => randomUUID());
+  const auditRows = [
+    ...auditAIds.map((entityId) => [companyA, adminA.userId, auditProbeAction, "qr004_test", entityId, auditProbeTimestamp,
+      JSON.stringify({ name: "Old synthetic value", secret: "must-not-leak" }),
+      JSON.stringify({ name: "New synthetic value", secret: "must-not-leak" })]),
+    [companyB, adminB.userId, auditProbeAction, "qr004_test", randomUUID(), auditProbeTimestamp,
+      JSON.stringify({ name: "Tenant B", secret: "must-not-leak" }),
+      JSON.stringify({ name: "Tenant B changed", secret: "must-not-leak" })],
+  ];
+  const auditValues = [];
+  const auditPlaceholders = auditRows.map((row, index) => {
+    const start = index * 8;
+    auditValues.push(...row);
+    return `(${start + 1}::uuid,${start + 2}::uuid,${start + 3},${start + 4},${start + 5}::uuid,${start + 6}::timestamptz,${start + 7}::jsonb,${start + 8}::jsonb)`;
+  });
+  await dbPool.query(
+    `insert into public.audit_log(company_id,actor_user_id,action,entity_table,entity_id,occurred_at,before_data,after_data) values ${auditPlaceholders.join(",")}`,
+    auditValues,
+  );
+  response = await request(`/api/admin/audit?companyId=${companyA}&from=${auditProbeDate}&to=${auditProbeDate}&action=${auditProbeAction}&page=0&pageSize=1`, { user: adminA });
+  assert.equal(response.status, 200);
+  let auditPage = await response.json();
+  assert.equal(auditPage.pagination.page, 1, "audit page clamps to the first page");
+  assert.equal(auditPage.pagination.pageSize, 10, "audit page size clamps to the minimum");
+  assert.equal(auditPage.pagination.total, 11, "audit filters and RLS exclude the matching tenant B fixture");
+  assert.equal(auditPage.pagination.pages, 2);
+  assert.equal(auditPage.items.length, 10);
+  assert.ok(auditPage.items.every((item) => auditAIds.includes(item.entity_id)));
+  assert.ok(auditPage.items.every((item) => !("before_data" in item) && !("after_data" in item)));
+  assert.ok(auditPage.items.every((item) => item.changedFields.length === 1 && item.changedFields[0] === "Nombre"));
+  response = await request(`/api/admin/audit?companyId=${companyA}&from=${auditProbeDate}&to=${auditProbeDate}&action=${auditProbeAction}&page=2&pageSize=10`, { user: adminA });
+  assert.equal(response.status, 200);
+  auditPage = await response.json();
+  assert.equal(auditPage.pagination.page, 2);
+  assert.equal(auditPage.pagination.total, 11);
+  assert.equal(auditPage.items.length, 1);
+  assert.ok(auditAIds.includes(auditPage.items[0].entity_id));
   response = await request(`/api/admin/permissions?companyId=${companyA}`, { user: supervisorA }); assert.equal(response.status, 403);
   response = await request(`/api/admin/permissions?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
   const catalog = await response.json(); assert.ok(Array.isArray(catalog.permissions) && Array.isArray(catalog.rolePermissions));
