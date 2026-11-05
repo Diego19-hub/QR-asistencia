@@ -271,3 +271,15 @@ La política de membresías, el grant de `anon SELECT` sobre `company_pay_period
 **Conclusión operativa:** la revisión de Producción sí fue posible y queda evidencia de un desfase material respecto a Testing y a esta rama. No se debe tratar Producción como paritaria ni desplegar allí el código actual sin una conciliación planificada del esquema y una revisión de compatibilidad/seguridad. El usuario no autorizó escrituras en esos proyectos, por lo que no se aplicaron migraciones ni se modificaron políticas, grants, datos o Auth. No se hicieron consultas de PIN, escaneo o asistencia.
 
 La configuración administrada de Auth no está expuesta por las herramientas de catálogo usadas; la paridad de esa configuración sigue sin validar. QR-004 se mantiene **En curso / NOT READY** hasta completar las comprobaciones dinámicas restantes de R10-05 y acordar la remediación de la deriva remota por un proceso autorizado. QR-003 sigue **P0/NO-GO** y QR-011 **P1/Bloqueada**.
+
+
+### Asesores de seguridad Supabase — Testing y Producción (2026-11-05)
+
+Se consultó el asesor de seguridad en ambos proyectos, sin cambios remotos.
+
+- Ambos reportan `auth_leaked_password_protection` como `WARN`: la protección contra contraseñas filtradas está desactivada. No se modificó Auth; debe revisarse como endurecimiento de configuración en la lista de preparación operativa.
+- Testing reporta 6 tablas RLS sin políticas: cinco tablas del esquema privado más `public.company_user_invitations`. Producción reporta únicamente las tres tablas privadas que ya existen allí. La ausencia de políticas en las tablas privadas puede ser deliberada si el acceso depende de funciones privilegiadas; la tabla pública de invitaciones tiene RLS y los grants directos se revocan en la migración canónica. El aviso del asesor no demuestra exposición de filas.
+- El asesor lista 33 RPC SECURITY DEFINER ejecutables por `authenticated` en Testing y 17 en Producción. Ese aviso describe superficie callable; no prueba autorización insuficiente. No se deben revocar en bloque: las RPC son interfaces previstas y la autorización debe revisarse por cuerpo, contrato y pruebas.
+- No se recibieron avisos del asesor que confirmen acceso de `anon` a esas RPC. La revisión de grants anterior encontró cero SECURITY DEFINER ejecutables por `anon` en ambos proyectos.
+
+El asesor no revela la configuración completa de Auth (por ejemplo, todos los ajustes de registro, confirmación de correo, MFA y protección de sesión). Esa comparación sigue pendiente. No se hicieron pruebas de inicio de sesión, PIN, escaneo o asistencia en proyectos remotos.
