@@ -1997,6 +1997,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const overtimeB = await response.json();
   assert.equal(overtimeB.items.some((item) => item.session_id === dashboardAClosed.sessionId), false, "company B overtime response excludes company A sessions");
   response = await request(`/api/schedules/overtime?from=not-a-date&to=${rulesToday}&companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 400);
+  response = await request(`/api/schedules/overtime?from=2026-02-30&to=${rulesToday}&companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 400, "calendar-invalid date is rejected before querying Postgres");
   response = await request(`/api/schedules/overtime?from=${rulesToday}&to=2020-01-01&companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 400);
 
   const beforeOvertimeApproval = await snapshot(companyA);
