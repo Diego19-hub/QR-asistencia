@@ -1,5 +1,20 @@
 # QR-004 — Auditoría de seguridad multiempresa
 
+## Revalidación R10-05 y carrera de dispositivo (2026-11-05)
+
+La rama local `audit/qr-004-final-local-closure` añade cobertura por método en [QR-004-R10-05-METHOD-MATRIX.md](QR-004-R10-05-METHOD-MATRIX.md). El inventario estático confirma 33 Route Handlers/50 métodos, pero la cobertura dinámica sigue parcial; no se considera cierre solo por revisar el código.
+
+Se reprodujo en Supabase local desechable que `POST /api/supervisor/device-requests` podía autorizarse contra el estado comprometido anterior durante una transacción de desactivación, después de que la transacción ya hubiera limpiado las solicitudes existentes. Se agregó la migración aditiva `20261105172831_supervisor_device_request_authorization_lock.sql`, con locks `FOR SHARE` de membership, asignación de sucursal y sucursal activa durante la autorización. Las pruebas HTTP/Auth sincronizan un POST real de Auth local con tres cambios concurrentes (desactivar membership, cambiar el rol de supervisor a empleado, retirar la asignación de sucursal). En cada caso el POST espera el lock, devuelve 403 después del commit, no deja una solicitud/auditoría de alta y no altera empresa B. El flujo de aprobación conserva la validación existente. Clasificación P1 por el estado/auditoría obsoletos observados; no se demostró acceso operativo al escáner.
+
+Validaciones del diff local: carreras 180 aserciones, matriz general 201 pgTAP + HTTP/Auth, RPC 115/115, Fase 10 59/59, E2E 23/23, `npm test` PASS (1 GnuPG omitida por socket del agente), lint/typecheck/build aislado/diff-check PASS. La matriz general ejecutó su PIN válido solo en infraestructura local sintética autorizada. Los runners confirmaron teardown y preservación Docker; no hubo accesos de escritura remotos.
+
+### Evidencia remota segregada, solo lectura
+
+- Testing `llxyziffgtqnzlguxhyt`: `ACTIVE_HEALTHY`; lista 27 migraciones hasta `20261030220000`. No figuran las dos migraciones locales `20261105044818_supervisor_device_request_revocation_guard` y `20261105172831_supervisor_device_request_authorization_lock`. Se consultó la definición de `public.request_supervisor_device`: el cuerpo remoto no contiene locks de autorización; hash MD5 `c8e6da2d54c6e86cd91d7990d09768d2`, `search_path` vacío, EXECUTE para `authenticated`, `postgres` y `service_role`. Catálogos: 46 funciones definer, 45 políticas; todas las 25 tablas public con RLS; 5 de 7 tablas private con RLS; cero funciones definer ejecutables por `anon`. Políticas actuales de dispositivos/supervisores usan `authenticated` y helpers de permisos. Existe GRANT SELECT a `anon` para `company_pay_period_rules` pero RLS está activa y su política visible solo aplica a authenticated; no se observó acceso de filas para anon. Configuración Auth administrada y comparación de cada cuerpo/grant remoto no se pudo completar con las herramientas disponibles.
+- Producción `jawdrhewabqajxnswhkn`: `INACTIVE`. El listado de migraciones dio timeout y una consulta catalog-only informó que la base no está accesible. No se obtuvieron funciones, grants, políticas ni Auth. No se infiere paridad con Testing.
+
+**Estado:** QR-004 permanece **En curso / NOT READY**. R10-05 no está completa; la nueva migración no está aplicada en Testing y Producción no puede revisarse. QR-003 se mantiene P0/NO-GO, QR-011 P1/Bloqueada. La evidencia previa y límites se conservan en los documentos de Fase 10.
+
 Fecha: 30 de octubre de 2026<br>
 Base de trabajo: `f48a189a92cbff7d0a822a05a3fcc242469cf2f2` (`main`, PR #17 integrado); esta actualización registra pruebas dinámicas locales de Server Actions y sesiones en `test/qr-004-server-actions-session-matrix`.
 

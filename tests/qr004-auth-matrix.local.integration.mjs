@@ -303,7 +303,10 @@ try {
   if (supervisorDeviceRlsOnly || privilegedRpcAuditOnly || phase9RpcOnly || rpcSecurityCiOnly || phase10ResidualOnly || authorizationRacesOnly) {
     const canonicalMigrations = execFileSync("git", ["ls-files", "-z", "supabase/migrations/*.sql"], { cwd: root, encoding: "utf8" })
       .split("\0").filter(Boolean);
-    assert.equal(canonicalMigrations.length, 28, "isolated RLS/RPC audit requires the 27 existing canonical migrations plus the reviewed device lifecycle migration");
+    const pendingReviewedMigration = "supabase/migrations/20261105172831_supervisor_device_request_authorization_lock.sql";
+    if (!canonicalMigrations.includes(pendingReviewedMigration)) canonicalMigrations.push(pendingReviewedMigration);
+    canonicalMigrations.sort();
+    assert.equal(canonicalMigrations.length, 29, "isolated RLS/RPC audit requires 27 canonical migrations plus the two reviewed supervisor device lifecycle migrations");
     for (const migration of canonicalMigrations) {
       await cp(join(root, migration), join(workdir, migration));
     }
@@ -1009,6 +1012,139 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       if (supervisor.error || branch.error) throw new Error("failed preparing a synthetic assigned supervisor");
       return user;
     };
+    const membershipRequestRaceSupervisor = await seedAssignedSupervisor("r1005-membership-device-request-race-supervisor");
+    const membershipRequestRaceTx = await dbPool.connect();
+    let membershipRequestRaceCommitted = false;
+    let membershipRequestRacePromise;
+    try {
+      await membershipRequestRaceTx.query("begin");
+      await membershipRequestRaceTx.query("set local role authenticated");
+      await membershipRequestRaceTx.query("select set_config('request.jwt.claim.role','authenticated',true)");
+      await membershipRequestRaceTx.query("select set_config('request.jwt.claim.sub',$1,true)", [adminA.userId]);
+      await membershipRequestRaceTx.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({ role: "authenticated", sub: adminA.userId })]);
+      const deactivation = await membershipRequestRaceTx.query("select public.deactivate_company_membership($1,$2) changed", [companyA, membershipRequestRaceSupervisor.memberships[0].id]);
+      verify.equal(deactivation.rows[0]?.changed, true, "synthetic administrator begins membership revocation before request race");
+      membershipRequestRacePromise = request("/api/supervisor/device-requests", {
+        user: membershipRequestRaceSupervisor, method: "POST", body: { companyId: companyA, branchId: branchA, label: "Synthetic request during revocation" },
+      });
+      const requestWaitsOnRevocation = async () => {
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const waiting = await dbPool.query("select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and query ilike '%request_supervisor_device%' limit 1");
+          if (waiting.rowCount) return true;
+          await new Promise((resolveWait) => setTimeout(resolveWait, 40));
+        }
+        return false;
+      };
+      const lockWait = await Promise.race([requestWaitsOnRevocation(), membershipRequestRacePromise.then(() => false)]);
+      verify.equal(lockWait, true, "device request waits on its authorization rows during in-flight membership revocation");
+      await membershipRequestRaceTx.query("commit");
+      membershipRequestRaceCommitted = true;
+      const deniedRequest = await membershipRequestRacePromise;
+      verify.equal(deniedRequest.status, 403, "device enrollment is denied after membership revocation commits");
+    } finally {
+      if (!membershipRequestRaceCommitted) await membershipRequestRaceTx.query("rollback").catch(() => {});
+      await Promise.allSettled([membershipRequestRacePromise].filter(Boolean));
+      membershipRequestRaceTx.release();
+    }
+    const membershipRequestRaceState = await dbPool.query(`select m.active,
+      (select count(*)::int from private.device_authorization_requests r where r.company_id=m.company_id and r.membership_id=m.id) requests,
+      (select count(*)::int from public.audit_log a where a.company_id=m.company_id and a.entity_id=m.id and a.action='DEVICE_AUTHORIZATION_REQUESTED') request_audits,
+      (select count(*)::int from public.audit_log a where a.company_id=m.company_id and a.entity_id=m.id and a.action='USER_ACCESS_DEACTIVATED') revocation_audits
+      from public.company_memberships m where m.id=$1`, [membershipRequestRaceSupervisor.memberships[0].id]);
+    verify.deepEqual(membershipRequestRaceState.rows[0], { active: false, requests: 0, request_audits: 0, revocation_audits: 1 }, "revocation race leaves no pending request/device-request audit after access is removed");
+    verify.deepEqual((await adminApiSnapshot(companyB)).device_requests, [], "membership/device request race has no cross-tenant effects");
+    process.stdout.write("PASS supervisor device enrollment serializes with membership revocation and leaves no post-revocation request or audit\n");
+
+    const roleChangeRaceSupervisor = await seedAssignedSupervisor("r1005-role-device-request-race-supervisor");
+    const roleChangeRaceTx = await dbPool.connect();
+    let roleChangeRaceCommitted = false;
+    let roleChangeRacePromise;
+    try {
+      await roleChangeRaceTx.query("begin");
+      await roleChangeRaceTx.query("set local role authenticated");
+      await roleChangeRaceTx.query("select set_config('request.jwt.claim.role','authenticated',true)");
+      await roleChangeRaceTx.query("select set_config('request.jwt.claim.sub',$1,true)", [ownerA.userId]);
+      await roleChangeRaceTx.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({ role: "authenticated", sub: ownerA.userId })]);
+      const changedRole = await roleChangeRaceTx.query("select public.change_company_membership_role($1,$2,'employee'::public.company_role) changed", [companyA, roleChangeRaceSupervisor.memberships[0].id]);
+      verify.equal(changedRole.rows[0]?.changed, true, "synthetic owner begins supervisor role revocation before request race");
+      roleChangeRacePromise = request("/api/supervisor/device-requests", {
+        user: roleChangeRaceSupervisor, method: "POST", body: { companyId: companyA, branchId: branchA, label: "Synthetic request during role change" },
+      });
+      const requestWaitsOnRoleChange = async () => {
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const waiting = await dbPool.query("select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and query ilike '%request_supervisor_device%' limit 1");
+          if (waiting.rowCount) return true;
+          await new Promise((resolveWait) => setTimeout(resolveWait, 40));
+        }
+        return false;
+      };
+      const roleLockWait = await Promise.race([requestWaitsOnRoleChange(), roleChangeRacePromise.then(() => false)]);
+      verify.equal(roleLockWait, true, "device request waits for in-flight supervisor role change");
+      await roleChangeRaceTx.query("commit");
+      roleChangeRaceCommitted = true;
+      const deniedRequest = await roleChangeRacePromise;
+      verify.equal(deniedRequest.status, 403, "device enrollment is denied after supervisor role change commits");
+    } finally {
+      if (!roleChangeRaceCommitted) await roleChangeRaceTx.query("rollback").catch(() => {});
+      await Promise.allSettled([roleChangeRacePromise].filter(Boolean));
+      roleChangeRaceTx.release();
+    }
+    const roleChangeRaceState = await dbPool.query(`select m.role::text role,
+      (select count(*)::int from private.device_authorization_requests r where r.company_id=m.company_id and r.membership_id=m.id) requests,
+      (select count(*)::int from public.audit_log a where a.company_id=m.company_id and a.entity_id=m.id and a.action='DEVICE_AUTHORIZATION_REQUESTED') request_audits,
+      (select count(*)::int from public.audit_log a where a.company_id=m.company_id and a.entity_id=m.id and a.action='USER_ROLE_CHANGED') role_audits
+      from public.company_memberships m where m.id=$1`, [roleChangeRaceSupervisor.memberships[0].id]);
+    verify.deepEqual(roleChangeRaceState.rows[0], { role: "employee", requests: 0, request_audits: 0, role_audits: 1 }, "role-change race leaves no request or request audit after supervisor privileges are removed");
+    verify.deepEqual((await adminApiSnapshot(companyB)).device_requests, [], "role-change/device request race has no cross-tenant effects");
+    process.stdout.write("PASS supervisor device enrollment serializes with supervisor role change and leaves no unauthorized request\n");
+
+    const branchRequestRaceSupervisor = await seedAssignedSupervisor("r1005-branch-device-request-race-supervisor");
+    const branchRequestRaceTx = await dbPool.connect();
+    let branchRequestRaceCommitted = false;
+    let branchRequestRacePromise;
+    try {
+      await branchRequestRaceTx.query("begin");
+      await branchRequestRaceTx.query("set local role authenticated");
+      await branchRequestRaceTx.query("select set_config('request.jwt.claim.role','authenticated',true)");
+      await branchRequestRaceTx.query("select set_config('request.jwt.claim.sub',$1,true)", [ownerA.userId]);
+      await branchRequestRaceTx.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({ role: "authenticated", sub: ownerA.userId })]);
+      const unassigned = await branchRequestRaceTx.query("select public.set_supervisor_branch($1,$2,$3,false) result", [companyA, branchRequestRaceSupervisor.memberships[0].id, branchA]);
+      verify.equal(unassigned.rows[0]?.result?.assigned, false, "synthetic owner begins supervisor branch revocation before request race");
+      branchRequestRacePromise = request("/api/supervisor/device-requests", {
+        user: branchRequestRaceSupervisor, method: "POST", body: { companyId: companyA, branchId: branchA, label: "Synthetic request during branch removal" },
+      });
+      const requestWaitsOnBranchRemoval = async () => {
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const waiting = await dbPool.query("select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and query ilike '%request_supervisor_device%' limit 1");
+          if (waiting.rowCount) return true;
+          await new Promise((resolveWait) => setTimeout(resolveWait, 40));
+        }
+        return false;
+      };
+      const branchLockWait = await Promise.race([requestWaitsOnBranchRemoval(), branchRequestRacePromise.then(() => false)]);
+      verify.equal(branchLockWait, true, "device request waits for in-flight supervisor branch removal");
+      await branchRequestRaceTx.query("commit");
+      branchRequestRaceCommitted = true;
+      const deniedRequest = await branchRequestRacePromise;
+      verify.equal(deniedRequest.status, 403, "device enrollment is denied after branch removal commits");
+    } finally {
+      if (!branchRequestRaceCommitted) await branchRequestRaceTx.query("rollback").catch(() => {});
+      await Promise.allSettled([branchRequestRacePromise].filter(Boolean));
+      branchRequestRaceTx.release();
+    }
+    const branchRequestRaceState = await dbPool.query(`select
+      (select count(*)::int from public.supervisor_branches sb where sb.company_id=m.company_id and sb.membership_id=m.id and sb.branch_id=$2) assigned,
+      (select count(*)::int from private.device_authorization_requests r where r.company_id=m.company_id and r.membership_id=m.id) requests,
+      (select count(*)::int from public.audit_log a where a.company_id=m.company_id and a.entity_id=m.id and a.action='DEVICE_AUTHORIZATION_REQUESTED') request_audits,
+      (select count(*)::int from public.audit_log a where a.company_id=m.company_id and a.entity_id=m.id and a.action='SUPERVISOR_BRANCH_UNASSIGNED') unassign_audits
+      from public.company_memberships m where m.id=$1`, [branchRequestRaceSupervisor.memberships[0].id, branchA]);
+    verify.deepEqual(branchRequestRaceState.rows[0], { assigned: 0, requests: 0, request_audits: 0, unassign_audits: 1 }, "branch-removal race leaves no request/audit after assignment is removed");
+    verify.deepEqual((await adminApiSnapshot(companyB)).device_requests, [], "branch-removal/device request race has no cross-tenant effects");
+    process.stdout.write("PASS supervisor device enrollment serializes with branch unassignment and leaves no unauthorized request\n");
+
     const pendingSupervisor = await seedAssignedSupervisor("r1005-pending-device-supervisor");
     const pendingChallenge = randomBytes(32).toString("base64url");
     const pendingRequest = await pendingSupervisor.client.rpc("request_supervisor_device", {
@@ -2190,6 +2326,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request("/api/supervisor/device-requests", { user: employeeA, method: "POST", body: deviceRequestBody }); assert.equal(response.status, 403);
   response = await request("/api/supervisor/device-requests", { user: adminA, method: "POST", body: deviceRequestBody }); assert.equal(response.status, 403);
   response = await request("/api/supervisor/device-requests", { user: supervisorA, method: "POST", body: { ...deviceRequestBody, branchId: branchB } }); assert.equal(response.status, 403);
+  response = await request("/api/supervisor/device-requests", { user: supervisorA, method: "POST", body: { ...deviceRequestBody, companyId: companyB, branchId: branchB } }); assert.equal(response.status, 403, "supervisor cannot create a device request by selecting another tenant");
   response = await request("/api/supervisor/device-requests", { user: supervisorA, method: "POST", body: { ...deviceRequestBody, label: "   " } }); assert.equal(response.status, 422);
   const forbiddenDeviceRequest = await supervisorA.client.rpc("request_supervisor_device", { p_company_id: companyB, p_branch_id: branchB, p_label: "Cross tenant synthetic", p_challenge: randomBytes(32).toString("base64url") });
   assert.equal(forbiddenDeviceRequest.error?.code, "42501", "direct request RPC rejects a foreign company and branch");
@@ -2392,6 +2529,11 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const inactiveSupervisorRequest = await supervisorA.client.rpc("request_supervisor_device", { p_company_id: companyA, p_branch_id: branchA, p_label: "Synthetic revoked supervisor", p_challenge: randomBytes(32).toString("base64url") });
   assert.equal(inactiveSupervisorRequest.error?.code, "42501", "revoked supervisor membership cannot request another device through the RPC");
   assert.deepEqual(await snapshot(companyA), beforeInactiveSupervisorRequest, "revoked membership cannot create a request, device or audit event");
+  const beforeInactiveSupervisorHttpRequestA = await snapshot(companyA), beforeInactiveSupervisorHttpRequestB = await snapshot(companyB);
+  response = await request("/api/supervisor/device-requests", { user: supervisorA, method: "POST", body: deviceRequestBody });
+  assert.equal(response.status, 403, "revoked supervisor membership cannot create a device request through the HTTP route");
+  assert.deepEqual(await snapshot(companyA), beforeInactiveSupervisorHttpRequestA, "HTTP request after membership revocation has no company A side effects");
+  assert.deepEqual(await snapshot(companyB), beforeInactiveSupervisorHttpRequestB, "HTTP request after membership revocation has no company B side effects");
   assert.equal((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_ACCESS_DEACTIVATED'", [companyA, supervisorA.memberships[0].id])).rows[0].n, 1);
   process.stdout.write("PASS supervisor membership revocation invalidates approved devices and blocks subsequent enrollment without side effects\n");
   process.stdout.write("PASS device enrollment, approval/rejection, challenge redemption, tenant/branch/permission guards, duplicate/concurrent review, revocation and no-side-effect snapshots\n");

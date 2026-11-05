@@ -155,3 +155,21 @@ Estos criterios son una propuesta para la siguiente fase local; no declaran QR-0
 9. **Cierre global separado:** aun si se satisface el cierre local, QR-004 seguirá en curso hasta la revisión remota segregada/read-only autorizada de Testing y Producción, más resolución de diferencias por entorno. No extrapolar un ambiente al otro.
 
 La aceptación de Fase 10.4 deberá registrar explícitamente qué criterios pasaron, cuáles permanecen bloqueados por QR-003/CI y cuáles requieren revisión remota. QR-003 permanece P0/NO-GO durante esta propuesta.
+
+### Reejecución de validaciones y carrera de alta de dispositivo — 2026-11-05
+
+La primera reproducción del POST de alta de dispositivo durante una transacción de desactivación de membresía devolvió antes del commit de la revocación. El runner falló deliberadamente en la aserción de bloqueo y el stack se limpió; la consulta posterior confirmó que no quedó ningún recurso con el project ID aleatorio de ese intento y que los recursos Docker anteriores seguían presentes. Se incorporó el lock en la migración `20261105172831_supervisor_device_request_authorization_lock.sql` y la regresión cubre tres intercalaciones: desactivación de membership, cambio de rol y retiro de asignación de sucursal.
+
+| Comando | Resultado actual |
+|---|---|
+| `npm run test:security:authorization-races:local` | 180 aserciones PASS, incluida espera por lock, 403 posterior a revocación, cero solicitudes/auditorías de alta y snapshots de tenant B; cleanup/preservación Docker PASS. |
+| `npm run test:security:matrix:local` | Ocho suites: 201/201 pgTAP PASS y HTTP/Auth PASS; contiene PIN sintético válido solo en el stack local desechable. |
+| `npm run test:security:rpc-ci:local` | 115/115 pgTAP PASS en reintento; primera tentativa tuvo colisión del puerto 56908 y el teardown retiró el stack parcial. |
+| `npm run test:security:phase10-residual:local` | 59/59 pgTAP PASS; rollback/cleanup/preservación Docker PASS. |
+| `QR004_CHROME_BIN='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm run test:e2e` | 23/23 PASS; todas las rutas son loopback y no se llamó `/api/attendance/scan`; cleanup/preservación Docker PASS. |
+| `npm test` | PASS; 1 prueba GnuPG omitida porque el sandbox bloquea el socket del agente local. Las pruebas PIN son unitarias locales, sin llamadas remotas. |
+| `npm run lint`; `npm run typecheck`; build aislado; `node --check tests/qr004-auth-matrix.local.integration.mjs`; `git diff --check` | PASS. Build sin `.env*`, con aviso de 27 trazas fuera de `outputFileTracingRoot` por `node_modules` externo. |
+
+La revisión remota del 2026-11-05 se registra en `QR-004-PHASE10-RESIDUAL-GAPS.md`: Testing está activo pero no tiene registradas las dos migraciones locales de lifecycle de dispositivos; la definición leída de `request_supervisor_device` carece del lock recién probado. Producción está `INACTIVE` y los catálogos/migraciones dieron timeout/no accesible. No se comparó la configuración remota de Auth. La matriz de 50 métodos está en `QR-004-R10-05-METHOD-MATRIX.md`; las brechas por método siguen vigentes.
+
+El CI previo del SHA `4c8d2d57413df1c8840365951620781d7d8e899b` fue SUCCESS; no valida esta migración/diff. La autorización vigente permite publicar la rama para ejecutar el CI general, incluido el scan sintético con PIN válido solo en Supabase desechable local. QR-004 sigue **En curso / NOT READY**; QR-003 sigue **P0/NO-GO**, QR-011 **P1/Bloqueada**.
