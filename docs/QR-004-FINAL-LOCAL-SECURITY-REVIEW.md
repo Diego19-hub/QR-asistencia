@@ -283,3 +283,15 @@ Se consultó el asesor de seguridad en ambos proyectos, sin cambios remotos.
 - No se recibieron avisos del asesor que confirmen acceso de `anon` a esas RPC. La revisión de grants anterior encontró cero SECURITY DEFINER ejecutables por `anon` en ambos proyectos.
 
 El asesor no revela la configuración completa de Auth (por ejemplo, todos los ajustes de registro, confirmación de correo, MFA y protección de sesión). Esa comparación sigue pendiente. No se hicieron pruebas de inicio de sesión, PIN, escaneo o asistencia en proyectos remotos.
+
+### Seguimiento local — validación del filtro de auditoría (2026-11-06)
+
+Se endureció `GET /api/admin/audit`: `from` y `to` ahora deben ser fechas reales de calendario además de cumplir `YYYY-MM-DD`. La matriz HTTP/Auth agrega rechazos para `2026-02-30` en ambos campos y confirma que `pageSize=100` queda limitado a 50 con resultados sintéticos segregados por empresa. El runner de carreras de autorización, que explícitamente no crea sesiones/eventos de asistencia ni prueba PIN o escaneo, se agregó al workflow general de CI.
+
+Verificaciones locales disponibles: `node --check tests/qr004-auth-matrix.local.integration.mjs` y `git diff --check` pasan. Las suites de integración, lint y typecheck no se pudieron ejecutar en este entorno porque faltan Docker y `node_modules`. El CI general pasó en el SHA `cacff53ee73c518238503c829a343ab8b7968ddd` ([run 42265204297](https://github.com/Diego19-hub/QR-asistencia/actions/runs/42265204297)); incluyó instalación, lint, typecheck, pruebas, matriz general, RPC, Fase 10, onboarding, E2E, build y el runner de carreras añadido. Sus pruebas de PIN/escaneo se ejecutaron solo en infraestructura desechable de CI. Este cambio cubre una brecha acotada de entrada/paginación y no completa la matriz R10-05, las carreras restantes ni la comparación remota íntegra de RLS, grants y Auth.
+
+**Estado:** QR-004 permanece **En curso / NOT READY** hasta revisar esas brechas y completar la comparación remota autorizada. El código del cambio fue publicado en la rama de auditoría y CI pasó; no hubo lectura ni escritura en Supabase, PR, merge o despliegue durante esta revisión local.
+
+### Decisión posterior — cierre administrativo con riesgo aceptado (2026-11-06)
+
+El responsable decidió cerrar QR-004 para continuar con las demás tareas, aceptando expresamente los riesgos descritos en [QR-004-ACCEPTED-RISK-CLOSURE.md](QR-004-ACCEPTED-RISK-CLOSURE.md). El estado **Hecha** del backlog significa que la decisión de esta fase quedó registrada; no cambia el dictamen técnico de cobertura R10-05 **PARCIAL**, no confirma paridad remota y no es autorización de despliegue. QR-003 conserva **P0/NO-GO** y QR-011 sigue bloqueada por QR-003.

@@ -2,7 +2,7 @@
 
 ## Estado
 
-**En curso.** Esta primera entrega incorpora infraestructura reproducible y una matriz inicial de navegador para autenticación, roles, selección de empresa, portal de empleado y autorización del dispositivo del supervisor. La cobertura completa de asistencia permanece bloqueada por QR-003 y no se declara cerrada QR-004.
+**Hecha dentro del alcance automatizado.** La infraestructura reproducible y la matriz de navegador cubren autenticación, roles, selección de empresa, portal de empleado y autorización del dispositivo del supervisor. El flujo integral de asistencia y la aceptación con hardware físico corresponden a QR-011; esta suite no los certifica.
 
 ## Arquitectura
 
@@ -48,7 +48,7 @@ Los tests usan selectores accesibles de roles, nombres y labels. No dependen de 
 
 ## Límite de seguridad de QR-003
 
-Esta fase **no** lee/decodifica QR, no solicita ni verifica PIN, no llama `private.verify_employee_pin`, no envía PIN incorrectos, no ejecuta lockout ni confirma entrada, salida o descansos. La prueba de cámara termina antes del endpoint de escaneo y afirma que `/api/attendance/scan` no fue solicitado. Los movimientos de asistencia completos siguen bloqueados mientras QR-003 permanezca pospuesta, P0 y NO-GO.
+Esta suite **no** lee/decodifica QR, no solicita ni verifica PIN, no llama `private.verify_employee_pin`, no envía PIN incorrectos, no ejecuta lockout ni confirma entrada, salida o descansos. La prueba de cámara termina antes del endpoint de escaneo y afirma que `/api/attendance/scan` no fue solicitado. QR-003 ya cerró la corrección del lockout con validación sintética; el flujo integral de asistencia sigue pendiente de aceptación operativa QR-011.
 
 La autorización del dispositivo y la cámara fake no simulan una asistencia completa ni certifican cámaras físicas, navegadores móviles reales o comportamiento de red celular. El backend Auth, API y PostgreSQL usados para permisos son locales reales y desechables.
 
@@ -64,7 +64,7 @@ El workflow conserva todas las suites existentes y agrega un paso separado para 
 - **Validaciones estáticas/build (2026-10-30):** `npm run lint` y `npm run typecheck` pasaron. `npm run build` en un directorio temporal aislado pasó y generó 41/41 páginas/rutas. Next mostró una advertencia conocida: 27 traces no entraron al output standalone porque `node_modules` estaba enlazado desde el checkout; no se conservó el artefacto temporal.
 - **Cobertura actual:** 22 casos de navegador locales, incluidos estados de dispositivo pendiente/rechazado/aprobado/revocado, errores HTTP seguros, carreras de contexto, viewports móviles/tablet y cierre/liberación de cámara. Evidencia: `docs/QR-006-SCANNER-STABILITY.md`.
 - `npm audit` reportó 0 vulnerabilidades en la revisión previa de dependencias parcheadas.
-- GitHub Actions debe completar con el nuevo commit antes de considerar QR-005 lista para revisión final.
+- La cobertura E2E forma parte del workflow general integrado; los resultados de aceptación con dispositivos físicos permanecen en QR-011.
 - Las pruebas de cámara usan mocks de `getUserMedia` y dispositivo fake de Chromium; no representan hardware físico ni permisos de un navegador móvil real.
 - Seguir la matriz de autorización multiempresa de QR-004; E2E no sustituye RLS/pgTAP ni revisión remota segregada.
 - Añadir flujos completos de asistencia solo cuando exista una decisión independiente que retire el bloqueo de QR-003.

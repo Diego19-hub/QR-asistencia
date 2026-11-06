@@ -8,6 +8,12 @@ No se ejecutó `migration repair`, `db push` real ni ninguna escritura remota. S
 
 **Conclusión:** hay una ruta técnica acotada que puede presentar únicamente QR-003 a `db push`: construir fuera del repositorio un manifiesto temporal mediante `supabase migration fetch` contra el ref exacto, preservar los 24 SQL ya registrados con sus timestamps de Testing y añadir una copia byte a byte de la migración QR-003 canónica. Con CLI 2.120.0, su dry-run mostró solo `20261018120000_persist_employee_pin_failures.sql`. La secuencia se reprodujo localmente y las pruebas de PIN pasaron. La aplicación remota permanece detenida hasta una tarea autorizada que repita el preflight y confirme de nuevo el alcance.
 
+## Actualización 2026-11-06
+
+La evidencia anterior describe la fotografía del 2026-10-28 y ya no representa el estado actual. En la consulta de solo lectura del 2026-11-06, el historial de Testing **sí registra** la versión `20261018120000_persist_employee_pin_failures`; las dos RPC remotas muestran los retornos estructurados esperados. La prueba sintética dinámica pasó y terminó con `ROLLBACK`; resultados y límites en [validación dinámica](QR-003-TESTING-RUNTIME-VALIDATION-2026-11-06.md). Esta actualización no afirma que se aplicara la migración durante la sesión ni que el ledger histórico completo haya sido reconstruido.
+
+El propietario cerró QR-003 para la corrección del PIN y la validación sintética, aceptando que Testing es descartable y que su recuperación no está garantizada. No se acepta como comprobada una restauración ni como confirmado un RPO/RTO. QR-011 sigue **P1 / Bloqueada** y conserva el riesgo de recuperación en su dictamen de lanzamiento. La decisión no autoriza exportar, borrar o reconstruir Testing ni operar en Producción; el cierre está documentado en [QR-003-ACCEPTED-RISK-CLOSURE.md](QR-003-ACCEPTED-RISK-CLOSURE.md).
+
 ## Inventario y matriz de correspondencia
 
 En la lectura actual se encontraron 24 entradas en Testing y 25 archivos en `main`. De las 23 migraciones con nombres comunes, 18 tienen distinto timestamp y 5 conservan el mismo. La matriz completa, junto con hashes SHA-256 del archivo canónico y del SQL recuperado por CLI, está en [QR-003-TESTING-MIGRATION-MANIFEST.csv](QR-003-TESTING-MIGRATION-MANIFEST.csv).

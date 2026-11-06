@@ -3342,6 +3342,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/admin/audit?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
   response = await request(`/api/admin/audit?companyId=${companyB}`, { user: adminA }); assert.equal(response.status, 403);
   response = await request(`/api/admin/audit?companyId=${companyA}&from=not-a-date`, { user: adminA }); assert.equal(response.status, 400);
+  response = await request(`/api/admin/audit?companyId=${companyA}&from=2026-02-30`, { user: adminA }); assert.equal(response.status, 400, "audit rejects a calendar-impossible start date");
+  response = await request(`/api/admin/audit?companyId=${companyA}&to=2026-02-30`, { user: adminA }); assert.equal(response.status, 400, "audit rejects a calendar-impossible end date");
   response = await request(`/api/admin/audit?companyId=${companyA}&from=2026-11-06&to=2026-11-05`, { user: adminA }); assert.equal(response.status, 400);
   response = await request(`/api/admin/audit?companyId=${companyA}&action=not%20a%20valid%20action`, { user: adminA }); assert.equal(response.status, 400);
 
@@ -3380,6 +3382,12 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal(auditPage.pagination.total, 11);
   assert.equal(auditPage.items.length, 1);
   assert.ok(auditAIds.includes(auditPage.items[0].entity_id));
+  response = await request(`/api/admin/audit?companyId=${companyA}&from=${auditProbeDate}&to=${auditProbeDate}&action=${auditProbeAction}&pageSize=100`, { user: adminA });
+  assert.equal(response.status, 200);
+  auditPage = await response.json();
+  assert.equal(auditPage.pagination.pageSize, 50, "audit page size clamps to the maximum");
+  assert.equal(auditPage.pagination.total, 11);
+  assert.equal(auditPage.items.length, 11);
   response = await request(`/api/admin/permissions?companyId=${companyA}`, { user: supervisorA }); assert.equal(response.status, 403);
   response = await request(`/api/admin/permissions?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
   const catalog = await response.json(); assert.ok(Array.isArray(catalog.permissions) && Array.isArray(catalog.rolePermissions));
