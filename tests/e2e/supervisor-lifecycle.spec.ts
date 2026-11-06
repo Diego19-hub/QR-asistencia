@@ -76,19 +76,20 @@ test("invitación de supervisor, sucursal y dispositivo completan su ciclo sin r
     await inviteForm.getByLabel("Correo de trabajo").fill(email);
     await inviteForm.getByLabel("Acceso").selectOption("supervisor");
     await inviteForm.getByRole("button", { name: "Enviar invitación" }).click();
-    await expect(adminPage.getByRole("status")).toContainText("Invitación enviada por Supabase Auth.");
+    await expect(adminPage.getByRole("status")).toContainText("Enviamos la invitación de Supabase Auth. La persona debe abrir el enlace, completar su cuenta y después aceptar la invitación.");
 
     const confirmationUrl = await invitationConfirmationUrl(qr.mailpitUrl, email, qr.baseUrl.origin);
     await inviteePage.goto(confirmationUrl);
     await expect(inviteePage.getByRole("button", { name: "Confirmar invitación" })).toBeVisible();
     await inviteePage.getByRole("button", { name: "Confirmar invitación" }).click();
-    await expect(inviteePage.getByRole("heading", { name: "Invitaciones de acceso" })).toBeVisible();
-    await expect(inviteePage.getByRole("heading", { name: "Configura tu contraseña" })).toBeVisible();
+    await expect(inviteePage.getByRole("heading", { name: "Completar cuenta y aceptar invitación" })).toBeVisible();
+    await expect(inviteePage.getByText("Correo confirmado por Supabase Auth")).toBeVisible();
     const password = "Qr7-" + randomUUID() + "-Aa9";
-    await inviteePage.getByLabel("Nueva contraseña").fill(password);
-    await inviteePage.getByLabel("Confirma la contraseña").fill(password);
-    await inviteePage.getByRole("button", { name: "Guardar contraseña" }).click();
-    await expect(inviteePage.getByRole("status")).toContainText("Contraseña configurada.");
+    await inviteePage.getByLabel("Nombre completo").fill("Supervisora Sintética QR");
+    await inviteePage.getByLabel("Contraseña", { exact: true }).fill(password);
+    await inviteePage.getByLabel("Confirmar contraseña", { exact: true }).fill(password);
+    await inviteePage.getByRole("button", { name: "Guardar datos y continuar" }).click();
+    await expect(inviteePage.getByRole("status")).toContainText("Cuenta configurada. Ahora acepta la invitación para activar el acceso a la empresa.");
     await inviteePage.getByRole("button", { name: "Aceptar invitación" }).click();
     await expect(inviteePage.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
 

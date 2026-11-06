@@ -61,7 +61,7 @@ const rpcSecurityCiExpected = new Map([
 let temp;
 let startAttempted = false;
 let appServer, actionBrowser, dbPool, service, apiUrl, anonKey, serviceKey, dbUrl, appUrl, mailpitUrl, appOutput = "";
-let resendServer, resendUrl;
+let resendServer, resendUrl, appPortReservation, nextPort;
 const resendMessages = [];
 const resendFailRecipients = new Set();
 let invitationFlowFixtures;
@@ -121,14 +121,22 @@ function parseEnv(text) {
     return match ? [[match[1], match[2].replace(/^['"]|['"]$/g, "")]] : [];
   }));
 }
+async function reservePort(port) {
+  const socket = net.createServer();
+  await new Promise((resolvePort, rejectPort) => {
+    const onError = (error) => rejectPort(error);
+    socket.once("error", onError);
+    socket.listen(port, "127.0.0.1", () => {
+      socket.removeListener("error", onError);
+      resolvePort();
+    });
+  });
+  return socket;
+}
 async function freePort(start) {
   for (let base = start; base < start + 600; base += 10) {
-    const available = await Promise.all(Array.from({ length: 10 }, (_, offset) => new Promise((resolvePort) => {
-      const socket = net.createServer();
-      socket.once("error", () => resolvePort(false));
-      socket.listen(base + offset, "127.0.0.1", () => socket.close(() => resolvePort(true)));
-    })));
-    if (available.every(Boolean)) return base;
+    try { return { port: base, socket: await reservePort(base) }; }
+    catch { /* Keep probing the private local range. */ }
   }
   throw new Error("no free local app port block");
 }
@@ -383,7 +391,9 @@ try {
   for (const suite of suites) await cp(join(root, "supabase/tests", suite), join(workdir, "supabase/tests", suite));
   let config = await readFile(join(root, "supabase/config.toml"), "utf8");
   const base = await freePortBlock();
-  const nextPort = await freePort(base + 20);
+  const appPort = await freePort(base + 20);
+  nextPort = appPort.port;
+  appPortReservation = appPort.socket;
   appUrl = `http://127.0.0.1:${nextPort}`;
   const defaultSiteUrl = 'site_url = "http://127.0.0.1:3000"';
   assert.ok(config.includes(defaultSiteUrl), "temporary Auth site_url setting exists");
@@ -638,6 +648,10 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   for (const file of ["package.json", "next.config.ts", "postcss.config.mjs", "tsconfig.json"]) await cp(join(root, file), join(appRoot, file));
   await symlink(join(root, "node_modules"), join(appRoot, "node_modules"), "dir");
   const startNext = async (adminServiceKey = serviceKey) => {
+    // Keep the chosen loopback port bound while the disposable Supabase stack
+    // starts. Otherwise another process can claim it during the long startup
+    // window between the availability probe and Next.js listen().
+    if (!appPortReservation) appPortReservation = await reservePort(nextPort);
     appOutput = "";
     const nextArgs = performanceOnly
       ? [join(root, "node_modules/next/dist/bin/next"), "start", "--hostname", "127.0.0.1", "--port", String(nextPort)]
@@ -661,6 +675,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       }
       process.stdout.write("PASS isolated Next.js production build completed with loopback-only Supabase configuration\n");
     }
+    await new Promise((resolveClose, rejectClose) => appPortReservation.close((error) => error ? rejectClose(error) : resolveClose()));
+    appPortReservation = null;
     appServer = spawn(process.execPath, nextArgs, {
       cwd: appRoot,
       env: {
@@ -3404,6 +3420,11 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
 } finally {
   try { await actionBrowser?.close(); } catch (error) { cleanupErrors.push(error); }
   try { await stopNext(); } catch (error) { cleanupErrors.push(error); }
+  if (appPortReservation) {
+    try { await new Promise((resolveClose, rejectClose) => appPortReservation.close((error) => error ? rejectClose(error) : resolveClose())); }
+    catch (error) { cleanupErrors.push(error); }
+    appPortReservation = null;
+  }
   if (resendServer) {
     try { await new Promise((resolveClose, rejectClose) => resendServer.close((error) => error ? rejectClose(error) : resolveClose())); }
     catch (error) { cleanupErrors.push(error); }
