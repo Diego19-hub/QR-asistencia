@@ -6,23 +6,41 @@ const redirect = await import("../src/lib/access/auth-redirect.ts");
 const invitationPassword = await import("../src/lib/access/invitation-password.ts");
 const appUrl = "https://asistencia-test.duob.tech";
 
-test("Invitation passwords accept 6 to 128 characters and require matching values", async () => {
+test("Invitation setup validates the configured password bounds and a presentation-only full name", async () => {
   const [page, actions, localAuthConfig] = await Promise.all([
     readFile(new URL("../src/app/(auth)/invitacion/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/app/(auth)/invitacion/actions.ts", import.meta.url), "utf8"),
     readFile(new URL("../supabase/config.toml", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /Contraseña de al menos 6 caracteres/);
-  assert.equal((page.match(/minLength=\{6\}/g) ?? []).length, 2);
-  assert.doesNotMatch(page, /minLength=\{12\}|al menos 12 caracteres/);
+  assert.match(page, /Completar cuenta y aceptar invitación/);
+  assert.match(page, /Correo de la invitación/);
+  assert.match(page, /Correo confirmado por Supabase Auth/);
+  assert.match(page, /name="fullName"/);
+  assert.match(page, /Nombre completo/);
+  assert.match(page, /El nombre se guarda solo como dato de presentación/);
+  assert.equal((page.match(/minLength=\{INVITATION_PASSWORD_MIN_LENGTH\}/g) ?? []).length, 2);
   assert.match(actions, /isValidInvitationPassword\(password, confirmation\)/);
+  assert.match(actions, /normalizeInvitationFullName\(formData\.get\("fullName"\)\)/);
+  assert.match(actions, /auth\.user\.email_confirmed_at/);
+  assert.match(actions, /list_my_pending_company_invitations/);
+  assert.match(actions, /data: \{ full_name: fullName \}/);
   assert.match(localAuthConfig, /^minimum_password_length\s*=\s*6$/m);
+  assert.match(localAuthConfig, /^enable_signup\s*=\s*false$/m);
   assert.equal(invitationPassword.isValidInvitationPassword("123456", "123456"), true);
   assert.equal(invitationPassword.isValidInvitationPassword("12345", "12345"), false);
   assert.equal(invitationPassword.isValidInvitationPassword("a".repeat(128), "a".repeat(128)), true);
   assert.equal(invitationPassword.isValidInvitationPassword("a".repeat(129), "a".repeat(129)), false);
   assert.equal(invitationPassword.isValidInvitationPassword("123456", "654321"), false);
   assert.equal(invitationPassword.isValidInvitationPassword(null, null), false);
+  assert.equal(invitationPassword.normalizeInvitationFullName("  Ana   María Ortega  "), "Ana María Ortega");
+  assert.equal(invitationPassword.normalizeInvitationFullName("李 小龍"), "李 小龍");
+  assert.equal(invitationPassword.normalizeInvitationFullName(" "), null);
+  assert.equal(invitationPassword.normalizeInvitationFullName("A"), null);
+  assert.equal(invitationPassword.normalizeInvitationFullName("Name\nWith control"), null);
+  assert.equal(invitationPassword.normalizeInvitationFullName("N".repeat(121)), null);
+  assert.equal(invitationPassword.hasCompletedInvitationAccountSetup("2026-01-01T00:00:00.000Z", Date.parse("2026-01-02T00:00:00.000Z")), true);
+  assert.equal(invitationPassword.hasCompletedInvitationAccountSetup("not-a-date"), false);
+  assert.equal(invitationPassword.hasCompletedInvitationAccountSetup("2999-01-01T00:00:00.000Z"), false);
 });
 
 test("Auth redirects use APP_BASE_URL and a closed set of paths", () => {
@@ -88,22 +106,36 @@ test("Auth routes verify server-side and never redirect using request.url or tok
   assert.match(confirm, /if \(error\) return redirectAuth\("login-invite-error"\)/);
 });
 
-test("Invitation setup uses server-controlled completion metadata and rechecks it in the action", async () => {
-  const [actions, page] = await Promise.all([
+test("Invitation setup revalidates Auth identity and pending recipient before changing password or profile", async () => {
+  const [actions, page, acceptanceMigration, inviteApi, delivery, resend] = await Promise.all([
     readFile(new URL("../src/app/(auth)/invitacion/actions.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/app/(auth)/invitacion/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20261105234619_invitation_account_setup_required.sql", import.meta.url), "utf8"),
+    readFile(new URL("../src/app/api/admin/access/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/access/invitation-delivery.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/access/resend-invitation.ts", import.meta.url), "utf8"),
   ]);
   assert.match(actions, /await supabase\.auth\.getUser\(\)/);
-  assert.match(actions, /auth\.user\.invited_at && !auth\.user\.app_metadata\?\.access_setup_completed_at/);
-  assert.match(actions, /supabase\.auth\.updateUser\(\{ password \}\)/, "the authenticated user update changes only the password, not user_metadata");
+  assert.match(actions, /auth\.user\.email_confirmed_at/);
+  assert.match(actions, /list_my_pending_company_invitations/);
+  assert.match(actions, /data: \{ full_name: fullName \}/);
   assert.match(actions, /createAuthAdminClient\(\)/);
   assert.match(actions, /updateUserById\(auth\.user\.id,[\s\S]*app_metadata:[\s\S]*access_setup_completed_at/);
   const adminClientCheck = actions.indexOf("const admin = createAuthAdminClient();", actions.indexOf("export async function setInvitationPassword"));
-  const passwordWrite = actions.indexOf("supabase.auth.updateUser({ password })", adminClientCheck);
+  const passwordWrite = actions.indexOf("supabase.auth.updateUser({ password, data: { full_name: fullName } })", adminClientCheck);
   const metadataWrite = actions.indexOf("admin.auth.admin.updateUserById", passwordWrite);
   assert.ok(adminClientCheck >= 0 && adminClientCheck < passwordWrite && passwordWrite < metadataWrite, "admin client configuration is checked before password mutation; server marker write follows the authenticated password change");
-  assert.match(page, /auth\.user\.invited_at && !auth\.user\.app_metadata\?\.access_setup_completed_at/);
+  assert.match(actions, /hasMatchingInvitation/);
+  assert.match(page, /hasCompletedInvitationAccountSetup/);
+  assert.match(page, /emailVerified/);
+  assert.doesNotMatch(page, /<input[^>]+name="email"/);
   assert.match(actions, /accept_company_user_invitation/);
   assert.match(actions, /destinationForRole\(membership\.role/);
   assert.match(actions, /\/seleccionar-empresa/);
+  assert.match(acceptanceMigration, /raw_app_meta_data->>'access_setup_completed_at'/);
+  assert.doesNotMatch(acceptanceMigration, /raw_user_meta_data|invited_at/);
+  assert.match(inviteApi, /La persona aún no puede iniciar sesión ni aceptar esta invitación/);
+  assert.match(delivery, /https:\/\/api\.resend\.com\/emails/);
+  assert.match(delivery, /QR_AUTH_LOCAL_TEST/);
+  assert.match(resend, /la persona debe abrir el enlace, completar su cuenta y después aceptar/);
 });

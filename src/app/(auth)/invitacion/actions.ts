@@ -5,7 +5,11 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { destinationForRole, type MembershipRole } from "@/lib/access/user-management";
 import { setActiveMembershipCookie } from "@/lib/access/active-membership-cookie";
-import { isValidInvitationPassword } from "@/lib/access/invitation-password";
+import {
+  hasCompletedInvitationAccountSetup,
+  isValidInvitationPassword,
+  normalizeInvitationFullName,
+} from "@/lib/access/invitation-password";
 import { createAuthAdminClient } from "@/lib/supabase/auth-admin";
 
 export async function acceptInvitation(formData: FormData) {
@@ -14,7 +18,7 @@ export async function acceptInvitation(formData: FormData) {
   const supabase = await createClient();
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) redirect("/login");
-  if (auth.user.invited_at && !auth.user.app_metadata?.access_setup_completed_at) {
+  if (!hasCompletedInvitationAccountSetup(auth.user.app_metadata?.access_setup_completed_at)) {
     redirect("/invitacion?error=password");
   }
   const { error } = await supabase.rpc("accept_company_user_invitation", { p_invitation_id: invitationId });
@@ -32,22 +36,35 @@ export async function acceptInvitation(formData: FormData) {
 }
 
 export async function setInvitationPassword(formData: FormData) {
+  const fullName = normalizeInvitationFullName(formData.get("fullName"));
   const password = formData.get("password");
   const confirmation = formData.get("confirmation");
-  if (!isValidInvitationPassword(password, confirmation)) {
-    redirect("/invitacion?error=password");
+  if (!fullName) redirect("/invitacion?error=name");
+  if (typeof password !== "string" || typeof confirmation !== "string" || password !== confirmation) {
+    redirect("/invitacion?error=password-match");
   }
+  if (!isValidInvitationPassword(password, confirmation)) redirect("/invitacion?error=password");
+
   const supabase = await createClient();
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) redirect("/login");
-  if (!auth.user.invited_at || auth.user.app_metadata?.access_setup_completed_at) redirect("/invitacion?error=invalid");
+  if (!auth.user.email || !auth.user.email_confirmed_at) redirect("/invitacion?error=email");
+  if (hasCompletedInvitationAccountSetup(auth.user.app_metadata?.access_setup_completed_at)) redirect("/invitacion?error=invalid");
+
+  const { data: pending, error: invitationError } = await supabase.rpc("list_my_pending_company_invitations");
+  if (invitationError) redirect("/login?error=service");
+  const verifiedEmail = auth.user.email.trim().toLowerCase();
+  const hasMatchingInvitation = Array.isArray(pending)
+    && pending.some((invitation) => typeof invitation?.email === "string" && invitation.email.trim().toLowerCase() === verifiedEmail);
+  if (!hasMatchingInvitation) redirect("/invitacion?error=invitation");
+
   const admin = createAuthAdminClient();
   if (!admin) redirect("/login?error=service");
-  const { error: passwordError } = await supabase.auth.updateUser({ password });
-  if (passwordError) redirect("/invitacion?error=password");
+  const { error: passwordError } = await supabase.auth.updateUser({ password, data: { full_name: fullName } });
+  if (passwordError) redirect("/invitacion?error=password-policy");
   const { error } = await admin.auth.admin.updateUserById(auth.user.id, {
     app_metadata: { ...auth.user.app_metadata, access_setup_completed_at: new Date().toISOString() },
   });
-  if (error) redirect("/invitacion?error=password");
-  redirect("/invitacion?password=updated");
+  if (error) redirect("/invitacion?error=setup-retry");
+  redirect("/invitacion?setup=complete");
 }

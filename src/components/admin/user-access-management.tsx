@@ -31,6 +31,7 @@ export function UserAccessManagement({ publicOrigin }: { publicOrigin: string | 
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [noticeTone, setNoticeTone] = useState<"success" | "warning">("success");
   const [role, setRole] = useState<"admin" | "supervisor" | "employee">("supervisor");
   const [linkTargets, setLinkTargets] = useState<Record<string, string>>({});
   const [inviteEmail, setInviteEmail] = useState("");
@@ -60,10 +61,21 @@ export function UserAccessManagement({ publicOrigin }: { publicOrigin: string | 
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: form.get("email"), role, employeeId: role === "employee" ? form.get("employeeId") : null }),
       });
-      const body = await response.json() as { invitationId?: string; delivery?: string; message?: string } & ErrorBody;
+      const body = await response.json() as { invitationId?: string; delivery?: string; deliveryMode?: string; message?: string } & ErrorBody;
       if (!response.ok && response.status !== 202 && !body.invitationId) throw new Error(body.error?.message ?? "No fue posible enviar la invitación.");
-      setNotice(body.delivery === "sent" ? "Invitación enviada por Supabase Auth." : body.message ?? "La invitación quedó pendiente.");
-      formElement.reset(); setInviteEmail(""); await load();
+      formElement.reset(); setInviteEmail("");
+      if (body.delivery === "failed") {
+        setError(body.message ?? "El correo no se entregó. La invitación sigue pendiente; reenvíala después de corregir el servicio de correo.");
+      } else if (body.delivery === "existing-account") {
+        setNotice(body.message ?? "La cuenta ya existe; se necesita enviar un enlace de acceso antes de iniciar sesión.");
+        setNoticeTone("warning");
+      } else {
+        setNotice(body.deliveryMode === "magic-link"
+          ? "Enviamos un enlace seguro de inicio de sesión. La persona debe abrirlo, completar su cuenta y después aceptar la invitación."
+          : "Enviamos la invitación de Supabase Auth. La persona debe abrir el enlace, completar su cuenta y después aceptar la invitación.");
+        setNoticeTone("success");
+      }
+      await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No fue posible enviar la invitación."); }
     finally { setBusy(""); }
   }
@@ -81,7 +93,7 @@ export function UserAccessManagement({ publicOrigin }: { publicOrigin: string | 
           return { companyId: company.companyId, links: next };
         });
       }
-      setNotice("Acceso actualizado y registrado en auditoría."); await load();
+      setNotice("Acceso actualizado y registrado en auditoría."); setNoticeTone("success"); await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No fue posible actualizar el acceso."); }
     finally { setBusy(""); }
   }
@@ -90,9 +102,12 @@ export function UserAccessManagement({ publicOrigin }: { publicOrigin: string | 
     setBusy(invitation.id); setError(""); setNotice("");
     try {
       const response = await fetch(`/api/admin/access/invitations/${invitation.id}/resend?companyId=${encodeURIComponent(company.companyId)}`, { method: "POST" });
-      const result = await response.json() as ErrorBody;
+      const result = await response.json() as ErrorBody & { deliveryMode?: string };
       if (!response.ok) throw new Error(result.error?.message ?? "No fue posible reenviar la invitación.");
-      setNotice("Invitación reenviada."); await load();
+      setNotice(result.deliveryMode === "magic-link"
+        ? "Enviamos un enlace seguro. La persona debe abrirlo, completar su cuenta y después aceptar la invitación."
+        : "Reenviamos la invitación de Supabase Auth. La persona debe abrir el enlace, completar su cuenta y después aceptar la invitación.");
+      setNoticeTone("success"); await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No fue posible reenviar la invitación."); }
     finally { setBusy(""); }
   }
@@ -107,6 +122,7 @@ export function UserAccessManagement({ publicOrigin }: { publicOrigin: string | 
       setShareLinkState((current) => ({ companyId: company.companyId, links: { ...(current.companyId === company.companyId ? current.links : {}), [invitation.id]: result.shareUrl! } }));
       setData((current) => ({ ...current, invitations: current.invitations.map((item) => item.id === invitation.id ? { ...item, shareLinkCreated: true } : item) }));
       setNotice(`Enlace disponible hasta ${new Date(result.expiresAt ?? invitation.expiresAt).toLocaleDateString("es-MX")}. Compártelo solo con la persona invitada.`);
+      setNoticeTone("success");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "No fue posible generar el enlace."); }
     finally { setBusy(""); }
   }
@@ -115,7 +131,7 @@ export function UserAccessManagement({ publicOrigin }: { publicOrigin: string | 
     const value = shareLinks[invitationId];
     if (!value) return;
     const copied = await copyTextToClipboard(value, navigator.clipboard ?? null, document);
-    if (copied) setNotice("Enlace de invitación copiado.");
+    if (copied) { setNotice("Enlace de invitación copiado."); setNoticeTone("success"); }
     else setError("No se pudo copiar automáticamente. Selecciona y copia el enlace mostrado.");
   }
 
@@ -135,7 +151,7 @@ export function UserAccessManagement({ publicOrigin }: { publicOrigin: string | 
         <RefreshCw size={14} className={loading ? "animate-spin" : ""} />Actualizar
       </button>
     </header>
-    {notice ? <p role="status" className="mx-5 mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800 sm:mx-6">{notice}</p> : null}
+    {notice ? <p role="status" className={`mx-5 mt-4 rounded-lg p-3 text-sm sm:mx-6 ${noticeTone === "warning" ? "bg-amber-50 text-amber-900" : "bg-emerald-50 text-emerald-800"}`}>{notice}</p> : null}
     {error ? <p role="alert" className="mx-5 mt-4 flex gap-2 rounded-lg bg-rose-50 p-3 text-sm text-rose-800 sm:mx-6"><CircleAlert size={17} className="shrink-0" />{error}</p> : null}
     <div className="grid gap-6 p-5 sm:p-6 xl:grid-cols-[minmax(0,1fr)_minmax(320px,.8fr)]">
       <MembershipList
@@ -319,7 +335,7 @@ function InviteForm({ role, activeRole, inviteEmail, employees, busy, onRoleChan
       <button disabled={Boolean(busy)} className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-blue-700 px-4 text-xs font-semibold text-white disabled:opacity-50">
         <Send size={15} />{busy === "invite" ? "Enviando invitación…" : "Enviar invitación"}
       </button>
-      <p className="text-[11px] leading-5 text-slate-500">No se crean ni muestran contraseñas. La persona establece su acceso mediante Supabase Auth.</p>
+      <p className="text-[11px] leading-5 text-slate-500">No se crean ni muestran contraseñas. La persona debe abrir el correo de Supabase Auth, confirmar su identidad y completar su nombre y contraseña antes de aceptar. Si falla la entrega, la invitación queda pendiente y debe reenviarse.</p>
     </form>
   );
 }

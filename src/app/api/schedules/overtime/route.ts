@@ -3,7 +3,10 @@ import { z } from "zod";
 import { apiError, resolveAdminScope, scopeError } from "@/lib/admin/scope";
 import { dateInTimeZone, dateForRange } from "@/lib/datetime";
 
-const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+});
 
 export async function GET(request: Request) {
   const result = await resolveAdminScope(request);

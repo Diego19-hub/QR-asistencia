@@ -86,6 +86,25 @@ No se hizo commit, push, PR, merge, workflow ni despliegue. La rama local y los 
 3. Priorizar pruebas locales de los restantes casos P1 no bloqueados y planificar auditorías read-only separadas de Testing y Producción con autorización específica.
 4. Mantener QR-004 En curso hasta cubrir los dominios críticos restantes y la revisión remota segregada; mantener QR-003 P0/NO-GO.
 
+## Revalidación de la rama de cierre — 2026-11-05
+
+Sobre la base `fda78477193bb675bbfb67af8dddf3b646c546fa` se reprodujo una carrera de aprobación de dispositivo tras desasignar la sucursal. El arreglo quedó en una migración aditiva local, `20261105044818_supervisor_device_request_revocation_guard.sql`; el runner `--authorization-races-only` ahora verifica revocación de solicitud pendiente, aprobación concurrente denegada, sucursal inactiva y snapshots tenant A/B. Resultado: **165 aserciones PASS**. El caso no llama a scan/PIN ni escribe sesiones/eventos de asistencia.
+
+| Validación | Resultado | Aislamiento |
+|---|---|---|
+| `npm test` | PASS | Suites Node locales. |
+| `npm run test:security:matrix:local` | PASS, **201/201 pgTAP** + HTTP/Auth | Supabase local desechable; incluye PIN válido sintético y `scan_employee_attendance` sólo en el stack local. |
+| `npm run test:security:authorization-races:local` | PASS, **165 aserciones** | Stack temporal; cleanup y conservación de recursos Docker preexistentes PASS. |
+| `npm run test:security:rpc-ci:local` | PASS, **115/115** | Modo restringido; cleanup PASS. |
+| `npm run test:security:phase10-residual:local` | PASS, **59/59** | Stack temporal; cleanup PASS. |
+| `npm run test:security:privileged-rpc:local` | PASS | Catálogo y suites locales privilegiadas/supervisor-dispositivo; cleanup PASS. |
+| `npm run test:e2e` | PASS, **23/23** | Chrome headless shell existente; no se descargó browser. El test bloquea `/api/attendance/scan`. |
+| Lint, typecheck, `node --check`, build aislado, `git diff --check` | PASS | Sin variables remotas; build en copia temporal sin `.env*`. |
+
+La primera E2E no encontró el build de Chromium esperado y no inició casos; se repitió con el Chrome headless shell ya instalado y pasó 23/23. El build aislado emitió el aviso conocido de archivos externos al tracing por `node_modules` enlazado, sin fallo de compilación.
+
+El run `41967735921` corresponde al SHA base. Tras publicar en la misma rama el commit `8bde1c74a527739522c68f63daac89044ff2964a`, GitHub Actions run [41972450750](https://github.com/Diego19-hub/QR-asistencia/actions/runs/41972450750) terminó **SUCCESS**. Sus pasos `npm ci`, lint, typecheck, `npm test`, restore, reports lease, matriz general, RPC restringida, Fase 10, E2E y build completaron exitosamente. La matriz mantuvo su caso de PIN válido sintético sólo en el stack local desechable. El workflow no fue modificado. No se consultó ni modificó Producción y no hubo escrituras remotas. QR-004 continúa **En curso / NOT READY** por cobertura R10-05 parcial, carreras no exhaustivas y revisión segregada incompleta; QR-003 permanece **P0/NO-GO** y QR-011 **P1/Bloqueada**.
+
 ## Consolidación de Fase 10.3 — revisión local
 
 ### Revisión de la suite y el runner
@@ -136,3 +155,29 @@ Estos criterios son una propuesta para la siguiente fase local; no declaran QR-0
 9. **Cierre global separado:** aun si se satisface el cierre local, QR-004 seguirá en curso hasta la revisión remota segregada/read-only autorizada de Testing y Producción, más resolución de diferencias por entorno. No extrapolar un ambiente al otro.
 
 La aceptación de Fase 10.4 deberá registrar explícitamente qué criterios pasaron, cuáles permanecen bloqueados por QR-003/CI y cuáles requieren revisión remota. QR-003 permanece P0/NO-GO durante esta propuesta.
+
+### Reejecución de validaciones y carrera de alta de dispositivo — 2026-11-05
+
+La primera reproducción del POST de alta de dispositivo durante una transacción de desactivación de membresía devolvió antes del commit de la revocación. El runner falló deliberadamente en la aserción de bloqueo y el stack se limpió; la consulta posterior confirmó que no quedó ningún recurso con el project ID aleatorio de ese intento y que los recursos Docker anteriores seguían presentes. Se incorporó el lock en la migración `20261105172831_supervisor_device_request_authorization_lock.sql` y la regresión cubre tres intercalaciones: desactivación de membership, cambio de rol y retiro de asignación de sucursal.
+
+| Comando | Resultado actual |
+|---|---|
+| `npm run test:security:authorization-races:local` | 180 aserciones PASS, incluida espera por lock, 403 posterior a revocación, cero solicitudes/auditorías de alta y snapshots de tenant B; cleanup/preservación Docker PASS. |
+| `npm run test:security:matrix:local` | Ocho suites: 201/201 pgTAP PASS y HTTP/Auth PASS; contiene PIN sintético válido solo en el stack local desechable. |
+| `npm run test:security:rpc-ci:local` | 115/115 pgTAP PASS en reintento; primera tentativa tuvo colisión del puerto 56908 y el teardown retiró el stack parcial. |
+| `npm run test:security:phase10-residual:local` | 59/59 pgTAP PASS; rollback/cleanup/preservación Docker PASS. |
+| `QR004_CHROME_BIN='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm run test:e2e` | 23/23 PASS; todas las rutas son loopback y no se llamó `/api/attendance/scan`; cleanup/preservación Docker PASS. |
+| `npm test` | PASS; 1 prueba GnuPG omitida porque el sandbox bloquea el socket del agente local. Las pruebas PIN son unitarias locales, sin llamadas remotas. |
+| `npm run lint`; `npm run typecheck`; build aislado; `node --check tests/qr004-auth-matrix.local.integration.mjs`; `git diff --check` | PASS. Build sin `.env*`, con aviso de 27 trazas fuera de `outputFileTracingRoot` por `node_modules` externo. |
+
+La revisión remota del 2026-11-05 se registra en `QR-004-PHASE10-RESIDUAL-GAPS.md`: Testing está activo pero no tiene registradas las dos migraciones locales de lifecycle de dispositivos; la definición leída de `request_supervisor_device` carece del lock recién probado. Producción está `INACTIVE` y los catálogos/migraciones dieron timeout/no accesible. No se comparó la configuración remota de Auth. La matriz de 50 métodos está en `QR-004-R10-05-METHOD-MATRIX.md`; las brechas por método siguen vigentes.
+
+El CI previo del SHA `4c8d2d57413df1c8840365951620781d7d8e899b` fue SUCCESS; no valida esta migración/diff. La autorización vigente permite publicar la rama para ejecutar el CI general, incluido el scan sintético con PIN válido solo en Supabase desechable local. QR-004 sigue **En curso / NOT READY**; QR-003 sigue **P0/NO-GO**, QR-011 **P1/Bloqueada**.
+
+### Validación incremental tras el SHA cfce669 — 2026-11-05
+
+La rama estaba limpia en `cfce6698897a3931a6de5d14c73b2daa29f1ba08`; el CI general #42088289847 para ese SHA terminó SUCCESS. La suite local enfocada (stack desechable) se repitió después de añadir la prueba de `DELETE /api/schedules/[id]` y pasó **194 aserciones**, incluyendo denegaciones anon/tenant/permiso, snapshots sin efectos laterales en dos empresas, borrado permitido de horario sintético y audit. Cleanup preservó el stack `codigo_QR` y contenedores/volúmenes previos. Las suites de catálogo actuales en instancia local fresca pasaron 26/26 y 27/27.
+
+La nueva evidencia no completa los 50 métodos × roles × filtros × concurrencia. Testing conserva 27 migraciones y diverge en cuatro funciones respecto a las 29 locales; Producción sigue `INACTIVE`. Un grant SELECT anon permanece en `company_pay_period_rules` aunque RLS y la única policy catalogada no habilitan filas a anon; no se leyeron filas. Auth administrado no verificable.
+
+Una llamada accidental a `npm test -- --help` inició las pruebas unitarias con salida suprimida, por lo que se registra sin resultado y no se cuenta. No hubo Testing/Producción write, PIN/scan/asistencia local, commit ni publicación en esta validación. QR-004 continúa **En curso / NOT READY**.

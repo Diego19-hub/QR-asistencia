@@ -50,8 +50,8 @@ export async function POST(request: Request) {
       invitationId,
       delivery: existingAccount ? "existing-account" : "failed",
       message: existingAccount
-        ? "La invitación quedó pendiente. La persona debe iniciar sesión con esta dirección para aceptarla; Supabase Auth no envió un correo nuevo a una cuenta ya existente."
-        : "La invitación quedó pendiente, pero Supabase Auth no pudo entregar el correo. Reintenta cuando se corrija la configuración de correo.",
+        ? "La invitación quedó pendiente, pero no se envió un enlace. La cuenta ya existe; configura el envío de enlaces de acceso y reenvía el correo. La persona aún no puede iniciar sesión ni aceptar esta invitación."
+        : "La invitación quedó pendiente, pero no se entregó el correo. Corrige el servicio de correo y usa Reenviar correo antes de que la persona intente iniciar sesión.",
     }, { status: existingAccount ? 202 : 502, headers: { "Cache-Control": "no-store" } });
   }
   return Response.json({ invitationId, delivery: "sent", deliveryMode: delivery.mode }, { status: 201, headers: { "Cache-Control": "no-store" } });
