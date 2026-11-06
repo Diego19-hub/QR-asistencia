@@ -2,7 +2,10 @@ import { z } from "zod";
 
 import { apiError, checkAdminCompanyPermission, permissionCheckError, resolveAdminScope, scopeError } from "@/lib/admin/scope";
 
-const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+});
 const actionSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9_.-]+$/);
 const safeFieldNames: Record<string, string> = {
   name: "Nombre",

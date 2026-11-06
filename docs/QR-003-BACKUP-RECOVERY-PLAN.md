@@ -2,9 +2,9 @@
 
 ## Estado y alcance
 
-Este plan prepara recuperación para QR-asistencia-Testing (`llxyziffgtqnzlguxhyt`) sin cambiar el proyecto. La última lectura registrada informó que no había respaldos listados y PITR estaba deshabilitado. No se exportaron datos alojados ni se modificaron Testing o Producción.
+Este plan prepara recuperación para QR-asistencia-Testing (`llxyziffgtqnzlguxhyt`). La consulta de respaldo/PITR citada abajo es histórica y debe verificarse antes de una decisión operativa. El 2026-11-06 se ejecutó una prueba sintética en una transacción revertida y se confirmó que no quedaron fixtures. No se exportaron datos reales ni hubo cambios persistentes en Testing; Producción no se consultó ni modificó.
 
-**Decisión vigente: NO-GO para escribir QR-003.** La simulación local demuestra que una copia sintética puede cifrarse, verificarse y restaurarse en un stack nuevo. No demuestra que exista hoy un respaldo recuperable de Testing ni que pueda restaurarse el proyecto alojado. Esas condiciones requieren autorización y verificación separadas.
+**Decisión del propietario (2026-11-06):** acepta que Testing es descartable y que su recuperación no está garantizada; QR-003 se cerró para la corrección del PIN y su prueba sintética. No hay backup/restore remoto demostrado ni RPO/RTO confirmado. Ese riesgo queda aceptado para el cierre técnico de QR-003 y debe figurar en QR-011; el lanzamiento permanece **NO-GO** hasta completar su aceptación. La decisión no autoriza exportar, borrar o reconstruir Testing ni realizar acciones en Producción. Véase [acta de cierre](QR-003-ACCEPTED-RISK-CLOSURE.md).
 
 ## Alternativas de respaldo
 
