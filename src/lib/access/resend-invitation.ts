@@ -26,8 +26,8 @@ export async function resendCompanyInvitation(request: Request, invitationId: st
   if (!delivery.sent) {
     const needsMailer = delivery.mode === "existing-account";
     return apiError(needsMailer ? "existing_account_delivery_unconfigured" : "invite_delivery_failed", needsMailer
-      ? "La cuenta ya existe. Configura RESEND_API_KEY e INVITATION_FROM_EMAIL para enviar un enlace seguro, o pide a la persona que inicie sesión para aceptar."
-      : "Supabase Auth no pudo entregar el correo. Revisa SMTP y vuelve a intentarlo.", needsMailer ? 503 : 502);
+      ? "La cuenta ya existe y no se envió un enlace. Configura el proveedor de correo y vuelve a reenviar; la persona debe abrir el enlace, completar su cuenta y después aceptar."
+      : "No se pudo entregar el correo; la invitación sigue pendiente. Revisa el servicio de correo y vuelve a reenviarla antes de que la persona intente iniciar sesión.", needsMailer ? 503 : 502);
   }
   return Response.json({ ok: true, deliveryMode: delivery.mode }, { headers: { "Cache-Control": "no-store" } });
 }

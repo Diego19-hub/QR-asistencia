@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import net from "node:net";
+import { createServer } from "node:http";
 import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import pg from "pg";
@@ -22,6 +23,7 @@ const phase9RpcOnly = process.argv.includes("--phase9-rpc-auth-only");
 const rpcSecurityCiOnly = process.argv.includes("--rpc-security-ci-only");
 const phase10ResidualOnly = process.argv.includes("--phase10-residual-only");
 const authorizationRacesOnly = process.argv.includes("--authorization-races-only");
+const invitationFlowOnly = process.argv.includes("--invitation-flow-only");
 const isolatedModes = [supervisorDeviceRlsOnly, privilegedRpcAuditOnly, phase9RpcOnly, rpcSecurityCiOnly, phase10ResidualOnly, authorizationRacesOnly].filter(Boolean);
 assert.ok(isolatedModes.length <= 1 && !(isolatedModes.length && (e2eOnly || performanceOnly)), "isolated security modes cannot be combined with another mode");
 const browserOnly = e2eOnly || performanceOnly;
@@ -59,6 +61,10 @@ const rpcSecurityCiExpected = new Map([
 let temp;
 let startAttempted = false;
 let appServer, actionBrowser, dbPool, service, apiUrl, anonKey, serviceKey, dbUrl, appUrl, mailpitUrl, appOutput = "";
+let resendServer, resendUrl;
+const resendMessages = [];
+const resendFailRecipients = new Set();
+let invitationFlowFixtures;
 let attendanceSessionA, attendanceSessionB, foreignBranchSession;
 
 function safeCli(args, timeout = 900_000) {
@@ -185,6 +191,7 @@ async function createHttpUser(label, role, companyId, { extraMemberships = [], e
   const created = await service.auth.admin.createUser({ email, password, email_confirm: true });
   if (created.error || !created.data.user) throw new Error(`local Auth fixture creation failed (${label})`);
   const userId = created.data.user.id;
+  await markInvitationSetupComplete(userId);
   const membershipRows = [];
   for (const [membershipCompanyId, membershipRole] of [[companyId, role], ...extraMemberships]) {
     const inserted = await service.from("company_memberships").insert({ company_id: membershipCompanyId, user_id: userId, role: membershipRole, active: true }).select("id,company_id,role").single();
@@ -211,19 +218,25 @@ async function createHttpUser(label, role, companyId, { extraMemberships = [], e
   if (ssrLogin.error) throw new Error(`local SSR session creation failed (${label})`);
   return { userId, email, password, companyId, employeeId, memberships: membershipRows, client, cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; ") };
 }
+async function markInvitationSetupComplete(userId) {
+  const marker = new Date().toISOString();
+  await dbPool.query("update auth.users set raw_app_meta_data=jsonb_set(coalesce(raw_app_meta_data,'{}'::jsonb),'{access_setup_completed_at}',to_jsonb($2::text),true) where id=$1", [userId, marker]);
+}
 async function createAuthOnly(email) {
   const password = randomBytes(32).toString("base64url");
   const created = await service.auth.admin.createUser({ email, password, email_confirm: true });
   if (created.error || !created.data.user) throw new Error("failed creating synthetic Auth identity");
+  await markInvitationSetupComplete(created.data.user.id);
   const client = createClient(apiUrl, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
   const login = await client.auth.signInWithPassword({ email, password });
   if (login.error || !login.data.session) throw new Error("synthetic identity failed local Auth login");
   return client;
 }
-async function createHttpIdentity(email, { emailConfirmed = true } = {}) {
+async function createHttpIdentity(email, { emailConfirmed = true, setupCompleted = true } = {}) {
   const password = randomBytes(32).toString("base64url");
   const created = await service.auth.admin.createUser({ email, password, email_confirm: true });
   if (created.error || !created.data.user) throw new Error("failed creating synthetic HTTP Auth identity");
+  if (setupCompleted) await markInvitationSetupComplete(created.data.user.id);
   const client = createClient(apiUrl, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
   const login = await client.auth.signInWithPassword({ email, password });
   if (login.error || !login.data.session) throw new Error("synthetic HTTP identity could not establish a local Auth session");
@@ -291,6 +304,54 @@ async function waitForMailpitRecipient(email, expectedCount) {
   }
   assert.equal(recipientCount, expectedCount, `Mailpit captured exactly ${expectedCount} message(s) for the synthetic recipient`);
 }
+async function getMailpitMessage(email, expectedCount = 1) {
+  await waitForMailpitRecipient(email, expectedCount);
+  const response = await fetch(new URL("/api/v1/messages?limit=100", mailpitUrl));
+  const payload = await response.json();
+  const messages = Array.isArray(payload) ? payload : payload.messages;
+  const item = messages.filter((message) => (message.To ?? message.to ?? []).some((recipient) => (recipient.Address ?? recipient.address ?? "").toLowerCase() === email.toLowerCase()))
+    .sort((a, b) => String(b.Created ?? b.created ?? b.Date ?? b.date ?? "").localeCompare(String(a.Created ?? a.created ?? a.Date ?? a.date ?? "")))[0];
+  const id = item?.ID ?? item?.Id ?? item?.id;
+  assert.ok(id, "Mailpit lists the expected synthetic message");
+  const detailResponse = await fetch(new URL(`/api/v1/message/${encodeURIComponent(id)}`, mailpitUrl));
+  assert.equal(detailResponse.status, 200, "Mailpit exposes the synthetic message body only to the local test runner");
+  return detailResponse.json();
+}
+function extractConfirmationUrl(message) {
+  const body = [message.HTML, message.Text, message.html, message.text, message.Body].filter((item) => typeof item === "string").join("\n");
+  const candidate = body.match(/https?:\/\/[^\s"'<>]+/g)?.map((value) => value.replaceAll("&amp;", "&"))
+    .find((value) => value.includes("/auth/confirm?") && value.includes("token_hash="));
+  assert.ok(candidate, "synthetic email contains the fixed token-hash confirmation URL");
+  const url = new URL(candidate);
+  assert.equal(url.origin, appUrl, "confirmation link uses the disposable local application origin");
+  assert.equal(url.pathname, "/auth/confirm");
+  assert.ok(["invite", "magiclink"].includes(url.searchParams.get("type")));
+  assert.ok(url.searchParams.get("token_hash"));
+  assert.equal(url.hash, "", "confirmation URL has no access/refresh token fragment");
+  return url.href;
+}
+async function startLocalResendMock() {
+  resendServer = createServer((request, response) => {
+    let raw = "";
+    request.on("data", (chunk) => { raw += chunk; if (raw.length > 64_000) request.destroy(); });
+    request.on("end", () => {
+      let message;
+      try { message = JSON.parse(raw); } catch { response.writeHead(400).end(); return; }
+      const recipient = Array.isArray(message.to) ? message.to[0] : "";
+      if (typeof recipient !== "string" || !recipient.endsWith("@qr-asistencia.invalid")) { response.writeHead(403).end(); return; }
+      if (resendFailRecipients.has(recipient)) { response.writeHead(503).end(); return; }
+      resendMessages.push(message);
+      response.writeHead(200, { "content-type": "application/json" }).end('{"id":"synthetic-local-mail-id"}');
+    });
+  });
+  await new Promise((resolveServer, rejectServer) => {
+    resendServer.once("error", rejectServer);
+    resendServer.listen(0, "127.0.0.1", resolveServer);
+  });
+  const address = resendServer.address();
+  resendUrl = `http://127.0.0.1:${address.port}/emails`;
+  localUrl(resendUrl, "synthetic Resend endpoint");
+}
 
 const before = Object.fromEntries(["containers", "volumes", "networks"].map((kind) => [kind, dockerResources(kind)]));
 const cleanupErrors = [];
@@ -303,10 +364,15 @@ try {
   if (supervisorDeviceRlsOnly || privilegedRpcAuditOnly || phase9RpcOnly || rpcSecurityCiOnly || phase10ResidualOnly || authorizationRacesOnly) {
     const canonicalMigrations = execFileSync("git", ["ls-files", "-z", "supabase/migrations/*.sql"], { cwd: root, encoding: "utf8" })
       .split("\0").filter(Boolean);
-    const pendingReviewedMigration = "supabase/migrations/20261105172831_supervisor_device_request_authorization_lock.sql";
-    if (!canonicalMigrations.includes(pendingReviewedMigration)) canonicalMigrations.push(pendingReviewedMigration);
+    const pendingReviewedMigrations = [
+      "supabase/migrations/20261105172831_supervisor_device_request_authorization_lock.sql",
+      "supabase/migrations/20261105234619_invitation_account_setup_required.sql",
+    ];
+    for (const migration of pendingReviewedMigrations) {
+      if (await readFile(join(root, migration), "utf8").then(() => true, () => false) && !canonicalMigrations.includes(migration)) canonicalMigrations.push(migration);
+    }
     canonicalMigrations.sort();
-    assert.equal(canonicalMigrations.length, 29, "isolated RLS/RPC audit requires 27 canonical migrations plus the two reviewed supervisor device lifecycle migrations");
+    assert.equal(canonicalMigrations.length, 30, "isolated auth/RLS/RPC audit requires canonical migrations plus the reviewed supervisor-device and invitation-account-setup migrations");
     for (const migration of canonicalMigrations) {
       await cp(join(root, migration), join(workdir, migration));
     }
@@ -564,7 +630,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     <form id="sign-out-employee" action={employeeSignOut}><button type="submit">Sign out employee</button></form>
     <form id="choose-membership" action={chooseMembership}><input type="hidden" name="membershipId" value={value("membershipId")} /><input type="hidden" name="next" value={value("next")} /><button type="submit">Choose membership</button></form>
     <form id="accept-invitation" action={acceptInvitation}><input type="hidden" name="invitationId" value={value("invitationId")} /><button type="submit">Accept invitation</button></form>
-    <form id="set-invitation-password" action={setInvitationPassword}><input name="password" type="password" /><input name="confirmation" type="password" /><button type="submit">Set invitation password</button></form>
+    <form id="set-invitation-password" action={setInvitationPassword}><input name="fullName" type="text" /><input name="password" type="password" /><input name="confirmation" type="password" /><button type="submit">Set invitation password</button></form>
     <form id="set-admin-membership" action={updateAdminMembership}><button type="submit">Set admin membership</button></form>
   </main>;
 }
@@ -601,6 +667,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
         PATH: process.env.PATH, NODE_ENV: performanceOnly ? "production" : "development", NEXT_TELEMETRY_DISABLED: "1",
         NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey,
         SUPABASE_SERVICE_ROLE_KEY: adminServiceKey, APP_BASE_URL: appUrl,
+        ...(invitationFlowOnly ? { QR_AUTH_LOCAL_TEST: "1", QR_AUTH_LOCAL_RESEND_URL: resendUrl, RESEND_API_KEY: "synthetic-resend-test-key", INVITATION_FROM_EMAIL: "QR Tests <no-reply@qr-asistencia.invalid>" } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -608,6 +675,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     appServer.stderr.on("data", (chunk) => { appOutput = (appOutput + chunk.toString()).slice(-12_000); });
     await waitForNext(`${appUrl}/login`);
   };
+  if (invitationFlowOnly) await startLocalResendMock();
   await startNext();
   process.stdout.write("PASS local Auth users and temporary Next.js server use only the disposable Supabase loopback endpoints\n");
 
@@ -1420,7 +1488,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
 
     const setupEmail = `r1005-password-action-${randomUUID()}@qr-asistencia.invalid`;
     const setupIdentity = await createHttpIdentity(setupEmail);
-    await dbPool.query("update auth.users set invited_at=clock_timestamp() where id=$1", [setupIdentity.userId]);
+    await dbPool.query("update auth.users set invited_at=clock_timestamp(), raw_app_meta_data=raw_app_meta_data-'access_setup_completed_at' where id=$1", [setupIdentity.userId]);
     const setupInvite = await adminA.client.rpc("create_company_user_invitation", { p_company_id: companyA, p_email: setupEmail, p_role: "employee", p_employee_id: null });
     verify.equal(setupInvite.error, null);
     await actionBrowser.close();
@@ -1438,8 +1506,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       from public.company_user_invitations i where i.id=$1`, [setupInvite.data, setupIdentity.userId]);
     verify.deepEqual(rejectedSetup.rows[0], { status: "pending", memberships: 0, accept_audit: 0 }, "acceptInvitation Server Action rejects before password setup without side effects");
     await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(setupInvite.data)}`);
-    await actionBrowser.runForm("#set-invitation-password", { password: "synthetic-final-password-123", confirmation: "synthetic-final-password-123" });
-    await actionBrowser.waitForPath("password=updated");
+    await actionBrowser.runForm("#set-invitation-password", { fullName: "Synthetic Setup User", password: "synthetic-final-password-123", confirmation: "synthetic-final-password-123" });
+    await actionBrowser.waitForPath("setup=complete");
     const appSetup = await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [setupIdentity.userId]);
     verify.ok(appSetup.rows[0].marker, "password Server Action persists its server-owned setup marker");
     verify.deepEqual(preSetup.rows, [{ status: "pending" }], "password setup alone does not accept or mutate the invitation");
@@ -1461,6 +1529,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const actionMultiAdmin = await createHttpUser("server-action-multi-admin", "admin", companyA, { extraMemberships: [[companyB, "admin"]] });
   const actionEmployee = await createHttpUser("server-action-employee", "employee", companyA, { employee: true, branchId: branchA });
   actionBrowser = await launchServerActionBrowser(appUrl);
+
   await actionBrowser.navigate("/login?next=https%3A%2F%2Fattacker.invalid%2Fredirect");
   await actionBrowser.runForm("form", { email: actionAdmin.email, password: "intentionally-wrong-synthetic-password" });
   await actionBrowser.waitForPath("error=credentials");
@@ -2622,7 +2691,15 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/admin/permissions?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
   await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "company.manage");
   const inviteEmail = `new-invite-${randomUUID()}@qr-asistencia.invalid`;
-  response = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "POST", body: { email: inviteEmail, role: "employee", employeeId: null } });
+  if (invitationFlowOnly) {
+    const anon = createClient(apiUrl, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
+    const publicSignup = await anon.auth.signUp({ email: `public-signup-${randomUUID()}@qr-asistencia.invalid`, password: "synthetic-public-password" });
+    assert.ok(publicSignup.error || !publicSignup.data.session, "public signup remains disabled without an invitation");
+    if (publicSignup.data.user?.id) assert.equal((await dbPool.query("select count(*)::int n from auth.users where id=$1", [publicSignup.data.user.id])).rows[0].n, 0, "disabled public signup creates no Auth identity");
+  }
+  const employeeForInvite = await service.from("employees").insert({ company_id: companyA, branch_id: branchA, employee_number: `INV-${randomBytes(4).toString("hex")}`, first_name: "Expediente", last_name: "Autoritativo", email: inviteEmail, active: true }).select("id").single();
+  if (employeeForInvite.error || !employeeForInvite.data?.id) throw new Error("failed creating synthetic employee linked to new-account invitation");
+  response = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "POST", body: { email: inviteEmail, role: "employee", employeeId: employeeForInvite.data.id } });
   assert.equal(response.status, 201, `valid invitation with local SMTP available returns HTTP 201, got ${response.status}`);
   await waitForMailpitRecipient(inviteEmail, 1);
   process.stdout.write("PASS valid local invitation returned HTTP 201 and Mailpit captured its synthetic recipient\n");
@@ -2637,9 +2714,160 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     assert.equal((await response.json()).deliveryMode, "auth-invite");
     await waitForMailpitRecipient(inviteEmail, 2);
     assert.deepEqual(await snapshot(companyA), beforeResend, "resend has no database side effects");
+    if (invitationFlowOnly) {
+      const newAccountMessage = await getMailpitMessage(inviteEmail, 2);
+      const newAccountUrl = extractConfirmationUrl(newAccountMessage);
+      assert.equal(new URL(newAccountUrl).searchParams.get("type"), "invite", "new identity receives Supabase Auth invite confirmation");
+      invitationFlowFixtures = { inviteId: inviteBody.invitationId, inviteEmail, employeeId: employeeForInvite.data.id, newAccountUrl };
+    }
     process.stdout.write("PASS local invitation resend returned HTTP 200, Mailpit captured both messages, and database state was unchanged\n");
-    response = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { action: "revoke-invitation", invitationId: inviteBody.invitationId } }); assert.equal(response.status, 200);
+    if (!invitationFlowOnly) {
+      response = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { action: "revoke-invitation", invitationId: inviteBody.invitationId } }); assert.equal(response.status, 200);
+    }
   }
+
+  if (invitationFlowOnly) {
+    const existingEmail = `existing-invite-${randomUUID()}@qr-asistencia.invalid`;
+    const existingIdentity = await createHttpIdentity(existingEmail, { setupCompleted: false });
+    const existingInviteResponse = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "POST", body: { email: existingEmail, role: "employee", employeeId: null } });
+    assert.equal(existingInviteResponse.status, 201, "existing Auth identity receives an invitation through the magic-link delivery path");
+    const existingInviteBody = await existingInviteResponse.json();
+    assert.equal(existingInviteBody.deliveryMode, "magic-link");
+    const existingMessage = resendMessages.findLast((message) => Array.isArray(message.to) && message.to[0] === existingEmail);
+    assert.ok(existingMessage, "existing-account magic link is captured by the loopback mail double");
+    invitationFlowFixtures.existing = { email: existingEmail, password: existingIdentity.password, userId: existingIdentity.userId, inviteId: existingInviteBody.invitationId, confirmationUrl: extractConfirmationUrl(existingMessage) };
+    assert.equal(new URL(invitationFlowFixtures.existing.confirmationUrl).searchParams.get("type"), "magiclink", "existing identity receives a Supabase magic link");
+
+    const failedEmail = `delivery-failure-${randomUUID()}@qr-asistencia.invalid`;
+    const failedIdentity = await createHttpIdentity(failedEmail);
+    resendFailRecipients.add(failedEmail);
+    const failedResponse = await request(`/api/admin/access?companyId=${companyA}`, { user: adminA, method: "POST", body: { email: failedEmail, role: "employee", employeeId: null } });
+    assert.equal(failedResponse.status, 502, "mail-provider failure is reported as delivery failure");
+    assert.match((await failedResponse.json()).message, /no se entregó el correo/i, "delivery failure message does not claim the invitee can sign in");
+    const failedInvitationResult = await dbPool.query("select id,status from public.company_user_invitations where company_id=$1 and email=$2", [companyA, failedEmail]);
+    const failedInvitation = failedInvitationResult.rows[0];
+    assert.equal(failedInvitation?.status, "pending", "delivery failure leaves the invitation pending for retry");
+    const failedBeforeResend = await snapshot(companyA);
+    resendFailRecipients.delete(failedEmail);
+    const retryResponse = await request(`/api/admin/access/invitations/${failedInvitation.id}/resend?companyId=${companyA}`, { user: adminA, method: "POST" });
+    assert.equal(retryResponse.status, 200, "resending after the synthetic provider recovers delivers the existing-account magic link");
+    assert.equal((await retryResponse.json()).deliveryMode, "magic-link");
+    assert.deepEqual(await snapshot(companyA), failedBeforeResend, "successful resend changes no invitation, membership, or audit state");
+    assert.ok(resendMessages.some((message) => Array.isArray(message.to) && message.to[0] === failedEmail), "resend payload reaches only the local mail double");
+    invitationFlowFixtures.failed = { email: failedEmail, userId: failedIdentity.userId, invitationId: failedInvitation.id };
+  }
+
+  if (invitationFlowOnly) {
+    await actionBrowser.close();
+    actionBrowser = await launchServerActionBrowser(appUrl);
+    assert.ok(invitationFlowFixtures?.newAccountUrl, "new account invite email was captured locally before the acceptance flow");
+    await actionBrowser.close();
+    actionBrowser = await launchServerActionBrowser(appUrl);
+    await actionBrowser.navigate(invitationFlowFixtures.newAccountUrl);
+    const confirmationPage = await actionBrowser.bodyText();
+    assert.match(confirmationPage, /Confirmar invitación/);
+    await actionBrowser.runForm("form");
+    await actionBrowser.waitForPath("/invitacion");
+    let onboardingPage = await actionBrowser.bodyText();
+    assert.match(onboardingPage, /Completar cuenta y aceptar invitación/);
+    assert.match(onboardingPage, new RegExp(invitationFlowFixtures.inviteEmail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(onboardingPage, /Correo confirmado por Supabase Auth/);
+    assert.match(onboardingPage, /Nombre completo/);
+    assert.doesNotMatch(onboardingPage, /<input[^>]+name="email"/i);
+    const newAccountBeforeInvalid = await snapshot(companyA);
+    await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(invitationFlowFixtures.inviteId)}`);
+    await actionBrowser.runForm("#set-invitation-password", { fullName: "A", password: "synthetic-valid-password", confirmation: "synthetic-valid-password" });
+    await actionBrowser.waitForPath("error=name");
+    await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(invitationFlowFixtures.inviteId)}`);
+    await actionBrowser.runForm("#set-invitation-password", { fullName: "Synthetic New Employee", password: "synthetic-password-one", confirmation: "synthetic-password-two" });
+    await actionBrowser.waitForPath("error=password-match");
+    await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(invitationFlowFixtures.inviteId)}`);
+    await actionBrowser.runForm("#set-invitation-password", { fullName: "Synthetic New Employee", password: "short", confirmation: "short" });
+    await actionBrowser.waitForPath("error=password");
+    assert.deepEqual(await snapshot(companyA), newAccountBeforeInvalid, "invalid name/password submissions preserve invitation, membership, employee and audit snapshots");
+    const unconfiguredNew = await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where email=$1", [invitationFlowFixtures.inviteEmail]);
+    assert.equal(unconfiguredNew.rows[0]?.marker ?? null, null, "invalid input does not write the trusted setup marker");
+    await actionBrowser.navigate("/invitacion");
+    await actionBrowser.runForm("form:has(input[name='fullName'])", { fullName: "  Nuevo   Usuario Sintético ", password: "synthetic-new-account-password", confirmation: "synthetic-new-account-password" });
+    await actionBrowser.waitForPath("setup=complete");
+    onboardingPage = await actionBrowser.bodyText();
+    assert.match(onboardingPage, /Cuenta configurada/);
+    await actionBrowser.runForm("form:has(input[name='invitationId'])");
+    await actionBrowser.waitForPath("/mi-qr");
+    const acceptedNewAccount = await dbPool.query(`select u.raw_user_meta_data->>'full_name' full_name,
+      u.email_confirmed_at is not null email_confirmed,
+      i.status,
+      e.first_name,e.last_name,e.auth_user_id,
+      (select count(*)::int from public.audit_log a where a.company_id=i.company_id and a.entity_id=i.id and a.action='USER_INVITATION_ACCEPTED') accept_audits
+      from auth.users u join public.company_user_invitations i on i.email=u.email
+      join public.employees e on e.id=$1 where u.id=(select accepted_by from public.company_user_invitations where id=$2) and i.id=$2`,
+    [invitationFlowFixtures.employeeId, invitationFlowFixtures.inviteId]);
+    assert.deepEqual(acceptedNewAccount.rows[0], { full_name: "Nuevo Usuario Sintético", email_confirmed: true, status: "accepted", first_name: "Expediente", last_name: "Autoritativo", auth_user_id: acceptedNewAccount.rows[0]?.auth_user_id, accept_audits: 1 }, "new invite confirms identity, stores presentation name, preserves employee record name, and accepts once");
+    assert.ok(acceptedNewAccount.rows[0]?.auth_user_id, "acceptance links only the employee expediente attached to this invite");
+    process.stdout.write("PASS new account: Auth invite via Mailpit, explicit /auth/confirm POST, verified identity, validated name/password, server setup marker, employee-name preservation and one-time acceptance\n");
+
+    await actionBrowser.clickButtonText("Cerrar sesión");
+    await actionBrowser.waitForPath("/login");
+    const existingFlow = invitationFlowFixtures.existing;
+    await actionBrowser.navigate(existingFlow.confirmationUrl);
+    await actionBrowser.runForm("form");
+    await actionBrowser.waitForPath("/invitacion");
+    onboardingPage = await actionBrowser.bodyText();
+    assert.match(onboardingPage, /Completar cuenta y aceptar invitación/);
+    assert.match(onboardingPage, new RegExp(existingFlow.email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    await actionBrowser.runForm("form:has(input[name='fullName'])", { fullName: "Cuenta Existente Sintética", password: "synthetic-existing-account-password", confirmation: "synthetic-existing-account-password" });
+    await actionBrowser.waitForPath("setup=complete");
+    await actionBrowser.navigate("/invitacion");
+    await actionBrowser.runForm("form:has(input[name='invitationId'])");
+    await actionBrowser.waitForPath("/mi-qr");
+    const acceptedExisting = await dbPool.query(`select i.status,
+      u.raw_user_meta_data->>'full_name' full_name,
+      u.raw_app_meta_data->>'access_setup_completed_at' marker,
+      (select count(*)::int from public.company_memberships m where m.company_id=i.company_id and m.user_id=u.id and m.active) memberships,
+      (select count(*)::int from public.audit_log a where a.company_id=i.company_id and a.entity_id=i.id and a.action='USER_INVITATION_ACCEPTED') accept_audits
+      from public.company_user_invitations i join auth.users u on lower(u.email)=lower(i.email) where i.id=$1`, [existingFlow.inviteId]);
+    assert.equal(acceptedExisting.rows[0]?.status, "accepted", "existing account magic link leads to successful one-time invitation acceptance");
+    assert.equal(acceptedExisting.rows[0]?.full_name, "Cuenta Existente Sintética", "existing account name is stored in presentation user metadata");
+    assert.ok(acceptedExisting.rows[0]?.marker, "existing account receives the server-owned setup marker only after password action");
+    assert.deepEqual([acceptedExisting.rows[0]?.memberships, acceptedExisting.rows[0]?.accept_audits], [1, 1], "existing-account acceptance creates one membership and one audit event");
+    process.stdout.write("PASS existing account: local magic link, password/name setup, authenticated acceptance and one membership/audit\n");
+
+    await actionBrowser.clickButtonText("Cerrar sesión");
+    await actionBrowser.waitForPath("/login");
+    const noInviteIdentity = await createHttpIdentity(`no-pending-invite-${randomUUID()}@qr-asistencia.invalid`, { setupCompleted: false });
+    await actionBrowser.navigate("/login");
+    await actionBrowser.runForm("form", { email: noInviteIdentity.email, password: noInviteIdentity.password });
+    await actionBrowser.waitForPath("error=no-company");
+    await actionBrowser.navigate("/qr004-action-harness");
+    const noInviteBefore = await snapshot(companyA);
+    await actionBrowser.runForm("#set-invitation-password", { fullName: "Synthetic Without Invitation", password: "synthetic-no-invite-password", confirmation: "synthetic-no-invite-password" });
+    await actionBrowser.waitForPath("error=invitation");
+    assert.deepEqual(await snapshot(companyA), noInviteBefore, "account setup without a pending invitation makes no invitation/membership/audit change");
+    assert.equal((await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [noInviteIdentity.userId])).rows[0]?.marker ?? null, null, "setup without invitation cannot set the server-owned marker");
+
+    await actionBrowser.navigate("/qr004-action-harness");
+    await actionBrowser.clickButtonText("Sign out");
+    await actionBrowser.waitForPath("/login");
+    const unconfirmedEmail = `unconfirmed-setup-${randomUUID()}@qr-asistencia.invalid`;
+    const unconfirmedIdentity = await createHttpIdentity(unconfirmedEmail, { setupCompleted: false });
+    const unconfirmedInvitation = await adminA.client.rpc("create_company_user_invitation", { p_company_id: companyA, p_email: unconfirmedEmail, p_role: "employee", p_employee_id: null });
+    assert.equal(unconfirmedInvitation.error, null, "synthetic admin creates invite for unconfirmed-email scenario");
+    await actionBrowser.navigate("/login");
+    await actionBrowser.runForm("form", { email: unconfirmedEmail, password: unconfirmedIdentity.password });
+    await actionBrowser.waitForPath("/invitacion");
+    await dbPool.query("update auth.users set email_confirmed_at=null where id=$1", [unconfirmedIdentity.userId]);
+    const unconfirmedBefore = await snapshot(companyA);
+    await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(unconfirmedInvitation.data)}`);
+    await actionBrowser.runForm("#set-invitation-password", { fullName: "Unconfirmed Synthetic", password: "synthetic-unconfirmed-password", confirmation: "synthetic-unconfirmed-password" });
+    await actionBrowser.waitForPath("error=email");
+    assert.deepEqual(await snapshot(companyA), unconfirmedBefore, "unconfirmed identity cannot set profile/password or accept invitation");
+    assert.equal((await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [unconfirmedIdentity.userId])).rows[0]?.marker ?? null, null, "unconfirmed identity does not receive setup marker");
+    process.stdout.write("PASS setup action rejects uninvited and unconfirmed identities before profile, marker, membership or audit writes\n");
+    await actionBrowser.navigate("/qr004-action-harness");
+    await actionBrowser.runForm("#sign-out");
+    await actionBrowser.waitForPath("/login");
+  }
+
 
   const createPendingInvite = async (email, companyId = companyA, role = "employee") => {
     const manager = companyId === companyB ? adminB : adminA;
@@ -2728,7 +2956,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   await actionBrowser.navigate("/login");
   await actionBrowser.runForm("form", { email: actionInvitee.email, password: actionInvitee.password });
   await actionBrowser.waitForPath("/invitacion");
-  assert.match(await actionBrowser.bodyText(), /Acepta únicamente una invitación destinada a tu cuenta/);
+  assert.match(await actionBrowser.bodyText(), /Confirma que esta invitación corresponde a tu cuenta/);
   await actionBrowser.runForm("form:has(input[name='invitationId'])");
   await actionBrowser.waitForPath("/seleccionar-empresa");
   const acceptedActionMembership = await dbPool.query("select id from public.company_memberships where company_id=$1 and user_id=$2 and active", [companyA, actionInvitee.userId]);
@@ -2775,8 +3003,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   // Reproduce user_metadata tampering, then verify that the server-controlled
   // app_metadata marker and server-side accept guard prevent bypassing setup.
   const forgedSetupEmail = `server-action-setup-${randomUUID()}@qr-asistencia.invalid`;
-  const forgedSetupIdentity = await createHttpIdentity(forgedSetupEmail);
-  await dbPool.query("update auth.users set invited_at=clock_timestamp() where id=$1", [forgedSetupIdentity.userId]);
+  const forgedSetupIdentity = await createHttpIdentity(forgedSetupEmail, { setupCompleted: false });
+  await dbPool.query("update auth.users set invited_at=clock_timestamp(), raw_app_meta_data=raw_app_meta_data-'access_setup_completed_at' where id=$1", [forgedSetupIdentity.userId]);
   const forgedMetadata = await forgedSetupIdentity.client.auth.updateUser({ data: { access_setup_completed_at: new Date().toISOString() } });
   assert.equal(forgedMetadata.error, null, "synthetic Auth user can modify user_metadata");
   const forgedSetupInviteId = await createPendingInvite(forgedSetupEmail, companyA, "employee");
@@ -2784,27 +3012,27 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   await actionBrowser.runForm("form", { email: forgedSetupEmail, password: forgedSetupIdentity.password });
   await actionBrowser.waitForPath("/invitacion");
   const forgedSetupPage = await actionBrowser.bodyText();
-  assert.match(forgedSetupPage, /Configura tu contraseña/, "user-controlled user_metadata cannot hide the required setup form");
+  assert.match(forgedSetupPage, /Completar cuenta y aceptar invitación/, "user-controlled user_metadata cannot hide the required setup form");
   const beforeSetupGuard = await snapshot(companyA);
   await actionBrowser.runForm("form:has(input[name='invitationId'])", { invitationId: forgedSetupInviteId });
   await actionBrowser.waitForPath("error=password");
   assert.deepEqual(await snapshot(companyA), beforeSetupGuard, "server-side accept guard rejects a forged metadata marker without side effects");
   assert.equal((await dbPool.query("select count(*)::int n from public.company_memberships where company_id=$1 and user_id=$2 and active", [companyA, forgedSetupIdentity.userId])).rows[0].n, 0);
-  await actionBrowser.runForm("form:has(input[name='password'])", { password: "synthetic-invalid-password", confirmation: "synthetic-mismatch-password" });
+  await actionBrowser.runForm("form:has(input[name='password'])", { fullName: "Synthetic Setup User", password: "synthetic-invalid-password", confirmation: "synthetic-mismatch-password" });
   await actionBrowser.waitForPath("error=password");
   assert.deepEqual(await snapshot(companyA), beforeSetupGuard, "mismatched password submissions do not mutate invitation state");
-  await actionBrowser.runForm("form:has(input[name='password'])", { password: "synthetic-new-password-123", confirmation: "synthetic-new-password-123" });
+  await actionBrowser.runForm("form:has(input[name='password'])", { fullName: "Synthetic Setup User", password: "synthetic-new-password-123", confirmation: "synthetic-new-password-123" });
   const setupUser = await service.auth.admin.getUserById(forgedSetupIdentity.userId);
   const setupActionUrl = new URL(await actionBrowser.currentUrl());
   assert.ok(setupUser.data.user?.app_metadata?.access_setup_completed_at, `real password action must persist server metadata before redirect (path=${setupActionUrl.pathname}${setupActionUrl.search}; invited=${Boolean(setupUser.data.user?.invited_at)}; appMarker=${Boolean(setupUser.data.user?.app_metadata?.access_setup_completed_at)})`);
-  await actionBrowser.waitForPath("password=updated");
+  await actionBrowser.waitForPath("setup=complete");
   assert.ok(setupUser.data.user?.app_metadata?.access_setup_completed_at, "only the server action writes the protected app_metadata completion marker");
   const persistedSetupMarker = await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [forgedSetupIdentity.userId]);
   assert.equal(persistedSetupMarker.rows[0].marker, setupUser.data.user.app_metadata.access_setup_completed_at, "the marker checked by PostgreSQL is the server-written raw_app_meta_data value");
   assert.ok(setupUser.data.user?.user_metadata?.access_setup_completed_at, "the forgery remains in user_metadata but is not trusted");
   const repeatedPasswordSetupBefore = setupUser.data.user.app_metadata.access_setup_completed_at;
   await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(forgedSetupInviteId)}`);
-  await actionBrowser.runForm("#set-invitation-password", { password: "another-synthetic-password-456", confirmation: "another-synthetic-password-456" });
+  await actionBrowser.runForm("#set-invitation-password", { fullName: "Changed Synthetic Name", password: "another-synthetic-password-456", confirmation: "another-synthetic-password-456" });
   await actionBrowser.waitForPath("error=invalid");
   const repeatedPasswordSetupAfter = await service.auth.admin.getUserById(forgedSetupIdentity.userId);
   assert.equal(repeatedPasswordSetupAfter.data.user?.app_metadata?.access_setup_completed_at, repeatedPasswordSetupBefore, "completed setup cannot be rewritten through a repeated Server Action");
@@ -2844,7 +3072,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   // user's session, but an invalid local service key cannot write app_metadata.
   const partialSetupEmail = `server-action-partial-setup-${randomUUID()}@qr-asistencia.invalid`;
   const partialSetupIdentity = await createHttpIdentity(partialSetupEmail);
-  await dbPool.query("update auth.users set invited_at=clock_timestamp() where id=$1", [partialSetupIdentity.userId]);
+  await dbPool.query("update auth.users set invited_at=clock_timestamp(), raw_app_meta_data=raw_app_meta_data-'access_setup_completed_at' where id=$1", [partialSetupIdentity.userId]);
   const partialSetupInvite = await createPendingInvite(partialSetupEmail, companyA, "employee");
   const beforePartialSetup = await snapshot(companyA);
   // This error page has no logout control. Start a fresh disposable browser
@@ -2856,8 +3084,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   await actionBrowser.navigate("/login");
   await actionBrowser.runForm("form", { email: partialSetupEmail, password: partialSetupIdentity.password });
   await actionBrowser.waitForPath("/invitacion");
-  await actionBrowser.runForm("form:has(input[name='password'])", { password: "synthetic-first-password-123", confirmation: "synthetic-first-password-123" });
-  await actionBrowser.waitForPath("error=password");
+  await actionBrowser.runForm("form:has(input[name='password'])", { fullName: "Synthetic Partial User", password: "synthetic-first-password-123", confirmation: "synthetic-first-password-123" });
+  await actionBrowser.waitForPath("error=setup-retry");
   assert.equal((await dbPool.query("select raw_app_meta_data->>'access_setup_completed_at' marker from auth.users where id=$1", [partialSetupIdentity.userId])).rows[0].marker, null, "failed administrative marker write leaves protected marker absent");
   assert.deepEqual(await snapshot(companyA), beforePartialSetup, "partial password setup does not accept or mutate the invitation");
   const firstPasswordLogin = await partialSetupIdentity.client.auth.signInWithPassword({ email: partialSetupEmail, password: "synthetic-first-password-123" });
@@ -2869,8 +3097,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   await stopNext();
   await startNext(serviceKey);
   await actionBrowser.navigate("/invitacion");
-  await actionBrowser.runForm("form:has(input[name='password'])", { password: "synthetic-retry-password-456", confirmation: "synthetic-retry-password-456" });
-  await actionBrowser.waitForPath("password=updated");
+  await actionBrowser.runForm("form:has(input[name='password'])", { fullName: "Synthetic Partial User", password: "synthetic-retry-password-456", confirmation: "synthetic-retry-password-456" });
+  await actionBrowser.waitForPath("setup=complete");
   const retriedSetupUser = await service.auth.admin.getUserById(partialSetupIdentity.userId);
   assert.ok(retriedSetupUser.data.user?.app_metadata?.access_setup_completed_at, "retry writes the server-controlled marker after the password call succeeds");
   await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(partialSetupInvite)}`);
@@ -3176,6 +3404,10 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
 } finally {
   try { await actionBrowser?.close(); } catch (error) { cleanupErrors.push(error); }
   try { await stopNext(); } catch (error) { cleanupErrors.push(error); }
+  if (resendServer) {
+    try { await new Promise((resolveClose, rejectClose) => resendServer.close((error) => error ? rejectClose(error) : resolveClose())); }
+    catch (error) { cleanupErrors.push(error); }
+  }
   try { await dbPool?.end(); } catch (error) { cleanupErrors.push(error); }
   if (startAttempted) {
     try {

@@ -7,6 +7,21 @@ function escapeHtml(value: string) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
+function resendEndpoint() {
+  const localEndpoint = process.env.QR_AUTH_LOCAL_RESEND_URL;
+  if (process.env.QR_AUTH_LOCAL_TEST !== "1" || process.env.NODE_ENV === "production" || !localEndpoint) {
+    return "https://api.resend.com/emails";
+  }
+  try {
+    const url = new URL(localEndpoint);
+    if (url.protocol !== "http:" || !["127.0.0.1", "::1", "localhost"].includes(url.hostname)
+      || url.username || url.password || url.pathname !== "/emails" || url.search || url.hash) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * New identities use Supabase Auth's invite and configured Auth SMTP. Existing
  * identities get a one-time Auth magic link via the configured mail delivery
@@ -35,10 +50,12 @@ export async function inviteOrNotifyExisting(
   const confirmationLink = getEmailTokenConfirmationUrl("magiclink", tokenHash);
   const canonicalConfirmUrl = getAuthRedirectUrl("confirm")?.toString();
   if (!confirmationLink || !canonicalConfirmUrl || redirectTo !== canonicalConfirmUrl) return { sent: false as const, mode: "failed" as const };
+  const endpoint = resendEndpoint();
+  if (!endpoint) return { sent: false as const, mode: "failed" as const };
   const safeCompany = escapeHtml(companyName);
   const safeLink = escapeHtml(confirmationLink);
   try {
-    const response = await fetch("https://api.resend.com/emails", {
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: { Authorization: `Bearer ${mailerKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({

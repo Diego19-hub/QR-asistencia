@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(25);
+select plan(26);
 
 select has_table('public','company_user_invitations','company-scoped invitations table exists');
 select ok((select c.relrowsecurity from pg_class c where c.oid='public.company_user_invitations'::regclass),'invitations have RLS enabled');
@@ -25,6 +25,7 @@ select ok(not has_function_privilege('anon','public.deactivate_company_membershi
 select ok((select p.prosecdef and p.proconfig @> array['search_path=""']
   from pg_proc p where p.oid='public.accept_company_user_invitation(uuid)'::regprocedure),'accept RPC is SECURITY DEFINER with an empty search_path');
 select matches(pg_get_functiondef('public.accept_company_user_invitation(uuid)'::regprocedure),'email_confirmed_at','acceptance requires the authenticated Auth email to be confirmed');
+select matches(pg_get_functiondef('public.accept_company_user_invitation(uuid)'::regprocedure),'access_setup_completed_at','acceptance requires the server-owned account setup marker');
 select matches(pg_get_functiondef('public.accept_company_user_invitation(uuid)'::regprocedure),'invited_by','acceptance revalidates the inviter membership');
 select matches(pg_get_functiondef('public.create_company_user_invitation(uuid,text,public.company_role,uuid)'::regprocedure),'actor_role\s*<>\s*''owner''','only owner may invite administrators');
 select matches(pg_get_functiondef('public.list_company_user_access(uuid)'::regprocedure),'m\.role\s+in\s*\(''owner'',''admin''\)','permission overrides cannot make a non-admin a user manager');

@@ -15,20 +15,30 @@ El template de invitación debe generar un enlace con `{{ .SiteURL }}/auth/confi
 
 **Pendiente de configuración alojada:** los templates anteriores están versionados localmente, pero aún se deben pegar en el Dashboard de Testing. La sesión de navegador del Dashboard no estaba disponible y no hay un token de Management API configurado en este entorno; no se intentó cambiar el proyecto remoto. No uses una clave `service_role` como sustituto del token de Management API.
 
-## Prueba funcional desde cero
+## Alta y aceptación de una invitación
 
-Usa una cuenta sintética con un buzón controlado y autorizado para la prueba. No mandes invitaciones a direcciones reales sin autorización.
+El registro público permanece deshabilitado (`auth.enable_signup=false`). No se crea una cuenta sin una invitación pendiente válida.
 
-1. Desde Usuarios y accesos, invita un email nuevo en Testing.
-2. Abre el correo y confirma que el destino sea `asistencia-test.duob.tech/auth/confirm` y que el fragmento no contenga `access_token` ni `refresh_token`.
-3. La vista intermedia exige un clic explícito para que los escáneres de enlaces no consuman el OTP. Confirma; el servidor debe guardar la sesión por cookies SSR y abrir `/invitacion`.
-4. Establece la contraseña y acepta la invitación. Debe ir a `/admin`, `/scanner` o `/mi-qr` según el rol; usuarios con múltiples membresías deben elegir empresa.
-5. Repite con una cuenta Auth ya existente: debe recibir un magic link, confirmar en la vista intermedia por el mismo endpoint y continuar a `/invitacion` sin alterar sus membresías hasta aceptar.
-6. Prueba un enlace vencido y otro ya usado: ambos deben mostrar el error genérico de invitación y no abrir una sesión nueva.
-7. Intenta `next=https://sitio-no-permitido.example` y solicita la ruta desde un Host interno: el destino debe continuar siendo el origen de `APP_BASE_URL` y una ruta local permitida.
-8. Revisa que la respuesta de confirmación tenga `Cache-Control: no-store` y `Referrer-Policy: no-referrer`, que el redirect elimine cualquier fragmento heredado y que logs de Next/Caddy no contengan tokens. Caddy ya redacta la consulta de URI.
+1. Invita un correo nuevo desde Usuarios y accesos. Supabase Auth crea la identidad pendiente y envía el correo de invitación; la persona debe abrir el enlace y confirmar en `/auth/confirm`. El GET solo muestra una confirmación intermedia y no consume el OTP; el POST explícito llama `verifyOtp`, crea la sesión SSR y conduce a `/invitacion`.
+2. Para una identidad existente, la entrega usa un magic link de un solo uso mediante el proveedor configurado. Sin proveedor se informa que no se envió ningún enlace y que la persona todavía no puede iniciar sesión/aceptar; un fallo de entrega mantiene la invitación pendiente y permite reenviarla.
+3. `/invitacion` muestra el correo que devolvió Supabase Auth sin un campo editable. Solo después de validar `email_confirmed_at`, el servidor consulta las invitaciones pendientes de esa identidad y exige una coincidencia exacta de correo normalizado, permite configurar **Nombre completo**, **Contraseña** y **Confirmar contraseña**, y reporta validaciones comprensibles.
+4. La contraseña se actualiza con la sesión autenticada y la política Auth vigente; el nombre se guarda únicamente en `user_metadata.full_name` para presentación. Un expediente empleado vinculado conserva su nombre propio. Después, un cliente Admin del servidor escribe el indicador de configuración en `app_metadata`; si esta segunda operación falla, no se acepta la invitación y la interfaz indica que puede ser necesario reintentar.
+5. La persona pulsa **Aceptar invitación**. La RPC vuelve a validar el correo Auth confirmado, invitación pendiente, destinatario, empresa/rol, autorización del invitador, expiración, revocación, uso único y el indicador de configuración guardado por servidor. No se usa `user_metadata` para autorización. Un rechazo no debe crear membresía ni auditoría de aceptación.
+6. El primer canal que completa la aceptación invalida los otros enlaces/canales conforme al comportamiento vigente. Una identidad con varias empresas sigue el flujo existente de selección explícita de empresa.
 
-Las pruebas automatizadas `npm run test:auth-flow` cubren las rutas fijas, host interno, token hash, templates, callback legacy, errores reutilizados/vencidos y el flujo SSR de contraseña/aceptación. La aceptación completa con un correo requiere deploy manual de la nueva imagen y un buzón sintético controlado.
+### Verificación local desechable
+
+`npm run test:auth-flow` valida reglas de entrada, configuración local, textos, ausencia de un campo email editable, redirects fijos, `auth/confirm`, orden de actualización de contraseña/marcador y el contrato de la migración. `npm run test:security:invitation-onboarding:local` inicia un stack Supabase temporal sin enlace remoto y usa Mailpit para Auth SMTP y un doble Resend HTTP limitado a loopback. Cubre invitación Auth de una cuenta nueva, GET/POST de confirmación, configuración real mediante Server Action, aceptación, magic link para una cuenta existente, rechazos de nombre/contraseña, registro público deshabilitado, fallo/reenvío de correo y preservación del nombre del expediente empleado. También corre las regresiones de autorización existentes dentro del stack desechable. Nunca leas `.env.local` ni utilices Testing/Producción para estos tests.
+
+**Ejecución local 2026-11-05:** `npm run test:security:invitation-onboarding:local` PASS; completó los casos de Auth/Server Actions/RPC, entrega local, autorización y rechazo sin efectos secundarios. El teardown eliminó el stack temporal y preservó los recursos Docker anteriores. `npm run test:auth-flow` PASS 6/6; `npm test` PASS 84 pruebas, con 1 prueba omitida porque el sandbox no permite acceder al socket del agente GnuPG; `npm run lint`, `npm run typecheck`, `node --check tests/qr004-auth-matrix.local.integration.mjs`, `git diff --check` y `npm run build` PASS. El build aislado no leyó `.env.local`; Next mostró una advertencia de tracing porque `node_modules` se enlazó desde fuera de la copia temporal, sin impedir el build. `.github/workflows/ci.yml` ya incluye el comando dedicado de onboarding con Chrome local; ese CI remoto aún no se ha ejecutado.
+
+### Verificación manual en Testing (solo con despliegue/migración autorizados)
+
+La nueva migración `20261105234619_invitation_account_setup_required.sql` es necesaria para exigir el marcador también a cuentas Auth existentes con `invited_at` nulo. No se ha aplicado remotamente. Por la restricción vigente de no aplicar migraciones remotas, no desplegar esta versión hasta que exista una autorización y ventana separadas para aplicar la migración a **Testing**; no cambiar configuración remota de Auth como parte de este trabajo.
+
+La publicación/despliegue de Testing queda bloqueada hasta que la migración se aplique con autorización separada y el CI remoto pase. Antes de fusionar a `main` también debe verificarse el comportamiento de despliegue configurado en Dokploy: el workflow versionado publica una imagen inmutable de Testing después de CI en `main`, pero la configuración externa de Dokploy no está disponible para demostrar que una fusión no active o afecte Producción. No se ha hecho push, merge, publicación de imagen ni despliegue.
+
+Después de autorización específica y de que el esquema local esperado esté disponible en Testing, usar únicamente dos identidades sintéticas y buzones controlados: una dirección nueva y una ya existente. Verificar invitación/magic link, confirmación explícita, correo no editable, configuración, aceptación única y mensajes de reenvío/fallo. Confirmar además que no hubo altas sin invitación, que el nombre del expediente no cambió y que respuestas sensibles llevan `Cache-Control: no-store` y `Referrer-Policy: no-referrer`. No usar direcciones reales ni usuarios existentes.
 
 ## QR-002 — Invitaciones individuales compartibles
 

@@ -29,6 +29,7 @@
     "test:security:rpc-ci:local": "node tests/qr004-auth-matrix.local.integration.mjs --rpc-security-ci-only",
     "test:security:phase10-residual:local": "node tests/qr004-auth-matrix.local.integration.mjs --phase10-residual-only",
     "test:security:authorization-races:local": "node tests/qr004-auth-matrix.local.integration.mjs --authorization-races-only",
+    "test:security:invitation-onboarding:local": "node tests/qr004-auth-matrix.local.integration.mjs --invitation-flow-only",
     "test:e2e": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only",
     "test:e2e:local": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only",
     "test:e2e:ui": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only --ui",

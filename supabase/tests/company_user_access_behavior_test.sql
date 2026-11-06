@@ -1,7 +1,7 @@
 -- Transactional synthetic test for invitation acceptance and tenant boundaries.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(36);
+select plan(40);
 
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,created_at,updated_at) values
  ('81000000-0000-4000-8000-000000000001','authenticated','authenticated','owner-a@example.invalid','','now()','now()','now()'),
@@ -12,7 +12,13 @@ insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,c
  ('81000000-0000-4000-8000-000000000006','authenticated','authenticated','admin-new@example.invalid','','now()','now()','now()'),
  ('81000000-0000-4000-8000-000000000007','authenticated','authenticated','wrong-email@example.invalid','','now()','now()','now()'),
  ('81000000-0000-4000-8000-000000000008','authenticated','authenticated','revoked-invitee@example.invalid','','now()','now()','now()'),
- ('81000000-0000-4000-8000-000000000009','authenticated','authenticated','unlinked-worker@example.invalid','','now()','now()','now()');
+ ('81000000-0000-4000-8000-000000000009','authenticated','authenticated','unlinked-worker@example.invalid','','now()','now()','now()'),
+ ('81000000-0000-4000-8000-000000000010','authenticated','authenticated','unconfigured@example.invalid','','now()','now()','now()');
+-- These fixtures model accounts that already completed their one-time setup.
+-- The final synthetic identity deliberately has no server-owned marker.
+update auth.users set raw_app_meta_data=coalesce(raw_app_meta_data,'{}'::jsonb)
+  || jsonb_build_object('access_setup_completed_at','2026-01-01T00:00:00Z')
+ where id <> '81000000-0000-4000-8000-000000000010';
 insert into public.companies(id,name) values
  ('82000000-0000-4000-8000-000000000001','Access synthetic A'),
  ('82000000-0000-4000-8000-000000000002','Access synthetic B');
@@ -41,6 +47,7 @@ set local role authenticated;
 select is(jsonb_array_length(public.list_company_user_access('82000000-0000-4000-8000-000000000001')->'users'),4,'admin lists memberships in its company');
 select throws_ok($$select public.list_company_user_access('82000000-0000-4000-8000-000000000002')$$,'42501',null,'admin cannot list another company');
 insert into _access_test_invites values ('supervisor',public.create_company_user_invitation('82000000-0000-4000-8000-000000000001','supervisor-new@example.invalid','supervisor',null));
+insert into _access_test_invites values ('unconfigured',public.create_company_user_invitation('82000000-0000-4000-8000-000000000001','unconfigured@example.invalid','employee',null));
 select ok((select id is not null from _access_test_invites where kind='supervisor'),'supervisor invitation is created in the active company');
 select throws_ok($$select public.create_company_user_invitation('82000000-0000-4000-8000-000000000001','admin-new@example.invalid','admin',null)$$,'42501',null,'regular admin cannot invite another administrator');
 select throws_ok($$select public.create_company_user_invitation('82000000-0000-4000-8000-000000000001','owner-new@example.invalid','owner',null)$$,'22023',null,'owner privilege cannot be granted through invitations');
@@ -54,6 +61,14 @@ select throws_ok(format('select public.accept_company_user_invitation(%L)',(sele
 select set_config('request.jwt.claims','{"role":"authenticated","sub":"81000000-0000-4000-8000-000000000004","email":"supervisor-new@example.invalid"}',true);
 select set_config('request.jwt.claim.sub','81000000-0000-4000-8000-000000000004',true);
 select lives_ok(format('select * from public.accept_company_user_invitation(%L)',(select id from _access_test_invites where kind='supervisor')),'invitee accepts with the matching Auth identity');
+select set_config('request.jwt.claims','{"role":"authenticated","sub":"81000000-0000-4000-8000-000000000010","email":"unconfigured@example.invalid"}',true);
+select set_config('request.jwt.claim.sub','81000000-0000-4000-8000-000000000010',true);
+select throws_ok(format('select * from public.accept_company_user_invitation(%L)',(select id from _access_test_invites where kind='unconfigured')),'42501',null,'confirmed existing Auth identity must complete server-side account setup before acceptance');
+reset role;
+select is((select status from public.company_user_invitations where id=(select id from _access_test_invites where kind='unconfigured')),'pending','setup rejection preserves the pending invitation');
+select is((select count(*)::integer from public.company_memberships where company_id='82000000-0000-4000-8000-000000000001' and user_id='81000000-0000-4000-8000-000000000010'),0,'setup rejection creates no membership');
+select is((select count(*)::integer from public.audit_log where company_id='82000000-0000-4000-8000-000000000001' and entity_id=(select id from _access_test_invites where kind='unconfigured') and action='USER_INVITATION_ACCEPTED'),0,'setup rejection creates no acceptance audit');
+set local role authenticated;
 reset role;
 select is((select role::text from public.company_memberships where company_id='82000000-0000-4000-8000-000000000001' and user_id='81000000-0000-4000-8000-000000000004'),'supervisor','acceptance creates the intended supervisor membership');
 select ok(exists(select 1 from public.supervisors where company_id='82000000-0000-4000-8000-000000000001' and membership_id=(select id from public.company_memberships where user_id='81000000-0000-4000-8000-000000000004')),'acceptance creates the supervisor profile');
