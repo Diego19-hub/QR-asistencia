@@ -14,6 +14,7 @@ type Context = { companyId: string; companyName: string; supervisorName: string;
 type Preview = { employeeName: string; allowedActions: Action[]; breakRules: BreakRule[] };
 type Success = { employeeName: string; eventType: Action["type"]; occurredAt: string; duplicate?: boolean };
 type ContextLoadState = "loading" | "loaded" | "error";
+const MAX_AUTOMATIC_CONTEXT_FAILURES = 3;
 
 class ApiResponseError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) {
@@ -47,15 +48,19 @@ function cameraErrorMessage(reason: unknown) {
   return "No se pudo abrir la cámara. Revisa el permiso del navegador y usa HTTPS o localhost.";
 }
 
-function contextErrorMessage(reason: unknown) {
+function contextErrorMessage(reason: unknown, retriesExhausted = false) {
   if (!(reason instanceof ApiResponseError)) return "No fue posible validar el dispositivo. Revisa tu conexión e inténtalo de nuevo.";
+  if (reason.code === "scanner_schema_not_ready") return "La configuración de autorización del escáner requiere una actualización de base de datos. El acceso seguirá bloqueado hasta que el administrador la aplique.";
+  if (reason.status === 404) return "La ruta de autorización del escáner no está disponible en esta versión de Testing. Contacta al administrador para actualizarla.";
   if (reason.status === 401) return "Tu sesión expiró. Inicia sesión nuevamente para validar el escáner.";
   if (reason.status === 403) return reason.code === "supervisor_forbidden"
     ? "El acceso del dispositivo o de la membresía fue revocado. Contacta al administrador."
     : "El dispositivo no está autorizado para esta empresa.";
   if (reason.status === 409) return "Selecciona una empresa y el rol de supervisor antes de abrir el escáner.";
   if (reason.status === 429) return "Hay demasiadas comprobaciones. Espera un momento y vuelve a validar el escáner.";
-  if (reason.status >= 500) return "El servicio de autorización está temporalmente indisponible. Se volverá a comprobar en breve.";
+  if (reason.status >= 500) return retriesExhausted
+    ? "No fue posible comprobar la autorización tras tres intentos automáticos. Revisa la conexión y vuelve a intentar."
+    : "El servicio de autorización está temporalmente indisponible. Se volverá a comprobar hasta tres veces.";
   return "No fue posible validar el dispositivo. Revisa tu acceso e inténtalo de nuevo.";
 }
 
@@ -78,9 +83,11 @@ export function MobileScanner() {
   const [selectedAction, setSelectedAction] = useState<Action["type"] | "">("");
   const [breakRuleId, setBreakRuleId] = useState("");
   const [success, setSuccess] = useState<Success | null>(null);
+  const [contextRetryAvailable, setContextRetryAvailable] = useState(false);
   const idempotencyRef = useRef("");
   const contextRequestRef = useRef<AbortController | null>(null);
   const contextRequestIdRef = useRef(0);
+  const contextFailureCountRef = useRef(0);
   const contextLoadedOnceRef = useRef(false);
   const pollContextRef = useRef(true);
   const cameraStartingRef = useRef(false);
@@ -106,7 +113,7 @@ export function MobileScanner() {
   }, [stopCamera]);
 
   const loadContext = useCallback(async () => {
-    contextRequestRef.current?.abort();
+    if (contextRequestRef.current) return;
     const controller = new AbortController();
     contextRequestRef.current = controller;
     const requestId = ++contextRequestIdRef.current;
@@ -120,6 +127,8 @@ export function MobileScanner() {
       setCompanyId((current) => body.contexts.some((item) => item.companyId === current) ? current : body.contexts[0]?.companyId ?? "");
       setError("");
       pollContextRef.current = true;
+      contextFailureCountRef.current = 0;
+      setContextRetryAvailable(false);
       contextLoadedOnceRef.current = true;
       setContextLoadState("loaded");
     } catch (reason) {
@@ -127,15 +136,35 @@ export function MobileScanner() {
       // A stale authorization must never keep the camera usable when the server
       // cannot confirm the current membership/device context.
       contextAuthorizedRef.current = false;
-      if (reason instanceof ApiResponseError && [401, 403, 409].includes(reason.status)) pollContextRef.current = false;
+      const schemaUnavailable = reason instanceof ApiResponseError && reason.code === "scanner_schema_not_ready";
+      const nonRetryable = reason instanceof ApiResponseError && ([401, 403, 404, 409].includes(reason.status) || schemaUnavailable);
+      let retriesExhausted = false;
+      if (nonRetryable) {
+        pollContextRef.current = false;
+        setContextRetryAvailable(schemaUnavailable || reason.status === 404);
+      } else {
+        contextFailureCountRef.current += 1;
+        retriesExhausted = contextFailureCountRef.current >= MAX_AUTOMATIC_CONTEXT_FAILURES;
+        if (retriesExhausted) {
+          pollContextRef.current = false;
+          setContextRetryAvailable(true);
+        }
+      }
       setContexts([]);
       setCompanyId("");
       setContextLoadState("error");
-      setError(contextErrorMessage(reason));
+      setError(contextErrorMessage(reason, retriesExhausted));
     } finally {
       if (requestId === contextRequestIdRef.current) contextRequestRef.current = null;
     }
   }, []);
+
+  function retryContext() {
+    contextFailureCountRef.current = 0;
+    pollContextRef.current = true;
+    setContextRetryAvailable(false);
+    void loadContext();
+  }
 
   useEffect(() => {
     const initialLoad = window.setTimeout(() => void loadContext(), 0);
@@ -180,8 +209,7 @@ export function MobileScanner() {
       setError("Sin conexión. La autorización del escáner se comprobará al recuperar la red.");
     }
     function refreshContext() {
-      pollContextRef.current = true;
-      void loadContext();
+      if (pollContextRef.current) void loadContext();
     }
     window.addEventListener("offline", handleOffline);
     window.addEventListener("online", refreshContext);
@@ -282,6 +310,7 @@ export function MobileScanner() {
     <header className="flex items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase tracking-[.14em] text-blue-700">Registro de jornada</p><h1 className="mt-2 text-2xl font-bold tracking-tight text-slate-950">Escáner del supervisor</h1><p className="mt-1 text-sm text-slate-500">Escanea la credencial y confirma el movimiento con el PIN del empleado.</p><Link href="/seleccionar-empresa" className="mt-2 inline-block text-xs font-semibold text-blue-700 hover:text-blue-900">Cambiar empresa o rol</Link></div><div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-blue-50 text-blue-700"><ShieldCheck size={21} /></div></header>
     {contexts.length > 1 ? <label className="block text-xs font-medium text-slate-600">Empresa<select value={companyId} onChange={(event) => { contextAuthorizedRef.current = Boolean(contexts.find((item) => item.companyId === event.target.value)?.authorized); clearScannedEmployee(false); setCompanyId(event.target.value); }} className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm"><option value="">Selecciona empresa</option>{contexts.map((item) => <option key={item.companyId} value={item.companyId}>{item.companyName}</option>)}</select></label> : null}
     {error ? <div role="alert" className="flex gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"><CircleAlert className="shrink-0" size={17} />{error}</div> : null}
+    {contextRetryAvailable && contextLoadState === "error" ? <button type="button" onClick={retryContext} className={buttonClass}>Reintentar comprobación del escáner</button> : null}
     {!contexts.length && contextLoadState === "loading" ? <p role="status" className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-600">Cargando la asignación de supervisor…</p> : null}
     {!contexts.length && contextLoadState === "loaded" ? <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900"><strong>Sin asignación de supervisor.</strong><p className="mt-1">No se encontró una membresía activa de supervisor. Contacta al administrador de tu empresa.</p></section> : null}
     {context && !context.branches.length ? <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900"><strong>Sin sucursal asignada.</strong><p className="mt-1">Tu membresía de supervisor no tiene sucursales activas asignadas.</p></section> : null}

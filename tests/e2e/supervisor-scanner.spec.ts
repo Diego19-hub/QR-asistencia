@@ -331,37 +331,83 @@ test("fallo transitorio de red en contexto muestra error y se recupera sin inici
   expect(attendanceRequests).toHaveLength(0);
 });
 
-test("contexto HTTP diferencia sesión expirada y error temporal sin exponer detalles", async ({ page, qr }) => {
+test("fallo permanente de esquema no se presenta como temporal ni se reintenta al enfocar", async ({ page, qr }) => {
   let contextRequests = 0;
-  const failures = [
-    { status: 401, code: "auth_required", message: "Tu sesión expiró" },
-    { status: 403, code: "supervisor_forbidden", message: "El acceso del dispositivo o de la membresía fue revocado" },
-    { status: 409, code: "company_selection_required", message: "Selecciona una empresa" },
-    { status: 429, code: "rate_limited", message: "Hay demasiadas comprobaciones" },
-    { status: 500, code: "scanner_context_failed", message: "temporalmente indisponible" },
-    { status: 503, code: "scanner_context_failed", message: "temporalmente indisponible" },
-  ];
   await page.route("**/api/supervisor/scanner/context", async (route) => {
     contextRequests += 1;
-    const failure = failures[contextRequests - 1];
-    if (!failure) return route.continue();
+    if (contextRequests === 1) {
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "scanner_schema_not_ready", message: "internal server detail" } }),
+      });
+    }
+    await route.continue();
+  });
+  await qr.signIn(page, qr.fixture("NETWORK_SUPERVISOR_EMAIL"), qr.fixture("NETWORK_SUPERVISOR_PASSWORD"));
+  await expect(page.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
+  await expect(page.locator('div[role="alert"]').filter({ hasText: "requiere una actualización de base de datos" })).toBeVisible();
+  await expect(page.getByText("temporalmente indisponible")).toHaveCount(0);
+  await expect(page.getByText("internal server detail")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Reintentar comprobación del escáner" })).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForTimeout(100);
+  expect(contextRequests).toBe(1);
+  await page.getByRole("button", { name: "Reintentar comprobación del escáner" }).click();
+  await expect(page.getByText("Dispositivo autorizado")).toBeVisible({ timeout: 20_000 });
+  expect(contextRequests).toBe(2);
+});
+
+test("fallos transitorios del contexto se limitan a tres reintentos automáticos y permiten reintento manual", async ({ page, qr }) => {
+  let contextRequests = 0;
+  await page.route("**/api/supervisor/scanner/context", async (route) => {
+    contextRequests += 1;
+    if (contextRequests <= 3) {
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "scanner_context_failed", message: "internal server detail" } }),
+      });
+    }
+    await route.continue();
+  });
+  await qr.signIn(page, qr.fixture("NETWORK_SUPERVISOR_EMAIL"), qr.fixture("NETWORK_SUPERVISOR_PASSWORD"));
+  await expect(page.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
+  await expect(page.locator('div[role="alert"]').filter({ hasText: "se volverá a comprobar hasta tres veces" })).toBeVisible();
+  for (const expected of [2, 3]) {
+    const completedRequest = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/supervisor/scanner/context" && response.status() === 503);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await completedRequest;
+    expect(contextRequests).toBe(expected);
+  }
+  await expect(page.locator('div[role="alert"]').filter({ hasText: "tras tres intentos automáticos" })).toBeVisible();
+  await expect(page.getByText("internal server detail")).toHaveCount(0);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForTimeout(100);
+  expect(contextRequests).toBe(3);
+  await page.getByRole("button", { name: "Reintentar comprobación del escáner" }).click();
+  await expect(page.getByText("Dispositivo autorizado")).toBeVisible({ timeout: 20_000 });
+  expect(contextRequests).toBe(4);
+});
+
+test("sesión expirada detiene los reintentos automáticos y no expone el error interno", async ({ page, qr }) => {
+  let contextRequests = 0;
+  await page.route("**/api/supervisor/scanner/context", async (route) => {
+    contextRequests += 1;
     await route.fulfill({
-      status: failure.status,
+      status: 401,
       contentType: "application/json",
-      body: JSON.stringify({ error: { code: failure.code, message: "internal server detail" } }),
+      body: JSON.stringify({ error: { code: "auth_required", message: "internal server detail" } }),
     });
   });
   await qr.signIn(page, qr.fixture("NETWORK_SUPERVISOR_EMAIL"), qr.fixture("NETWORK_SUPERVISOR_PASSWORD"));
   await expect(page.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
-  for (const [index, failure] of failures.entries()) {
-    if (index > 0) await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await expect(page.locator('div[role="alert"]').filter({ hasText: failure.message })).toBeVisible();
-    await expect(page.getByText("internal server detail")).toHaveCount(0);
-  }
+  await expect(page.locator('div[role="alert"]').filter({ hasText: "Tu sesión expiró" })).toBeVisible();
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await expect(page.getByText("Dispositivo autorizado")).toBeVisible({ timeout: 20_000 });
-  await expect(page.locator('div[role="alert"]').filter({ hasText: /temporalmente indisponible|Tu sesión expiró|comprobaciones|selecciona una empresa|revocado/ })).toHaveCount(0);
-  expect(contextRequests).toBe(failures.length + 1);
+  await page.waitForTimeout(100);
+  expect(contextRequests).toBe(1);
+  await expect(page.getByText("internal server detail")).toHaveCount(0);
 });
 
 test("vista del escáner no desborda horizontalmente en tamaños móviles y tablet", async ({ page, qr }) => {
@@ -397,7 +443,11 @@ test("una respuesta antigua del contexto no reemplaza la comprobación vigente",
   await qr.signIn(page, qr.fixture("NETWORK_SUPERVISOR_EMAIL"), qr.fixture("NETWORK_SUPERVISOR_PASSWORD"));
   await expect(page.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
   await firstStarted;
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  const currentResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/supervisor/scanner/context" && response.status() === 200);
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await currentResponse;
   await expect(page.getByText(qr.fixture("COMPANY_A_NAME"), { exact: false })).toBeVisible({ timeout: 20_000 });
   releaseFirstResponse();
   await expect(page.getByText("Contexto obsoleto de prueba")).toHaveCount(0);

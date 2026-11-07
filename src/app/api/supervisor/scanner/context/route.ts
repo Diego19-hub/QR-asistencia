@@ -2,11 +2,17 @@ import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { isAllowedRequestOrigin } from "@/lib/http/request-origin";
 import { createClient } from "@/lib/supabase/server";
+import { scannerRpcErrorResponse } from "@/lib/scanner/scanner-rpc-error";
 
 export const runtime = "nodejs";
 
 function contextError(code: string, message: string, status: number) {
   return Response.json({ error: { code, message } }, { status, headers: { "Cache-Control": "no-store, private" } });
+}
+
+function scannerRpcFailure(error: unknown, fallbackMessage: string) {
+  const failure = scannerRpcErrorResponse(error, fallbackMessage);
+  return contextError(failure.code, failure.message, failure.status);
 }
 
 function cookieBase(request: Request) {
@@ -47,14 +53,7 @@ async function scannerContext(request: Request, enableBrowser: boolean) {
     });
     let { data, error: scannerError } = await readContext(deviceToken);
     if (scannerError) {
-      const forbidden = scannerError.code === "42501";
-      return contextError(
-        forbidden ? "supervisor_forbidden" : "scanner_context_failed",
-        forbidden
-          ? "Tu cuenta no tiene permisos de escaneo activos para esta empresa. Contacta al administrador."
-          : "No fue posible cargar la sucursal del supervisor. Intenta de nuevo.",
-        forbidden ? 403 : 503,
-      );
+      return scannerRpcFailure(scannerError, "No fue posible cargar la sucursal del supervisor. Intenta de nuevo.");
     }
     let context = data as Record<string, unknown>;
     const branches = Array.isArray(context.branches) ? context.branches as { id?: unknown }[] : [];
@@ -74,24 +73,17 @@ async function scannerContext(request: Request, enableBrowser: boolean) {
         p_device_token: token,
       });
       if (enrollmentError) {
-        const forbidden = enrollmentError.code === "42501";
-        return contextError(
-          forbidden ? "supervisor_forbidden" : "scanner_context_failed",
-          forbidden
-            ? "El acceso del navegador, la membresía o la sucursal ya no está autorizado. Contacta al administrador."
-            : "No fue posible habilitar este navegador. Intenta de nuevo.",
-          forbidden ? 403 : 503,
+        const failure = scannerRpcErrorResponse(
+          enrollmentError,
+          "No fue posible habilitar este navegador. Intenta de nuevo.",
+          "El acceso del navegador, la membresía o la sucursal ya no está autorizado.",
         );
+        return contextError(failure.code, failure.message, failure.status);
       }
       if (!deviceToken) store.set(deviceCookie, token, cookieBase(request));
       deviceToken = token;
       ({ data, error: scannerError } = await readContext(deviceToken));
-      if (scannerError) {
-        const forbidden = scannerError.code === "42501";
-        return contextError(forbidden ? "supervisor_forbidden" : "scanner_context_failed",
-          forbidden ? "La membresía o sucursal del escáner ya no está autorizada." : "No fue posible cargar la sucursal del supervisor.",
-          forbidden ? 403 : 503);
-      }
+      if (scannerError) return scannerRpcFailure(scannerError, "No fue posible cargar la sucursal del supervisor.");
       context = data as Record<string, unknown>;
     }
     contexts.push({ ...context, requestStatus: context.authorized ? "authorized" : "unrequested" });
