@@ -454,7 +454,7 @@ try {
   }
   if (rpcSecurityCiOnly) {
     assert.deepEqual(suites, rpcSecurityCiSuites, "unified RPC CI mode runs only the three approved suites in order");
-    assert.equal(rpcSecurityCiTotal, 115, "unified RPC CI mode must pass exactly 115 pgTAP assertions");
+    assert.equal(rpcSecurityCiTotal, 138, "unified RPC CI mode must pass exactly 138 pgTAP assertions");
   }
 
   if (phase10ResidualOnly) {
@@ -519,7 +519,7 @@ try {
   } else if (phase9RpcOnly) {
     process.stdout.write("PASS isolated Phase 9.1 RPC authorization suite only; no HTTP Auth, QR processing, PIN verification, scan, or attendance flow started\n");
   } else if (rpcSecurityCiOnly) {
-    process.stdout.write("PASS isolated RPC security CI suite: 27 + 26 + 62 = 115 pgTAP assertions; no HTTP Auth, Next.js, QR processing, PIN, scan, or attendance flow started\n");
+    process.stdout.write("PASS isolated RPC security CI suite: 50 + 26 + 62 = 138 pgTAP assertions; no HTTP Auth, Next.js, QR processing, PIN, scan, or attendance flow started\n");
   } else if (phase10ResidualOnly) {
     process.stdout.write("PASS isolated QR-004 Phase 10.2 authorization/audit suite only; no HTTP Auth, Next.js, QR processing, PIN, scan, or attendance flow started\n");
   } else {
