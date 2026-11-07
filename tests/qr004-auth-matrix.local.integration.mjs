@@ -34,6 +34,7 @@ const excluded = "realtime,storage-api,imgproxy,postgres-meta,studio,edge-runtim
 const auditOnlyExcluded = "gotrue,realtime,storage-api,imgproxy,kong,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor,mailpit";
 const generalSuites = [
   "attendance_integrity_test.sql",
+  "attendance_pin_lockout_test.sql",
   "employee_portal_rls_behavior_test.sql",
   "company_user_access_behavior_test.sql",
   "company_user_access_management_test.sql",
@@ -780,6 +781,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       QR005_INACTIVE_EMPLOYEE_PASSWORD: inactiveEmployee.password,
       QR005_MULTI_ADMIN_EMAIL: multiAdmin.email,
       QR005_MULTI_ADMIN_PASSWORD: multiAdmin.password,
+      QR005_MULTI_ADMIN_COMPANY_B_MEMBERSHIP_ID: multiAdmin.memberships[1].id,
       QR005_MULTI_SUPERVISOR_EMAIL: multiSupervisor.email,
       QR005_MULTI_SUPERVISOR_PASSWORD: multiSupervisor.password,
       QR005_NO_BRANCH_SUPERVISOR_EMAIL: noBranchSupervisor.email,
@@ -1791,7 +1793,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const dashboardAClosed = await makeDashboardSession({ companyId: companyA, employeeId: dashboardEmployeeA2.data.id, branchId: otherBranchA, deviceId: dashboardDeviceA2.data.id, timezone: "America/Mexico_City", recordedBy: ownerA.userId, closed: true, label: "company A branch A2 closed" });
   const dashboardAPacificClosed = await makeDashboardSession({ companyId: companyA, employeeId: dashboardEmployeePacific.data.id, branchId: pacificBranchA, deviceId: dashboardDevicePacific.data.id, timezone: "Pacific/Kiritimati", recordedBy: ownerA.userId, closed: true, label: "company A Pacific branch closed" });
   const dashboardBClosed = await makeDashboardSession({ companyId: companyB, employeeId: dashboardEmployeeB.data.id, branchId: branchB, deviceId: dashboardDeviceB.data.id, timezone: "America/Mexico_City", recordedBy: adminB.userId, closed: true, label: "company B closed" });
-  const companyRecord = async (id) => (await dbPool.query("select id,name,legal_name,rfc,updated_at from public.companies where id=$1", [id])).rows[0];
+  const companyRecord = async (id) => (await dbPool.query("select id,name,legal_name,rfc,require_employee_pin,updated_at from public.companies where id=$1", [id])).rows[0];
   const companyAndDataSnapshot = async (id) => ({ company: await companyRecord(id), data: await snapshot(id) });
 
   response = await request(`/api/company?companyId=${companyA}`); assert.equal(response.status, 401);
@@ -1813,6 +1815,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/company?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 200);
   const ownerCompanyResponse = await response.json();
   assert.equal(ownerCompanyResponse.item.id, companyA);
+  assert.equal(ownerCompanyResponse.item.require_employee_pin, false, "company PIN requirement defaults off for the synthetic tenant");
   assert.equal(ownerCompanyResponse.canManage, true, "active owner can manage their own company");
   response = await request(`/api/branches?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 200);
   assert.ok((await response.json()).items.some((branch) => branch.id === branchA), "owner can read own-company branches");
@@ -1842,11 +1845,28 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.notDeepEqual(await companyAndDataSnapshot(companyA), beforeOwnerWriteA, "authorized owner update changes only its own tenant and records audit");
   response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { name: ownerCompanyBefore.name, legalName: ownerCompanyBefore.legal_name, rfc: ownerCompanyBefore.rfc } }); assert.equal(response.status, 200);
 
+  const beforePinSettingA = await companyAndDataSnapshot(companyA), beforePinSettingB = await companyAndDataSnapshot(companyB);
+  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.require_employee_pin, true, "owner can enable PIN requirement for their own company");
+  assert.equal((await companyRecord(companyA)).require_employee_pin, true, "enabled PIN setting persists in the owner tenant");
+  assert.ok((await snapshot(companyA)).audit.some((entry) => entry.entity_table === "companies" && entry.action === "UPDATE"), "PIN setting change is audited");
+  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { requireEmployeePin: false } }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.require_employee_pin, false, "owner can disable PIN requirement for their own company");
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.require_employee_pin, true, "authorized company administrator can enable PIN requirement");
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { requireEmployeePin: false } }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.require_employee_pin, false, "authorized company administrator can disable PIN requirement");
+  response = await request(`/api/company?companyId=${companyB}`, { user: ownerA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 403, "owner cannot change another company's PIN policy");
+  assert.deepEqual(await companyAndDataSnapshot(companyB), beforePinSettingB, "cross-tenant PIN policy update preserves foreign company and audit snapshot");
+  assert.notDeepEqual(await companyAndDataSnapshot(companyA), beforePinSettingA, "authorized PIN policy changes update and audit only the owner tenant");
+
   const validCompanyPayload = { name: `Synthetic Company A Updated ${randomUUID()}`, legalName: "Synthetic Tenant A LLC", rfc: "SYN010101ABC" };
   const beforeCompanyRoleDenialsA = await companyAndDataSnapshot(companyA);
   response = await request(`/api/company?companyId=${companyA}`, { method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 401);
   response = await request(`/api/company?companyId=${companyA}`, { user: supervisorA, method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 403);
   response = await request(`/api/company?companyId=${companyA}`, { user: employeeA, method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 403);
+  response = await request(`/api/company?companyId=${companyA}`, { user: supervisorA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 403);
+  response = await request(`/api/company?companyId=${companyA}`, { user: employeeA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 403);
   assert.deepEqual(await companyAndDataSnapshot(companyA), beforeCompanyRoleDenialsA, "anonymous and non-admin PATCH denials preserve company and audit snapshots");
   response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 200);
   assert.equal((await response.json()).item.name, validCompanyPayload.name);
@@ -1878,6 +1898,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal(readOnlyCompany.canManage, false, "GET reports company.manage denial without blocking company.read");
   assert.equal(response.headers.get("cache-control"), "no-store");
   response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { name: "Unauthorized synthetic mutation", legalName: null, rfc: null } }); assert.equal(response.status, 403);
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 403, "company.manage denial also protects PIN policy changes");
   const directDeniedCompanyUpdate = await adminA.client.from("companies").update({ name: "Unauthorized direct mutation" }).eq("id", companyA).select("id");
   assert.ok(directDeniedCompanyUpdate.error?.code === "42501" || (directDeniedCompanyUpdate.data ?? []).length === 0, "PostgreSQL RLS rejects direct company update without company.manage");
   response = await request(`/api/company?companyId=${companyB}`, { user: adminA, method: "PATCH", body: { name: "Foreign synthetic mutation", legalName: null, rfc: null } }); assert.equal(response.status, 403);

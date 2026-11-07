@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { apiError, resolveAdminScope, scopeError } from "@/lib/admin/scope";
 import { employeeIdSchema } from "@/lib/employees/validation";
 import { credentialApiError } from "@/lib/employees/credential-api-error";
+import { encryptEmployeeQrToken, parseEmployeeQrEncryptionKey } from "@/lib/employees/qr-token-encryption";
 
 export const runtime = "nodejs";
 
@@ -35,14 +36,20 @@ export async function POST(request: Request, { params }: RouteContext) {
     return apiError("invalid_payload", "La solicitud de credencial no es válida.", 400);
   }
 
-  // The token exists only in this request's memory and the one-time response.
-  // Only its SHA-256 digest is sent to Postgres and persisted.
+  // Persist only the digest and an authenticated-encryption envelope. The raw
+  // token is returned once to the issuing administrator and later only to its
+  // linked employee through the self-scoped portal RPC.
+  let encryptionKey: Buffer;
+  try { encryptionKey = parseEmployeeQrEncryptionKey(process.env.QR_CREDENTIAL_ENCRYPTION_KEY); }
+  catch { return apiError("credential_encryption_unavailable", "La emisión de credenciales no está configurada de forma segura.", 503); }
   const rawToken = randomBytes(32).toString("base64url");
   const tokenHash = createHash("sha256").update(rawToken, "utf8").digest("hex");
-  const { data, error } = await result.scope.supabase.rpc("issue_employee_qr_token", {
+  const encryptedToken = encryptEmployeeQrToken(rawToken, encryptionKey, result.scope.company.companyId, id);
+  const { data, error } = await result.scope.supabase.rpc("issue_employee_qr_token_with_ciphertext", {
     p_company_id: result.scope.company.companyId,
     p_employee_id: id,
     p_token_hash_hex: tokenHash,
+    p_encrypted_token: encryptedToken,
     p_replace: replace,
   });
   if (error) return credentialApiError(error);

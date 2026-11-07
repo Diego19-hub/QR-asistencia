@@ -2,6 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { getSupabaseConfig, hasSupabaseConfig } from "./env";
+import { isRememberSessionEnabled, REMEMBER_SESSION_COOKIE, withSessionCookieLifetime } from "./session-cookie-policy";
 
 export async function updateSession(request: NextRequest) {
   if (!hasSupabaseConfig()) {
@@ -12,6 +13,7 @@ export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
   const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
   const secureCookies = process.env.NODE_ENV === "production" || forwardedProto === "https";
+  const rememberSession = isRememberSessionEnabled(request.cookies.get(REMEMBER_SESSION_COOKIE)?.value);
 
   const supabase = createServerClient(url, publishableKey, {
     cookieOptions: { secure: secureCookies, sameSite: "lax", path: "/" },
@@ -26,7 +28,7 @@ export async function updateSession(request: NextRequest) {
 
         response = NextResponse.next({ request });
         cookiesToSet.forEach(({ name, value, options }) => {
-          response.cookies.set(name, value, options);
+          response.cookies.set(name, value, withSessionCookieLifetime(options, rememberSession));
         });
       },
     },

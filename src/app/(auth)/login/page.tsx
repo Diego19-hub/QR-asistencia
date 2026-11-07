@@ -1,5 +1,9 @@
 import { signIn } from "./actions";
-import { accessReturnDestination } from "@/lib/access/access-links";
+import { accessReturnDestination, companySelectionPathForAccessDestination, destinationForAccessRole } from "@/lib/access/access-links";
+import { selectInitialMembership, type MembershipRole } from "@/lib/access/user-management";
+import { createClient } from "@/lib/supabase/server";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 
 type LoginPageProps = {
   searchParams: Promise<{ error?: string; next?: string }>;
@@ -17,6 +21,44 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   const { error, next: requestedNext } = await searchParams;
   const next = accessReturnDestination(requestedNext);
   const message = error ? errorMessages[error] : undefined;
+
+  // Reopen an existing authenticated session directly in its valid role.
+  // A pending invitation still takes priority, and a multi-company account
+  // keeps the explicit company-selection step unless its prior selection is
+  // still an active membership belonging to this user.
+  if (!message) {
+    try {
+      const supabase = await createClient();
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (!authError && auth.user) {
+        if (next === "/invitacion/compartida") redirect(next);
+
+        const { data: memberships, error: membershipError } = await supabase.from("company_memberships")
+          .select("id,company_id,role").eq("user_id", auth.user.id).eq("active", true);
+        if (membershipError) redirect("/login?error=service");
+
+        const { data: pending, error: invitationError } = await supabase.rpc("list_my_pending_company_invitations");
+        const missingInvitationFunction = invitationError?.code === "PGRST202" || invitationError?.code === "42883";
+        if (invitationError && !missingInvitationFunction) redirect("/login?error=service");
+        if (Array.isArray(pending) && pending.length) redirect("/invitacion");
+
+        const choices = (memberships ?? []).map((membership) => ({
+          companyId: membership.company_id,
+          role: membership.role as MembershipRole,
+          membershipId: membership.id,
+        }));
+        const selectedId = (await cookies()).get("qr_active_membership_id")?.value;
+        const selected = selectInitialMembership(choices, selectedId);
+        if (selected.kind === "none") redirect("/login?error=no-company");
+        if (selected.kind === "choose") redirect(companySelectionPathForAccessDestination(next));
+        redirect(destinationForAccessRole(selected.membership.role, next));
+      }
+    } catch (caught) {
+      // Next redirect() throws a control-flow exception; rethrow it unchanged.
+      if (caught && typeof caught === "object" && "digest" in caught) throw caught;
+      // Keep the login form usable during a transient Auth lookup failure.
+    }
+  }
 
   return (
     <main className="flex min-h-screen items-center justify-center px-4 py-12">
@@ -67,6 +109,19 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
               placeholder="Tu contraseña"
             />
           </div>
+
+          <label htmlFor="rememberSession" className="flex items-start gap-3 text-sm leading-5 text-slate-700">
+            <input
+              id="rememberSession"
+              name="rememberSession"
+              type="checkbox"
+              className="mt-0.5 size-4 rounded border-slate-300 text-blue-700 focus:ring-2 focus:ring-blue-600/30"
+            />
+            <span>
+              <span className="block font-medium text-slate-800">Mantener sesión iniciada en este dispositivo</span>
+              <span className="mt-1 block text-slate-600">En dispositivos compartidos, deja esta opción desactivada.</span>
+            </span>
+          </label>
 
           {message ? (
             <p role="alert" className="rounded-lg bg-red-50 px-3.5 py-3 text-sm text-red-800">
