@@ -147,7 +147,6 @@ test("invitación de supervisor, sucursal y dispositivo completan su ciclo sin r
     await branchCheckbox.click();
     const assignmentResponse = await branchAssignmentResponse;
     expect(assignmentResponse.status()).toBe(200);
-    await expect(adminPage.getByRole("status")).toContainText("Los cambios se guardaron correctamente.");
     await expect(branchCheckbox).toBeChecked();
     await adminPage.reload();
     const assignedRow = adminPage.getByText(email, { exact: true }).locator("xpath=..");

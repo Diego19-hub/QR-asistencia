@@ -47,11 +47,11 @@ async function scannerContext(request: Request, enableBrowser: boolean) {
   for (const companyId of companyIds) {
     const deviceCookie = `qr_device_${companyId}`;
     let deviceToken = store.get(deviceCookie)?.value ?? null;
-    const readContext = async (token: string | null) => await supabase.rpc("get_supervisor_scanner_context", {
+    const readContext = async () => await supabase.rpc("get_supervisor_scanner_context", {
       p_company_id: companyId,
-      p_device_token: token,
+      p_device_token: deviceToken,
     });
-    let { data, error: scannerError } = await readContext(deviceToken);
+    let { data, error: scannerError } = await readContext();
     if (scannerError) {
       return scannerRpcFailure(scannerError, "No fue posible cargar la sucursal del supervisor. Intenta de nuevo.");
     }
@@ -82,7 +82,7 @@ async function scannerContext(request: Request, enableBrowser: boolean) {
       }
       if (!deviceToken) store.set(deviceCookie, token, cookieBase(request));
       deviceToken = token;
-      ({ data, error: scannerError } = await readContext(deviceToken));
+      ({ data, error: scannerError } = await readContext());
       if (scannerError) return scannerRpcFailure(scannerError, "No fue posible cargar la sucursal del supervisor.");
       context = data as Record<string, unknown>;
     }
