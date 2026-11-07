@@ -1,10 +1,18 @@
 -- Transactional PIN lockout regression tests. Run only in local disposable Supabase.
 BEGIN;
-SELECT plan(35);
+SELECT plan(47);
 
 INSERT INTO public.companies(id,name) VALUES
  ('92000000-0000-4000-8000-000000000001','PIN lockout synthetic A'),
  ('92000000-0000-4000-8000-000000000002','PIN lockout synthetic B');
+SELECT is((SELECT require_employee_pin FROM public.companies WHERE id='92000000-0000-4000-8000-000000000001'),false,'existing and newly created companies default to optional PIN');
+UPDATE public.companies SET require_employee_pin=true WHERE id IN ('92000000-0000-4000-8000-000000000001','92000000-0000-4000-8000-000000000002');
+INSERT INTO public.companies(id,name) VALUES ('92000000-0000-4000-8000-000000000003','PIN optional synthetic C');
+INSERT INTO public.branches(id,company_id,name,timezone) VALUES ('93000000-0000-4000-8000-000000000003','92000000-0000-4000-8000-000000000003','PIN branch C','America/Mexico_City');
+INSERT INTO public.employees(id,company_id,branch_id,employee_number,first_name,last_name) VALUES
+ ('94000000-0000-4000-8000-000000000003','92000000-0000-4000-8000-000000000003','93000000-0000-4000-8000-000000000003','PIN-C','Prueba','C');
+INSERT INTO private.employee_pin_credentials(company_id,employee_id,pin_hash)
+VALUES ('92000000-0000-4000-8000-000000000003','94000000-0000-4000-8000-000000000003',extensions.crypt('123456',extensions.gen_salt('bf',4)));
 INSERT INTO public.branches(id,company_id,name,timezone) VALUES
  ('93000000-0000-4000-8000-000000000001','92000000-0000-4000-8000-000000000001','PIN branch A','America/Mexico_City'),
  ('93000000-0000-4000-8000-000000000002','92000000-0000-4000-8000-000000000002','PIN branch B','America/Mexico_City');
@@ -16,6 +24,18 @@ VALUES ('92000000-0000-4000-8000-000000000001','94000000-0000-4000-8000-00000000
        ('92000000-0000-4000-8000-000000000002','94000000-0000-4000-8000-000000000002',extensions.crypt('123456',extensions.gen_salt('bf',4)));
 INSERT INTO auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,created_at,updated_at)
 VALUES ('95000000-0000-4000-8000-000000000001','authenticated','authenticated','pin-lockout-supervisor@example.invalid','','now()','now()','now()');
+INSERT INTO public.company_memberships(id,company_id,user_id,role,active)
+VALUES ('96000000-0000-4000-8000-000000000002','92000000-0000-4000-8000-000000000003','95000000-0000-4000-8000-000000000001','supervisor',true);
+INSERT INTO public.supervisors(company_id,membership_id)
+VALUES ('92000000-0000-4000-8000-000000000003','96000000-0000-4000-8000-000000000002');
+INSERT INTO public.supervisor_branches(company_id,membership_id,branch_id)
+VALUES ('92000000-0000-4000-8000-000000000003','96000000-0000-4000-8000-000000000002','93000000-0000-4000-8000-000000000003');
+INSERT INTO public.authorized_devices(id,company_id,branch_id,membership_id,label)
+VALUES ('97000000-0000-4000-8000-000000000002','92000000-0000-4000-8000-000000000003','93000000-0000-4000-8000-000000000003','96000000-0000-4000-8000-000000000002','PIN optional disposable device');
+INSERT INTO private.device_token_hashes(device_id,token_hash)
+VALUES ('97000000-0000-4000-8000-000000000002',extensions.digest(convert_to('pin-lockout-device-token-disposable-company-c-0001','UTF8'),'sha256'));
+INSERT INTO private.employee_qr_tokens(employee_id,token_hash)
+VALUES ('94000000-0000-4000-8000-000000000003',extensions.digest(convert_to('pin-lockout-qr-token-disposable-company-c-000000001','UTF8'),'sha256'));
 INSERT INTO public.company_memberships(id,company_id,user_id,role,active)
 VALUES ('96000000-0000-4000-8000-000000000001','92000000-0000-4000-8000-000000000001','95000000-0000-4000-8000-000000000001','supervisor',true);
 INSERT INTO public.supervisors(company_id,membership_id)
@@ -76,6 +96,26 @@ SELECT is(public.scan_employee_attendance('92000000-0000-4000-8000-000000000001'
 RESET ROLE;
 SELECT is((SELECT failed_attempts::integer FROM private.employee_pin_credentials WHERE employee_id='94000000-0000-4000-8000-000000000001'),5,'scanner RPC lockout counter persists at five');
 SELECT is((SELECT count(*)::integer FROM public.attendance_sessions WHERE company_id='92000000-0000-4000-8000-000000000001'),0,'invalid or blocked PIN creates no attendance session');
+RESET ROLE;
+SET LOCAL ROLE authenticated;
+SELECT is(auth.uid(),'95000000-0000-4000-8000-000000000001'::uuid,'disabled-PIN verification retains the authenticated supervisor identity');
+SELECT is(private.has_company_permission('92000000-0000-4000-8000-000000000003','attendance.scan'),true,'disabled-PIN verification retains attendance.scan authorization');
+CREATE TEMP TABLE optional_pin_preview ON COMMIT DROP AS SELECT public.scan_employee_attendance('92000000-0000-4000-8000-000000000003','pin-lockout-qr-token-disposable-company-c-000000001',null,'pin-lockout-device-token-disposable-company-c-0001') AS result;
+RESET ROLE;
+SELECT is((SELECT result->>'pinError' FROM optional_pin_preview),NULL::text,'disabled PIN permits preview without a PIN');
+SELECT is((SELECT result->'allowedActions'->0->>'type' FROM optional_pin_preview),'clock_in','disabled PIN still returns the permitted attendance action');
+SET LOCAL ROLE authenticated;
+SELECT ok(public.confirm_employee_attendance('92000000-0000-4000-8000-000000000003','pin-lockout-qr-token-disposable-company-c-000000001',null,'pin-lockout-device-token-disposable-company-c-0001','clock_in','98000000-0000-4000-8000-000000000004',null)->>'eventId' IS NOT NULL,'disabled PIN permits confirmation without a PIN');
+RESET ROLE;
+SELECT is((SELECT count(*)::integer FROM public.attendance_events WHERE company_id='92000000-0000-4000-8000-000000000003'),1,'PIN-disabled confirmation records exactly one event');
+SELECT is((SELECT failed_attempts::integer FROM private.employee_pin_credentials WHERE employee_id='94000000-0000-4000-8000-000000000003'),0,'PIN-disabled scan and confirmation do not validate or count PIN attempts');
+UPDATE public.companies SET require_employee_pin=true WHERE id='92000000-0000-4000-8000-000000000003';
+SET LOCAL ROLE authenticated;
+SELECT is(public.scan_employee_attendance('92000000-0000-4000-8000-000000000003','pin-lockout-qr-token-disposable-company-c-000000001',null,'pin-lockout-device-token-disposable-company-c-0001')->>'pinError','pin_invalid','enabled PIN rejects preview without a PIN');
+SELECT is(public.confirm_employee_attendance('92000000-0000-4000-8000-000000000003','pin-lockout-qr-token-disposable-company-c-000000001',null,'pin-lockout-device-token-disposable-company-c-0001','clock_out','98000000-0000-4000-8000-000000000005',null)->>'pinError','pin_invalid','enabled PIN rejects confirmation without a PIN');
+RESET ROLE;
+SELECT is((SELECT count(*)::integer FROM public.attendance_events WHERE company_id='92000000-0000-4000-8000-000000000003'),1,'PIN-enabled rejected confirmation creates no additional attendance event');
+SELECT is((SELECT failed_attempts::integer FROM private.employee_pin_credentials WHERE employee_id='94000000-0000-4000-8000-000000000003'),2,'PIN-enabled missing values retain the existing failed-attempt validation');
 SET LOCAL ROLE authenticated;
 SELECT throws_ok($$SELECT public.scan_employee_attendance('92000000-0000-4000-8000-000000000001','pin-lockout-qr-token-disposable-00000000000000001','000000','unauthorized-device-token')$$,'42501',NULL,'unauthorized device cannot preview attendance');
 RESET ROLE;

@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 import { useAdminContext } from "@/components/admin/admin-context";
 import { UserAccessManagement } from "@/components/admin/user-access-management";
 
-type Company = { id: string; name: string; legal_name: string | null; rfc: string | null; updated_at: string };
+type Company = { id: string; name: string; legal_name: string | null; rfc: string | null; require_employee_pin: boolean; updated_at: string };
 type Branch = { id: string; name: string; timezone: string; active: boolean };
 type Permission = { code: string; description: string };
 type AuditEntry = { id: number; actor_user_id: string | null; action: string; entity_table: string; entity_id: string | null; occurred_at: string; changedFields: string[] };
@@ -32,6 +32,7 @@ export function CompanySettings({ publicOrigin }: { publicOrigin: string | null 
   const [auditFilters, setAuditFilters] = useState({ from: "", to: "", action: "" });
   const [appliedAuditFilters, setAppliedAuditFilters] = useState({ from: "", to: "", action: "" });
   const [saving, setSaving] = useState(false);
+  const [savingAttendanceSetting, setSavingAttendanceSetting] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [busyBranch, setBusyBranch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -103,6 +104,20 @@ export function CompanySettings({ publicOrigin }: { publicOrigin: string | null 
     finally { setSaving(false); }
   }
 
+  async function updatePinRequirement(requireEmployeePin: boolean) {
+    if (!canManage || !companyData || savingAttendanceSetting) return;
+    setSavingAttendanceSetting(true); setError(""); setNotice("");
+    try {
+      const response = await fetch(`/api/company?${query}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requireEmployeePin }) });
+      const body = await response.json() as ApiBody<{ item?: Company }>;
+      if (!response.ok || !body.item) throw new Error(body.error?.message ?? "No fue posible actualizar la configuración de asistencia.");
+      setCompanyData(body.item);
+      setNotice(`El requisito de PIN quedó ${requireEmployeePin ? "activado" : "desactivado"}. El cambio se registró en auditoría.`);
+      router.refresh();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "No fue posible actualizar la configuración de asistencia."); }
+    finally { setSavingAttendanceSetting(false); }
+  }
+
   async function createBranch(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!canManage) return;
     setBusyBranch("new"); setError(""); setNotice("");
@@ -132,13 +147,14 @@ export function CompanySettings({ publicOrigin }: { publicOrigin: string | null 
   return <div className="space-y-6">
     <header className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"><div><p className="text-xs font-semibold uppercase tracking-[.14em] text-blue-700">Administración de la empresa</p><h1 className="mt-2 text-2xl font-bold tracking-tight text-slate-950 sm:text-[30px]">Configuración</h1><p className="mt-1 text-sm text-slate-500">Empresa activa: {company.companyName}. Gestiona datos y sucursales con alcance limitado a esta empresa.</p></div><button type="button" onClick={() => void load(pagination.page)} disabled={loading} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-xs font-semibold text-slate-700 disabled:opacity-50"><RefreshCw size={15} className={loading ? "animate-spin" : ""} />Actualizar</button></header>
     <nav aria-label="Secciones de configuración" className="sticky top-0 z-10 -mx-1 flex gap-2 overflow-x-auto rounded-xl border border-slate-200 bg-white/95 p-2 shadow-sm backdrop-blur">
-      {[["#empresa", "Empresa"], ["#sucursales", "Sucursales"], ["#avanzada", "Configuración avanzada"]].map(([href, title]) => <a key={href} href={href} className="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-blue-50 hover:text-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">{title}</a>)}
+      {[["#empresa", "Empresa"], ["#asistencia", "Asistencia"], ["#sucursales", "Sucursales"], ["#avanzada", "Configuración avanzada"]].map(([href, title]) => <a key={href} href={href} className="shrink-0 rounded-lg px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-blue-50 hover:text-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">{title}</a>)}
     </nav>
     {notice ? <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{notice}</div> : null}
     {error ? <div role="alert" className="flex gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"><CircleAlert size={17} className="shrink-0" />{error}</div> : null}
     <section id="empresa" className={`${card} scroll-mt-24 p-5 sm:p-6`}><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-xl bg-blue-50 text-blue-700"><Building2 size={19} /></div><div><h2 className="font-semibold text-slate-900">Datos de la empresa</h2><p className="mt-0.5 text-xs text-slate-500">Los cambios se registran en la bitácora administrativa.</p></div></div>
       {companyData ? <form onSubmit={(event) => void saveCompany(event)} className="mt-5 space-y-4"><div className="grid gap-4 sm:grid-cols-2"><label className="text-xs font-semibold text-slate-700">Nombre comercial<input name="name" required maxLength={180} value={companyForm.name} onChange={(event) => setCompanyForm({ ...companyForm, name: event.target.value })} disabled={!canManage || saving} className={input} /></label><label className="text-xs font-semibold text-slate-700">Razón social<input name="legalName" maxLength={240} value={companyForm.legalName} onChange={(event) => setCompanyForm({ ...companyForm, legalName: event.target.value })} disabled={!canManage || saving} className={input} /></label><label className="text-xs font-semibold text-slate-700 sm:col-span-2">RFC<input name="rfc" maxLength={13} value={companyForm.rfc} onChange={(event) => setCompanyForm({ ...companyForm, rfc: event.target.value.toUpperCase() })} disabled={!canManage || saving} className={`${input} uppercase`} placeholder="Opcional" /></label></div><div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between"><p className="text-xs text-slate-500">Última actualización: {new Date(companyData.updated_at).toLocaleString("es-MX")}</p>{canManage ? <button disabled={saving} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#14264a] px-4 text-xs font-semibold text-white disabled:opacity-50"><Save size={15} />{saving ? "Guardando…" : "Guardar cambios"}</button> : <span className="text-xs font-medium text-amber-700">Tu rol no tiene company.manage.</span>}</div></form> : <p className="mt-5 text-sm text-slate-500">{loading ? "Cargando…" : "No fue posible cargar los datos."}</p>}
     </section>
+    <section id="asistencia" className={`${card} scroll-mt-24 p-5 sm:p-6`}><div className="flex items-center justify-between gap-4"><div><h2 className="font-semibold text-slate-900">Configuración de asistencia</h2><p className="mt-1 text-xs text-slate-500">Define si el personal debe confirmar sus movimientos con un PIN.</p></div><label className={`flex items-center gap-3 text-sm font-medium ${canManage ? "cursor-pointer text-slate-800" : "text-slate-400"}`}><span>Requerir PIN del empleado</span><input type="checkbox" checked={companyData?.require_employee_pin ?? false} disabled={!canManage || !companyData || savingAttendanceSetting} onChange={(event) => void updatePinRequirement(event.target.checked)} className="size-5 accent-blue-700" aria-label="Requerir PIN del empleado" /></label></div><p className="mt-3 text-xs text-slate-500">{companyData?.require_employee_pin ? "El escáner solicitará y validará el PIN antes de mostrar los movimientos." : "Desactivado: el escáner no solicitará ni validará el PIN."}</p>{!canManage && companyData ? <p className="mt-2 text-xs text-amber-700">Se requiere el permiso company.manage para cambiar esta opción.</p> : null}</section>
     <section id="sucursales" className={`${card} scroll-mt-24 p-5 sm:p-6`}><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-xl bg-emerald-50 text-emerald-700"><Store size={19} /></div><div><h2 className="font-semibold text-slate-900">Sucursales</h2><p className="mt-0.5 text-xs text-slate-500">Consulta, crea y cambia el estado de sucursales. No se eliminan registros.</p></div></div>
       {canManage ? <form onSubmit={(event) => void createBranch(event)} className="mt-5 grid gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end"><label className="text-xs font-semibold text-slate-700">Nombre de sucursal<input name="name" required maxLength={120} className={input} placeholder="Ej. Centro" /></label><label className="text-xs font-semibold text-slate-700">Zona horaria<select name="timezone" className={input}>{timezones.map((zone) => <option key={zone}>{zone}</option>)}</select></label><button disabled={busyBranch === "new"} className="h-11 rounded-xl bg-blue-700 px-4 text-xs font-semibold text-white disabled:opacity-50">{busyBranch === "new" ? "Creando…" : "Crear sucursal"}</button></form> : null}
       <div className="mt-4 divide-y divide-slate-100">{branches.map((branch) => <div key={branch.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-semibold text-slate-900">{branch.name}</p><p className="mt-1 text-xs text-slate-500">{branch.timezone}</p></div><div className="flex items-center gap-3"><span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${branch.active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{branch.active ? "Activa" : "Inactiva"}</span>{canManage ? <button type="button" disabled={Boolean(busyBranch)} onClick={() => void toggleBranch(branch)} className="h-9 rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-700 disabled:opacity-50">{busyBranch === branch.id ? "Guardando…" : branch.active ? "Desactivar" : "Activar"}</button> : null}</div></div>)}{!loading && !branches.length ? <p className="py-5 text-sm text-slate-500">No hay sucursales.</p> : null}</div>

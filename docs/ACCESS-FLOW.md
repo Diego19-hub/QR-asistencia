@@ -19,6 +19,10 @@ Este documento resume las rutas observadas en el árbol del repositorio. Los con
 5. Revisar expiración, revocación, reuso y destinatario de credenciales/invitaciones.
 6. Confirmar que las respuestas y logs no revelen secretos ni permitan enumerar usuarios.
 
+## Duración opcional de sesión
+
+En `/login`, la opción “Mantener sesión iniciada en este dispositivo” controla la duración de las cookies SSR de Supabase Auth. Desmarcada, las cookies de Auth son de sesión del navegador; marcada, se conservan hasta 30 días para que el proxy SSR pueda renovar la sesión con el mecanismo existente. La preferencia se guarda en una cookie `HttpOnly` sin credenciales; no se almacenan contraseñas ni se usa `localStorage`. El límite de cookie no amplía la vigencia que imponga Supabase Auth: sesiones expiradas o revocadas siguen requiriendo autenticación. Al abrir `/login` con una sesión válida se reanuda una membresía activa seleccionada previamente; si hay varias y no existe una selección válida, se conserva la pantalla de selección. Las invitaciones pendientes mantienen prioridad. “Cerrar sesión” revoca la sesión Auth mediante Supabase y elimina las cookies de selección y preferencia.
+
 ## Enlaces permanentes de acceso (QR-001)
 
 La configuración administrativa muestra enlaces absolutos para `/scanner` y `/mi-qr`, construidos con el origen canónico de `APP_BASE_URL`. Los enlaces no incluyen empresa, correo, PIN, token ni identificadores. WhatsApp recibe solo un texto general y la URL codificados; no se requiere número destinatario.

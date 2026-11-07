@@ -45,6 +45,10 @@ async function scannerContext(request: Request, enableBrowser: boolean) {
 
   const contexts: Record<string, unknown>[] = [];
   for (const companyId of companyIds) {
+    const { data: companySettings, error: companySettingsError } = await supabase.from("companies")
+      .select("require_employee_pin").eq("id", companyId).maybeSingle();
+    if (companySettingsError) return contextError("attendance_settings_unavailable", "No fue posible cargar la configuración de asistencia.", 503);
+    if (!companySettings) return contextError("supervisor_forbidden", "No tienes acceso a esta empresa.", 403);
     const deviceCookie = `qr_device_${companyId}`;
     let deviceToken = store.get(deviceCookie)?.value ?? null;
     const readContext = async () => await supabase.rpc("get_supervisor_scanner_context", {
@@ -86,7 +90,7 @@ async function scannerContext(request: Request, enableBrowser: boolean) {
       if (scannerError) return scannerRpcFailure(scannerError, "No fue posible cargar la sucursal del supervisor.");
       context = data as Record<string, unknown>;
     }
-    contexts.push({ ...context, requestStatus: context.authorized ? "authorized" : "unrequested" });
+    contexts.push({ ...context, requireEmployeePin: companySettings.require_employee_pin === true, requestStatus: context.authorized ? "authorized" : "unrequested" });
   }
   return Response.json({ contexts }, { headers: { "Cache-Control": "no-store, private" } });
 }

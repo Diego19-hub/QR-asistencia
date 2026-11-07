@@ -110,7 +110,7 @@ test("Invitation setup revalidates Auth identity and pending recipient before ch
   const [actions, page, acceptanceMigration, inviteApi, delivery, resend] = await Promise.all([
     readFile(new URL("../src/app/(auth)/invitacion/actions.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/app/(auth)/invitacion/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../supabase/migrations/20261105234619_invitation_account_setup_required.sql", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20261106012705_invitation_account_setup_required.sql", import.meta.url), "utf8"),
     readFile(new URL("../src/app/api/admin/access/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/lib/access/invitation-delivery.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/lib/access/resend-invitation.ts", import.meta.url), "utf8"),

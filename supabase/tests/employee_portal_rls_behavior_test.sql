@@ -1,7 +1,7 @@
 -- JWT-claim RLS regression test with synthetic tenants and identities only.
 -- Run in a disposable Supabase database; the transaction always rolls back.
 BEGIN;
-SELECT plan(21);
+SELECT plan(27);
 
 INSERT INTO auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at) VALUES
  ('11000000-0000-4000-8000-000000000001','authenticated','authenticated','portal-owner-a@example.invalid','','now()','now()','now()'),
@@ -75,6 +75,26 @@ SELECT is((SELECT count(*)::integer FROM public.schedule_assignments WHERE compa
 SELECT is((SELECT count(*)::integer FROM public.schedule_assignments WHERE company_id='21000000-0000-4000-8000-000000000002'),0,'employee cannot read another tenant schedule');
 SELECT is(public.get_own_employee_credential_status('21000000-0000-4000-8000-000000000001','41000000-0000-4000-8000-000000000001')->>'status','not_issued','employee sees only own credential status');
 SELECT throws_ok($$SELECT public.get_own_employee_credential_status('21000000-0000-4000-8000-000000000002','41000000-0000-4000-8000-000000000002')$$,'42501',NULL,'foreign employee credential status is rejected');
+
+-- Create and replace synthetic credentials through the same authorized RPC as
+-- the admin UI, then verify the employee can retrieve only the latest envelope.
+SELECT set_config('request.jwt.claim.sub','11000000-0000-4000-8000-000000000001',true);
+SELECT lives_ok($$SELECT public.issue_employee_qr_token_with_ciphertext(
+  '21000000-0000-4000-8000-000000000001','41000000-0000-4000-8000-000000000001',
+  repeat('a',64),'v1.aW5pdGlhbGl2YWx1ZQ.dGFn.c3ludGhldGljLWVuY3J5cHRlZC10b2tlbg',false)$$,
+  'authorized owner issues a synthetic QR credential');
+SELECT set_config('request.jwt.claim.sub','11000000-0000-4000-8000-000000000004',true);
+SELECT is(public.get_own_employee_credential_status('21000000-0000-4000-8000-000000000001','41000000-0000-4000-8000-000000000001')->>'status','active','employee sees own active credential');
+SELECT is(public.get_own_employee_credential_status('21000000-0000-4000-8000-000000000001','41000000-0000-4000-8000-000000000001')->>'encryptedToken','v1.aW5pdGlhbGl2YWx1ZQ.dGFn.c3ludGhldGljLWVuY3J5cHRlZC10b2tlbg','employee receives only its credential envelope');
+SELECT set_config('request.jwt.claim.sub','11000000-0000-4000-8000-000000000001',true);
+SELECT lives_ok($$SELECT public.issue_employee_qr_token_with_ciphertext(
+  '21000000-0000-4000-8000-000000000001','41000000-0000-4000-8000-000000000001',
+  repeat('b',64),'v1.cmVnZW5lcmF0ZWQ.dGFn.bmV3LXN5bnRoZXRpYy1lbmNyeXB0ZWQtdG9rZW4',true)$$,
+  'authorized regeneration atomically replaces the previous QR');
+SELECT set_config('request.jwt.claim.sub','11000000-0000-4000-8000-000000000004',true);
+SELECT is(public.get_own_employee_credential_status('21000000-0000-4000-8000-000000000001','41000000-0000-4000-8000-000000000001')->>'encryptedToken','v1.cmVnZW5lcmF0ZWQ.dGFn.bmV3LXN5bnRoZXRpYy1lbmNyeXB0ZWQtdG9rZW4','employee sees regenerated QR and not the old envelope');
+SELECT set_config('request.jwt.claim.sub','11000000-0000-4000-8000-000000000005',true);
+SELECT is(public.get_own_employee_credential_status('21000000-0000-4000-8000-000000000002','41000000-0000-4000-8000-000000000002')->>'status','not_issued','employee without an issued QR sees no credential');
 SELECT ok(NOT has_table_privilege('authenticated','public.attendance_events','INSERT') AND NOT has_table_privilege('authenticated','public.attendance_sessions','INSERT'),'employee cannot write attendance directly');
 
 SELECT set_config('request.jwt.claim.sub','11000000-0000-4000-8000-000000000005',true);
