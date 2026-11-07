@@ -4,6 +4,11 @@ export const managedRoleSchema = z.enum(["admin", "supervisor", "employee"]);
 export type ManagedRole = z.infer<typeof managedRoleSchema>;
 export type MembershipRole = ManagedRole | "owner";
 
+/** Roles that may enter the administrative workspace; actions still check their specific permission. */
+export function isAdministrativeRole(role: MembershipRole): role is "owner" | "admin" {
+  return role === "owner" || role === "admin";
+}
+
 const optionalEmployeeId = z.preprocess(
   (value) => value === "" || value === undefined ? null : value,
   z.string().uuid().nullable(),

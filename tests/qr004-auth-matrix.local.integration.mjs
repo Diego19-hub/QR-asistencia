@@ -1734,6 +1734,40 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal((await response.json()).canManage, true);
   response = await request(`/api/company?companyId=${companyA}`, { user: adminB }); assert.equal(response.status, 403);
 
+  // Owner administrative access is tenant-scoped and remains consistent
+  // across settings APIs and the employee expediente route.
+  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 200);
+  const ownerCompanyResponse = await response.json();
+  assert.equal(ownerCompanyResponse.item.id, companyA);
+  assert.equal(ownerCompanyResponse.canManage, true, "active owner can manage their own company");
+  response = await request(`/api/branches?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 200);
+  assert.ok((await response.json()).items.some((branch) => branch.id === branchA), "owner can read own-company branches");
+  response = await request(`/api/admin/permissions?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 200);
+  const ownerPermissions = await response.json();
+  for (const code of ["company.manage", "employees.manage", "devices.manage", "schedules.manage"]) {
+    assert.ok(ownerPermissions.rolePermissions.some((permission) => permission.role === "owner" && permission.permission_code === code), `owner base role includes ${code}`);
+  }
+  response = await request(`/api/admin/audit?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 200);
+  response = await request(`/api/employees?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 200);
+  response = await request(`/api/employees/${employeeA.employeeId}?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.id, employeeA.employeeId, "owner can open an employee expediente in their company");
+  response = await request(`/api/company?companyId=${companyB}`, { user: ownerA }); assert.equal(response.status, 403);
+  response = await request(`/api/employees/${employeeB.employeeId}?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 404, "owner cannot read another tenant's employee expediente");
+
+  const ownerCompanyBefore = await companyRecord(companyA);
+  const ownerCompanyWrite = { name: `Synthetic Owner Update ${randomUUID()}`, legalName: ownerCompanyBefore.legal_name, rfc: ownerCompanyBefore.rfc };
+  const beforeOwnerWriteA = await companyAndDataSnapshot(companyA), beforeOwnerWriteB = await companyAndDataSnapshot(companyB);
+  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: ownerCompanyWrite }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.name, ownerCompanyWrite.name, "owner can update their own company through the API");
+  const directOwnerCompanyUpdate = await ownerA.client.from("companies").update({ legal_name: "Synthetic owner direct RLS update" }).eq("id", companyA).select("id,legal_name").single();
+  assert.deepEqual(directOwnerCompanyUpdate.data, { id: companyA, legal_name: "Synthetic owner direct RLS update" }, "owner can update only their own company through authenticated PostgreSQL RLS");
+  const ownerCompanyAudit = (await snapshot(companyA)).audit;
+  assert.ok(ownerCompanyAudit.some((entry) => entry.actor_user_id === ownerA.userId && entry.action === "UPDATE" && entry.entity_table === "companies"), "owner company update is audited");
+  response = await request(`/api/company?companyId=${companyB}`, { user: ownerA, method: "PATCH", body: { ...ownerCompanyWrite, name: "Foreign tenant mutation" } }); assert.equal(response.status, 403);
+  assert.deepEqual(await companyAndDataSnapshot(companyB), beforeOwnerWriteB, "owner cross-tenant PATCH denial preserves the other company's data and audit snapshot");
+  assert.notDeepEqual(await companyAndDataSnapshot(companyA), beforeOwnerWriteA, "authorized owner update changes only its own tenant and records audit");
+  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { name: ownerCompanyBefore.name, legalName: ownerCompanyBefore.legal_name, rfc: ownerCompanyBefore.rfc } }); assert.equal(response.status, 200);
+
   const validCompanyPayload = { name: `Synthetic Company A Updated ${randomUUID()}`, legalName: "Synthetic Tenant A LLC", rfc: "SYN010101ABC" };
   const beforeCompanyRoleDenialsA = await companyAndDataSnapshot(companyA);
   response = await request(`/api/company?companyId=${companyA}`, { method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 401);
