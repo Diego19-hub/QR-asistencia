@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { isAllowedRequestOrigin } from "@/lib/http/request-origin";
 import { createClient } from "@/lib/supabase/server";
@@ -13,7 +14,7 @@ function cookieBase(request: Request) {
   return { httpOnly: true, secure: process.env.NODE_ENV === "production" || forwardedProto === "https", sameSite: "lax" as const, path: "/api", maxAge: 60 * 60 * 24 * 365 };
 }
 
-async function scannerContext(request: Request, redeemChallenge: boolean) {
+async function scannerContext(request: Request, enableBrowser: boolean) {
   const supabase = await createClient();
   const { data: auth, error: authError } = await supabase.auth.getUser();
   if (authError || !auth.user) return contextError("auth_required", "Inicia sesión para continuar.", 401);
@@ -38,28 +39,13 @@ async function scannerContext(request: Request, redeemChallenge: boolean) {
 
   const contexts: Record<string, unknown>[] = [];
   for (const companyId of companyIds) {
-    const challengeName = `qr_enroll_${companyId}`;
-    const challenge = store.get(challengeName)?.value;
     const deviceCookie = `qr_device_${companyId}`;
     let deviceToken = store.get(deviceCookie)?.value ?? null;
-    let requestStatus = challenge ? "pending" : "unrequested";
-    if (challenge && redeemChallenge) {
-      const { data: redeem, error: redeemError } = await supabase.rpc("redeem_supervisor_device", { p_company_id: companyId, p_challenge: challenge });
-      const redemption = redeem as { status?: string } | null;
-      if (!redeemError && redemption?.status === "authorized") {
-        deviceToken = challenge;
-        store.set(deviceCookie, deviceToken, cookieBase(request));
-        store.delete(challengeName);
-        requestStatus = "authorized";
-      } else if (!redeemError && redemption?.status && redemption.status !== "pending") {
-        requestStatus = redemption.status;
-        if (redemption.status !== "approved") store.delete(challengeName);
-      }
-    }
-    const { data, error: scannerError } = await supabase.rpc("get_supervisor_scanner_context", {
+    const readContext = async (token: string | null) => await supabase.rpc("get_supervisor_scanner_context", {
       p_company_id: companyId,
-      p_device_token: deviceToken,
+      p_device_token: token,
     });
+    let { data, error: scannerError } = await readContext(deviceToken);
     if (scannerError) {
       const forbidden = scannerError.code === "42501";
       return contextError(
@@ -70,8 +56,45 @@ async function scannerContext(request: Request, redeemChallenge: boolean) {
         forbidden ? 403 : 503,
       );
     }
-    const context = data as Record<string, unknown>;
-    contexts.push({ ...context, requestStatus });
+    let context = data as Record<string, unknown>;
+    const branches = Array.isArray(context.branches) ? context.branches as { id?: unknown }[] : [];
+
+    // POST is called by the authenticated scanner page after the server has
+    // selected this membership. An active branch assignment is the approval:
+    // mint a per-browser secret and bind its hash to the first assigned active
+    // branch. Never create a device for a supervisor with no active branch.
+    if (enableBrowser && !context.authorized && branches.length > 0) {
+      const token = deviceToken ?? randomBytes(32).toString("base64url");
+      const branchId = typeof branches[0]?.id === "string" ? branches[0].id : null;
+      if (!branchId) return contextError("scanner_context_failed", "No fue posible validar la sucursal asignada.", 503);
+      const { error: enrollmentError } = await supabase.rpc("ensure_supervisor_scanner_device", {
+        p_company_id: companyId,
+        p_branch_id: branchId,
+        p_label: "Navegador del supervisor",
+        p_device_token: token,
+      });
+      if (enrollmentError) {
+        const forbidden = enrollmentError.code === "42501";
+        return contextError(
+          forbidden ? "supervisor_forbidden" : "scanner_context_failed",
+          forbidden
+            ? "El acceso del navegador, la membresía o la sucursal ya no está autorizado. Contacta al administrador."
+            : "No fue posible habilitar este navegador. Intenta de nuevo.",
+          forbidden ? 403 : 503,
+        );
+      }
+      if (!deviceToken) store.set(deviceCookie, token, cookieBase(request));
+      deviceToken = token;
+      ({ data, error: scannerError } = await readContext(deviceToken));
+      if (scannerError) {
+        const forbidden = scannerError.code === "42501";
+        return contextError(forbidden ? "supervisor_forbidden" : "scanner_context_failed",
+          forbidden ? "La membresía o sucursal del escáner ya no está autorizada." : "No fue posible cargar la sucursal del supervisor.",
+          forbidden ? 403 : 503);
+      }
+      context = data as Record<string, unknown>;
+    }
+    contexts.push({ ...context, requestStatus: context.authorized ? "authorized" : "unrequested" });
   }
   return Response.json({ contexts }, { headers: { "Cache-Control": "no-store, private" } });
 }

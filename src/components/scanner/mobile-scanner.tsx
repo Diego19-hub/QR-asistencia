@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { BrowserQRCodeReader, type IScannerControls } from "@zxing/browser";
-import { Camera, CameraOff, CheckCircle2, CircleAlert, Clock3, LoaderCircle, RotateCcw, ShieldCheck, Smartphone } from "lucide-react";
+import { Camera, CameraOff, CheckCircle2, CircleAlert, Clock3, LoaderCircle, RotateCcw, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { isCurrentContextRequest } from "@/lib/http/request-origin";
 
@@ -78,9 +78,6 @@ export function MobileScanner() {
   const [selectedAction, setSelectedAction] = useState<Action["type"] | "">("");
   const [breakRuleId, setBreakRuleId] = useState("");
   const [success, setSuccess] = useState<Success | null>(null);
-  const [deviceLabel, setDeviceLabel] = useState("");
-  const [branchId, setBranchId] = useState("");
-  const selectedBranchId = context?.branches.some((branch) => branch.id === branchId) ? branchId : context?.branches[0]?.id ?? "";
   const idempotencyRef = useRef("");
   const contextRequestRef = useRef<AbortController | null>(null);
   const contextRequestIdRef = useRef(0);
@@ -279,16 +276,6 @@ export function MobileScanner() {
     finally { setBusy(false); }
   }
 
-  async function requestDevice() {
-    if (!context || !selectedBranchId) return;
-    setBusy(true); setError("");
-    try {
-      const response = await fetch("/api/supervisor/device-requests", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ companyId: context.companyId, branchId: selectedBranchId, label: deviceLabel.trim() || `Celular de ${context.supervisorName}` }) });
-      await readJson(response); await loadContext();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "No fue posible solicitar autorización."); }
-    finally { setBusy(false); }
-  }
-
   const selected = preview?.allowedActions.find((action) => action.type === selectedAction);
 
   return <div className="mx-auto max-w-2xl space-y-5">
@@ -298,7 +285,7 @@ export function MobileScanner() {
     {!contexts.length && contextLoadState === "loading" ? <p role="status" className="rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-600">Cargando la asignación de supervisor…</p> : null}
     {!contexts.length && contextLoadState === "loaded" ? <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900"><strong>Sin asignación de supervisor.</strong><p className="mt-1">No se encontró una membresía activa de supervisor. Contacta al administrador de tu empresa.</p></section> : null}
     {context && !context.branches.length ? <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900"><strong>Sin sucursal asignada.</strong><p className="mt-1">Tu membresía de supervisor no tiene sucursales activas asignadas.</p></section> : null}
-    {context && context.branches.length > 0 && !context.authorized ? <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-xl bg-amber-50 text-amber-700"><Smartphone size={19} /></div><div><h2 className="font-semibold text-slate-900">Dispositivo sin autorización</h2><p className="mt-0.5 text-xs text-slate-500">{context.supervisorName} · {context.companyName}</p></div></div><p className="text-sm text-slate-600">Un administrador debe aprobar este navegador antes de habilitar la cámara y el registro de asistencia.</p>{context.requestStatus === "rejected" ? <p role="status" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">La solicitud anterior fue rechazada. Revisa la sucursal y puedes enviar una nueva solicitud.</p> : null}{context.requestStatus === "revoked" ? <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">La autorización anterior fue revocada. Puedes solicitar una nueva autorización.</p> : null}{context.requestStatus === "pending" ? <p role="status" className="rounded-xl bg-blue-50 p-3 text-sm text-blue-800">Solicitud enviada. Esta página comprobará la aprobación automáticamente.</p> : <><label className="block text-xs font-medium text-slate-600">Sucursal<select value={selectedBranchId} onChange={(event) => setBranchId(event.target.value)} className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm">{context.branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label><label className="block text-xs font-medium text-slate-600">Nombre del dispositivo<input value={deviceLabel || `Celular de ${context.supervisorName}`} onChange={(event) => setDeviceLabel(event.target.value)} maxLength={100} className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm" /></label><button disabled={busy || !selectedBranchId} onClick={() => void requestDevice()} className={buttonClass}>{busy ? <LoaderCircle className="animate-spin" size={17} /> : <Smartphone size={17} />}Solicitar autorización</button></>}</section> : null}
+    {context && context.branches.length > 0 && !context.authorized ? <section role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">No fue posible habilitar automáticamente este navegador. Actualiza la página o contacta al administrador si se revocó su acceso.</section> : null}
     {context?.authorized ? <>
       <section className="flex items-center justify-between rounded-2xl border border-emerald-200 bg-emerald-50 p-4"><div><p className="text-sm font-semibold text-emerald-900">{context.companyName} · {context.branchName}</p><p className="mt-1 text-xs text-emerald-800">{context.supervisorName} · Dispositivo autorizado</p></div><span className="rounded-full bg-emerald-100 px-3 py-1 text-[11px] font-semibold text-emerald-800">ACTIVO</span></section>
       {success ? <section role="status" className="rounded-2xl border border-emerald-200 bg-white p-5 shadow-sm"><div className="flex items-start gap-3"><CheckCircle2 className="mt-0.5 shrink-0 text-emerald-600" size={23} /><div><h2 className="font-semibold text-slate-950">Movimiento registrado</h2><p className="mt-1 text-sm text-slate-700">{success.employeeName} · {eventLabels[success.eventType]}</p><p className="mt-1 text-xs text-slate-500">Hora oficial: {new Intl.DateTimeFormat("es-MX", { dateStyle: "medium", timeStyle: "short", timeZone: context.timezone ?? undefined }).format(new Date(success.occurredAt))}</p>{success.duplicate ? <p className="mt-1 text-xs text-slate-500">Se devolvió el registro existente por reintento.</p> : null}</div></div><button onClick={clearEmployee} className={`${buttonClass} mt-5 w-full`}><RotateCcw size={17} />Volver al escáner</button></section> : null}
