@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { decryptQrToken } from "@/lib/employees/qr-token-encryption";
+import { decryptEmployeeQrToken, parseEmployeeQrEncryptionKey } from "@/lib/employees/qr-token-encryption";
 
 export const runtime = "nodejs";
 
@@ -20,7 +20,7 @@ export async function GET(request: Request) {
   if (employeeError) return failure("employee_lookup_failed", "No fue posible validar tu expediente.", 503);
   if (!employee) return failure("employee_forbidden", "No tienes acceso a esta credencial.", 403);
 
-  const { data, error } = await supabase.rpc("get_own_employee_qr_credential", {
+  const { data, error } = await supabase.rpc("get_own_employee_credential_status", {
     p_company_id: employee.company_id,
     p_employee_id: employee.id,
   });
@@ -28,12 +28,15 @@ export async function GET(request: Request) {
     error.code === "42501" ? "No tienes acceso a esta credencial." : "No fue posible consultar la credencial.",
     error.code === "42501" ? 403 : 503);
 
-  const credential = data as { status?: string; issuedAt?: string | null; revokedAt?: string | null; encryptedToken?: string | null; recoverable?: boolean };
+  const credential = data as { status?: string; issuedAt?: string | null; revokedAt?: string | null; encryptedToken?: string | null };
   if (credential.status !== "active") return Response.json({ status: credential.status ?? "not_issued", issuedAt: credential.issuedAt ?? null, revokedAt: credential.revokedAt ?? null }, { headers: { "Cache-Control": "no-store, private", Vary: "Cookie" } });
   if (!credential.encryptedToken) return Response.json({ status: "active", recoverable: false, issuedAt: credential.issuedAt ?? null }, { headers: { "Cache-Control": "no-store, private", Vary: "Cookie" } });
 
   let token: string;
-  try { token = decryptQrToken(credential.encryptedToken, employee.company_id, employee.id); }
+  try {
+    const key = parseEmployeeQrEncryptionKey(process.env.QR_CREDENTIAL_ENCRYPTION_KEY);
+    token = decryptEmployeeQrToken(credential.encryptedToken, key, employee.company_id, employee.id);
+  }
   catch { return failure("credential_recovery_unavailable", "No se puede mostrar la credencial. La administración debe verificar la clave del servidor o regenerarla.", 503); }
   if (!/^[A-Za-z0-9_-]{40,60}$/.test(token)) return failure("credential_recovery_unavailable", "No se pudo validar la credencial. Contacta a la administración.", 503);
   return Response.json({ status: "active", issuedAt: credential.issuedAt ?? null, token }, { headers: { "Cache-Control": "no-store, private", Vary: "Cookie" } });

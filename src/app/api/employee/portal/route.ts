@@ -4,7 +4,6 @@ import { cookies } from "next/headers";
 import { activeEmployeeCompanyIds, isOwnActiveEmployee } from "@/lib/employee/portal-scope";
 import { createClient } from "@/lib/supabase/server";
 import { dateInTimeZone } from "@/lib/datetime";
-import { decryptEmployeeQrToken, parseEmployeeQrEncryptionKey } from "@/lib/employees/qr-token-encryption";
 
 const querySchema = z.object({ page: z.coerce.number().int().min(1).max(100000).default(1) });
 
@@ -105,22 +104,13 @@ export async function GET(request: Request) {
       p_employee_id: employee.id,
     });
     if (error || !data || typeof data !== "object") return { employeeId: employee.id, data: null };
-    const status = data as { encryptedToken?: unknown; status?: unknown };
-    let qrToken: string | null = null;
-    if (status.status === "active" && typeof status.encryptedToken === "string") {
-      try {
-        const key = parseEmployeeQrEncryptionKey(process.env.QR_CREDENTIAL_ENCRYPTION_KEY);
-        qrToken = decryptEmployeeQrToken(status.encryptedToken, key, employee.company_id, employee.id);
-      } catch {
-        return { employeeId: employee.id, data: null };
-      }
-    }
-    // Never forward the ciphertext envelope from the privileged RPC to the browser.
+    const status = data as { status?: unknown; issuedAt?: unknown; revokedAt?: unknown };
+    // The portal overview exposes status only. The token is requested from the
+    // dedicated self-scoped endpoint only when the employee opens Mi credencial.
     return { employeeId: employee.id, data: {
       status: status.status,
-      issuedAt: (data as { issuedAt?: string | null }).issuedAt ?? null,
-      revokedAt: (data as { revokedAt?: string | null }).revokedAt ?? null,
-      qrToken,
+      issuedAt: typeof status.issuedAt === "string" ? status.issuedAt : null,
+      revokedAt: typeof status.revokedAt === "string" ? status.revokedAt : null,
     } };
   }));
   if (credentialStatuses.some((item) => item.data === null)) return apiError("credential_status_failed", "No fue posible consultar el estado de tu credencial.", 503);
