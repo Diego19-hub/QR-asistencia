@@ -55,4 +55,4 @@ Un supervisor autorizado puede enviar una fila a `attendance_adjustments`. Un us
 
 Ejecuta `npx supabase start` y luego `npx supabase test db --local`. Las pruebas solo deben apuntar a la base local desechable; no insertes fixtures en producción.
 
-El flujo de correo de invitación y magic link está descrito en [`INVITATION-FLOW-TESTING.md`](../INVITATION-FLOW-TESTING.md), incluidos los templates alojados de Testing y el procedimiento para sesiones expuestas.
+El flujo de correo de invitación y magic link está descrito en [guía de invitaciones](../docs/INVITATION-FLOW-TESTING.md), incluidos los templates alojados de Testing y el procedimiento para sesiones expuestas.

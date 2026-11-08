@@ -1,7 +1,7 @@
 -- JWT-claim RLS regression test with synthetic tenants and identities only.
 -- Run in a disposable Supabase database; the transaction always rolls back.
 BEGIN;
-SELECT plan(27);
+SELECT plan(29);
 
 INSERT INTO auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at) VALUES
  ('11000000-0000-4000-8000-000000000001','authenticated','authenticated','portal-owner-a@example.invalid','','now()','now()','now()'),
@@ -75,6 +75,8 @@ SELECT is((SELECT count(*)::integer FROM public.schedule_assignments WHERE compa
 SELECT is((SELECT count(*)::integer FROM public.schedule_assignments WHERE company_id='21000000-0000-4000-8000-000000000002'),0,'employee cannot read another tenant schedule');
 SELECT is(public.get_own_employee_credential_status('21000000-0000-4000-8000-000000000001','41000000-0000-4000-8000-000000000001')->>'status','not_issued','employee sees only own credential status');
 SELECT throws_ok($$SELECT public.get_own_employee_credential_status('21000000-0000-4000-8000-000000000002','41000000-0000-4000-8000-000000000002')$$,'42501',NULL,'foreign employee credential status is rejected');
+SELECT has_function('public','get_own_employee_credential_status',ARRAY['uuid','uuid'],'self-scoped credential recovery RPC exists');
+SELECT ok(has_function_privilege('authenticated','public.get_own_employee_credential_status(uuid,uuid)','EXECUTE') AND NOT has_function_privilege('anon','public.get_own_employee_credential_status(uuid,uuid)','EXECUTE'),'credential recovery is authenticated-only');
 
 -- Create and replace synthetic credentials through the same authorized RPC as
 -- the admin UI, then verify the employee can retrieve only the latest envelope.

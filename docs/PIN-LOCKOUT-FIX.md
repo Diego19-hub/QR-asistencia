@@ -60,3 +60,9 @@ El historial actual ya registra la migración QR-003 y la prueba sintética fue 
 No se recomienda volver a las definiciones de `20261012030630_scanner_branch_scope_and_legacy_rpc_lockdown.sql`: estas lanzan excepciones para rechazos de PIN y reintroducen el rollback del contador. Si la migración provoca un problema operativo, detener la promoción y preparar una corrección hacia adelante que conserve las respuestas estructuradas, la autorización y la contabilidad de intentos. No existe una migración de reversión validada en esta tarea.
 
 El riesgo abierto es que Testing siga ejecutando las definiciones anteriores hasta que la migración versionada se aplique por un flujo autorizado. No se realizó ningún cambio remoto.
+
+## Addendum — estado reportado el 2026-11-06
+
+El propietario indicó que la migración correctiva figura aplicada en Testing y aportó un informe de validación sintética: cinco intentos activaron el bloqueo; el PIN correcto fue rechazado durante el lockout; no se crearon sesiones ni eventos y los fixtures quedaron revertidos con `ROLLBACK`. En esta tarea no repetí esas pruebas ni realicé consultas remotas; esta sección registra la evidencia proporcionada, no una observación independiente.
+
+El propietario aceptó formalmente que Testing es descartable y que su recuperación no está garantizada. No hay backup/restore remoto demostrado ni RPO/RTO confirmado. La aceptación no autoriza exportar, borrar o reconstruir Testing, ni alcanza a Producción. QR-003 queda Hecha para la corrección del PIN y la validación reportada; la aceptación operativa/de lanzamiento y cualquier prueba física pendiente permanecen en QR-011.

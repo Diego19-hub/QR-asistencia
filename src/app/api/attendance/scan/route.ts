@@ -6,8 +6,8 @@ import { createClient } from "@/lib/supabase/server";
 export const runtime = "nodejs";
 
 const bodySchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("preview"), companyId: z.string().uuid(), qrToken: z.string().min(40).max(60).regex(/^[A-Za-z0-9_-]+$/), pin: z.unknown().optional() }).strict(),
-  z.object({ action: z.literal("confirm"), companyId: z.string().uuid(), qrToken: z.string().min(40).max(60).regex(/^[A-Za-z0-9_-]+$/), pin: z.unknown().optional(), event: z.enum(["clock_in", "break_start", "break_end", "clock_out"]), idempotencyKey: z.string().uuid(), breakRuleId: z.string().uuid().nullable().optional() }).strict(),
+  z.object({ action: z.literal("preview"), companyId: z.string().uuid(), qrToken: z.string().min(40).max(60).regex(/^[A-Za-z0-9_-]+$/), pin: z.string().regex(/^(?:\d{6,12})?$/).default("") }).strict(),
+  z.object({ action: z.literal("confirm"), companyId: z.string().uuid(), qrToken: z.string().min(40).max(60).regex(/^[A-Za-z0-9_-]+$/), pin: z.string().regex(/^(?:\d{6,12})?$/).default(""), event: z.enum(["clock_in", "break_start", "break_end", "clock_out"]), idempotencyKey: z.string().uuid(), breakRuleId: z.string().uuid().nullable().optional() }).strict(),
 ]);
 
 const messages: Record<string, { status: number; message: string }> = {

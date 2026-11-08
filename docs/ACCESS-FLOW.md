@@ -47,4 +47,4 @@ Copiar usa primero la API del portapapeles y recurre a `document.execCommand("co
 - Invitación vencida, revocada, ya consumida o usada por identidad no destinataria.
 - Navegación directa a ruta protegida y llamadas API sin sesión.
 
-Registra matriz de permisos y evidencia en QR-004 y amplía la estrategia E2E en QR-005.
+Registra la matriz de permisos y la evidencia de cobertura junto con las pruebas E2E.

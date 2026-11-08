@@ -29,6 +29,9 @@ assert.ok(isolatedModes.length <= 1 && !(isolatedModes.length && (e2eOnly || per
 const browserOnly = e2eOnly || performanceOnly;
 const performanceResultsFile = process.env.QR009_RESULTS_FILE ?? join(tmpdir(), `qr009-runtime-${Date.now()}.json`);
 const projectId = `qr004_disposable_${randomBytes(6).toString("hex")}`;
+// The local fixture key uses the same 64-hex format as production configuration.
+// It is generated per run, passed only to the disposable Next process, and redacted.
+const qrCredentialEncryptionKey = randomBytes(32).toString("hex");
 // Keep Mailpit enabled. Auth invite email is captured locally and cannot leave this stack.
 const excluded = "realtime,storage-api,imgproxy,postgres-meta,studio,edge-runtime,logflare,vector,supavisor";
 const auditOnlyExcluded = "gotrue,realtime,storage-api,imgproxy,kong,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor,mailpit";
@@ -40,6 +43,7 @@ const generalSuites = [
   "company_user_access_management_test.sql",
   "company_user_share_invitations_test.sql",
   "employee_credentials_test.sql",
+  "create_additional_company_test.sql",
   "qr004_scanner_authorization_test.sql",
   "schedule_integrity_test.sql",
 ];
@@ -149,7 +153,7 @@ function localUrl(value, name) {
 }
 function safeServerOutput() {
   let output = appOutput;
-  for (const secret of [anonKey, serviceKey, dbUrl]) if (secret) output = output.split(secret).join("[redacted]");
+  for (const secret of [anonKey, serviceKey, dbUrl, qrCredentialEncryptionKey]) if (secret) output = output.split(secret).join("[redacted]");
   return output.replace(/https?:\/\/[^\s)]+/g, "[url]").split(/\r?\n/).filter(Boolean).slice(-8).join(" | ").slice(0, 700) || "no diagnostic";
 }
 async function waitForNext(url) {
@@ -661,7 +665,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     if (performanceOnly) {
       const build = spawn(process.execPath, [join(root, "node_modules/next/dist/bin/next"), "build", "--webpack"], {
         cwd: appRoot,
-        env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1", NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey, SUPABASE_SERVICE_ROLE_KEY: adminServiceKey, APP_BASE_URL: appUrl },
+        env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1", NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey, SUPABASE_SERVICE_ROLE_KEY: adminServiceKey, APP_BASE_URL: appUrl, QR_CREDENTIAL_ENCRYPTION_KEY: qrCredentialEncryptionKey },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let buildOutput = "";
@@ -672,7 +676,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
         build.once("exit", (code) => resolveExit(code ?? 1));
       });
       if (buildExit !== 0) {
-        for (const secret of [anonKey, adminServiceKey, dbUrl].filter(Boolean)) buildOutput = buildOutput.split(secret).join("[redacted]");
+        for (const secret of [anonKey, adminServiceKey, dbUrl, qrCredentialEncryptionKey].filter(Boolean)) buildOutput = buildOutput.split(secret).join("[redacted]");
         throw new Error(`isolated Next.js production build failed (${buildExit}): ${buildOutput.replace(/https?:\/\/[^\s)]+/g, "[url]").split(/\r?\n/).filter(Boolean).slice(-8).join(" | ").slice(0, 800)}`);
       }
       process.stdout.write("PASS isolated Next.js production build completed with loopback-only Supabase configuration\n");
@@ -685,6 +689,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
         PATH: process.env.PATH, NODE_ENV: performanceOnly ? "production" : "development", NEXT_TELEMETRY_DISABLED: "1",
         NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey,
         SUPABASE_SERVICE_ROLE_KEY: adminServiceKey, APP_BASE_URL: appUrl,
+        QR_CREDENTIAL_ENCRYPTION_KEY: qrCredentialEncryptionKey,
         ...(invitationFlowOnly ? { QR_AUTH_LOCAL_TEST: "1", QR_AUTH_LOCAL_RESEND_URL: resendUrl, RESEND_API_KEY: "synthetic-resend-test-key", INVITATION_FROM_EMAIL: "QR Tests <no-reply@qr-asistencia.invalid>" } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -2566,21 +2571,44 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const issuedQr = await issuedQrResponse.json(); assert.match(issuedQr.token, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(JSON.stringify(issuedQr.credential).includes(issuedQr.token), false, "QR status payload does not repeat the one-time token");
   const issuedQrHash = createHash("sha256").update(issuedQr.token).digest("hex");
-  const storedQrHash = (await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash;
-  assert.equal(storedQrHash, issuedQrHash, "database stores only the SHA-256 QR token hash");
+  const storedQrCredential = (await dbPool.query("select encode(token_hash,'hex') hash,encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0];
+  const storedQrHash = storedQrCredential?.hash;
+  assert.equal(storedQrHash, issuedQrHash, "database retains the SHA-256 QR lookup hash");
+  assert.match(storedQrCredential?.encrypted_token ?? "", /^v1\./, "database stores a versioned encrypted recovery envelope");
+  assert.equal(storedQrCredential?.encrypted_token?.includes(issuedQr.token), false, "encrypted storage does not contain the raw QR token");
   assert.notEqual(storedQrHash, issuedQr.token);
+  response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`, { user: employeeA });
+  assert.equal(response.status, 200, "employee can recover only their own active credential");
+  assert.equal(response.headers.get("cache-control"), "no-store, private");
+  const ownCredential = await response.json();
+  assert.equal(ownCredential.status, "active");
+  assert.equal(ownCredential.token, issuedQr.token, "dedicated self-service route decrypts the current credential on demand");
+  response = await request(`/api/employee/credential?employeeId=${employeeB.employeeId}`, { user: employeeA });
+  assert.equal(response.status, 403, "employee cannot recover another employee's credential");
+  response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`);
+  assert.equal(response.status, 401, "anonymous credential recovery is rejected");
   const beforeDuplicateQr = await snapshot(companyA);
   response = await request(qrPath, { user: adminA, method: "POST", body: {} }); assert.equal(response.status, 409);
   assert.deepEqual(await snapshot(companyA), beforeDuplicateQr, "duplicate QR issue without replace has no side effects");
   const regeneratedQrResponse = await request(qrPath, { user: adminA, method: "POST", body: { replace: true } }); assert.equal(regeneratedQrResponse.status, 200);
   const regeneratedQr = await regeneratedQrResponse.json(); assert.notEqual(regeneratedQr.token, issuedQr.token);
   const regeneratedHash = createHash("sha256").update(regeneratedQr.token).digest("hex");
-  assert.equal((await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].hash, regeneratedHash);
+  const regeneratedCredential = (await dbPool.query("select encode(token_hash,'hex') hash,encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0];
+  assert.equal(regeneratedCredential.hash, regeneratedHash);
+  assert.match(regeneratedCredential.encrypted_token ?? "", /^v1\./);
+  assert.equal(regeneratedCredential.encrypted_token.includes(regeneratedQr.token), false);
+  response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`, { user: employeeA });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).token, regeneratedQr.token, "employee sees the replacement token after regeneration");
   assert.equal(Number((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action in ('EMPLOYEE_QR_ISSUED','EMPLOYEE_QR_REGENERATED')", [companyA, employeeA.employeeId])).rows[0].n), 2);
   const repeatedQrHash = (await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].hash;
   response = await request(qrPath, { user: adminA, method: "DELETE" }); assert.equal(response.status, 200);
   assert.equal((await response.json()).credential.qrStatus, "revoked");
   assert.equal((await dbPool.query("select revoked_at is not null revoked from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].revoked, true);
+  assert.equal((await dbPool.query("select encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].encrypted_token, null, "revocation clears encrypted recovery data");
+  response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`, { user: employeeA });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "revoked", "employee self-service reflects revocation without returning a token");
   const afterQrRevoke = await snapshot(companyA);
   response = await request(qrPath, { user: adminA, method: "DELETE" }); assert.equal(response.status, 200, "repeated QR revoke is an idempotent no-op");
   assert.deepEqual(await snapshot(companyA), afterQrRevoke, "repeated QR revoke creates no duplicate audit event");
@@ -3552,6 +3580,25 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const revokedIdentity = await revokedClient.auth.getUser(); assert.equal(Number((await dbPool.query("select count(*) n from public.company_memberships where company_id=$1 and user_id=$2", [companyA, revokedIdentity.data.user.id])).rows[0].n), 0);
   const auditRevoke = await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_REVOKED'", [companyA, revokedInvite.data]); assert.equal(auditRevoke.rows[0].n, 1);
   process.stdout.write("PASS invitation RPC enforces recipient, expiry, revocation, single-use and audit semantics with local JWT identities\n");
+
+  // Keep owner company creation last: it adds another owner membership and
+  // would otherwise change single-company selection assumptions above.
+  const beforeAdditionalCompanyB = await companyAndDataSnapshot(companyB);
+  response = await request("/api/companies", { method: "POST", body: { name: "Synthetic unauthenticated company" } }); assert.equal(response.status, 401);
+  response = await request("/api/companies", { user: adminA, method: "POST", body: { name: "Synthetic admin company" } }); assert.equal(response.status, 403);
+  response = await request("/api/companies", { user: ownerA, method: "POST", body: { name: `Synthetic second company ${randomUUID()}`, legalName: "Synthetic legal name", rfc: null } }); assert.equal(response.status, 201);
+  const newlyCreatedCompany = (await response.json()).item;
+  assert.ok(newlyCreatedCompany.id && newlyCreatedCompany.name.startsWith("Synthetic second company"));
+  response = await request(`/api/company?companyId=${newlyCreatedCompany.id}`, { user: ownerA }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.id, newlyCreatedCompany.id, "owner can switch to the newly created company");
+  response = await request(`/api/company?companyId=${newlyCreatedCompany.id}`, { user: adminA }); assert.equal(response.status, 403, "another tenant's administrator cannot enter the new company");
+  response = await request("/api/companies", { user: employeeA, method: "POST", body: { name: "Synthetic employee company" } }); assert.equal(response.status, 403);
+  response = await request("/api/companies", { user: ownerA, method: "POST", body: { name: "Invalid synthetic company", rfc: "INVALID" } }); assert.equal(response.status, 422);
+  assert.deepEqual(await companyAndDataSnapshot(companyB), beforeAdditionalCompanyB, "company creation denials preserve the unrelated tenant snapshot");
+  const newCompanyMembership = await ownerA.client.from("company_memberships").select("role,active").eq("company_id", newlyCreatedCompany.id).eq("user_id", ownerA.userId).maybeSingle();
+  assert.deepEqual(newCompanyMembership.data, { role: "owner", active: true }, "only the authenticated owner receives an active membership");
+  assert.ok((await snapshot(newlyCreatedCompany.id)).audit.some((entry) => entry.actor_user_id === ownerA.userId && entry.entity_table === "companies" && entry.action === "INSERT"), "company creation is audited");
+  process.stdout.write("PASS owner-only company creation, validation, tenant isolation, audit and company switching\n");
   }
   }
 } catch (error) {

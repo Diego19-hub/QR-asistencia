@@ -36,9 +36,8 @@ export async function POST(request: Request, { params }: RouteContext) {
     return apiError("invalid_payload", "La solicitud de credencial no es válida.", 400);
   }
 
-  // Persist only the digest and an authenticated-encryption envelope. The raw
-  // token is returned once to the issuing administrator and later only to its
-  // linked employee through the self-scoped portal RPC.
+  // Persist only the digest and authenticated ciphertext; return the raw token
+  // once to the authorized administrator who issued it.
   let encryptionKey: Buffer;
   try { encryptionKey = parseEmployeeQrEncryptionKey(process.env.QR_CREDENTIAL_ENCRYPTION_KEY); }
   catch { return apiError("credential_encryption_unavailable", "La emisión de credenciales no está configurada de forma segura.", 503); }
