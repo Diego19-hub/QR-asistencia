@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 
 import { AdminShell } from "@/components/admin/admin-shell";
 import type { CompanyOption } from "@/components/admin/admin-context";
+import { isAdministrativeRole, type MembershipRole } from "@/lib/access/user-management";
 import { createClient } from "@/lib/supabase/server";
 
 export default async function AdminLayout({ children }: { children: ReactNode }) {
@@ -20,7 +21,7 @@ export default async function AdminLayout({ children }: { children: ReactNode })
     .eq("user_id", user.id)
     .eq("active", true);
   if (membershipError) redirect("/login?error=service");
-  const adminMemberships = (memberships ?? []).filter((membership) => membership.role === "owner" || membership.role === "admin");
+  const adminMemberships = (memberships ?? []).filter((membership) => isAdministrativeRole(membership.role as MembershipRole));
   if (!adminMemberships.length) redirect("/login?error=no-company");
 
   const selectedId = (await cookies()).get("qr_active_membership_id")?.value;

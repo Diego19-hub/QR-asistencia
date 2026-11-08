@@ -36,6 +36,7 @@ const branchA = randomUUID();
 const branchB = randomUUID();
 const employeeA = randomUUID();
 const employeeConcurrent = randomUUID();
+const employeeWithoutPin = randomUUID();
 const employeeB = randomUUID();
 const supervisorUser = randomUUID();
 const supervisorMembership = randomUUID();
@@ -43,6 +44,7 @@ const deviceId = randomUUID();
 const deviceToken = randomBytes(36).toString("base64url");
 const qrTokenA = randomBytes(36).toString("base64url");
 const qrTokenConcurrent = randomBytes(36).toString("base64url");
+const qrTokenWithoutPin = randomBytes(36).toString("base64url");
 
 async function withClient(callback) {
   const client = new Client({ connectionString });
@@ -111,9 +113,11 @@ await withClient(async (client) => {
     assert.equal(Number(serverPort), 5432, "connected PostgreSQL must be the isolated local container database");
     await client.query("begin");
     try {
-      await client.query("insert into public.companies(id,name) values ($1::uuid,'PIN integration disposable A ' || ($1::uuid)::text),($2::uuid,'PIN integration disposable B ' || ($2::uuid)::text)", [companyA, companyB]);
+      await client.query("insert into public.companies(id,name,require_employee_pin) values ($1::uuid,'PIN integration disposable A ' || ($1::uuid)::text,true),($2::uuid,'PIN integration disposable B ' || ($2::uuid)::text,false)", [companyA, companyB]);
+      const { rows: defaults } = await client.query("select require_employee_pin from public.companies where id=$1", [companyB]);
+      assert.equal(defaults[0]?.require_employee_pin, false, "new company PIN requirement defaults to disabled");
       await client.query("insert into public.branches(id,company_id,name,timezone) values ($1,$3,'PIN test A','UTC'),($2,$4,'PIN test B','UTC')", [branchA, branchB, companyA, companyB]);
-      await client.query("insert into public.employees(id,company_id,branch_id,employee_number,first_name,last_name) values ($1,$4,$5,'PIN-LOCK-A','Prueba','Secuencial'),($2,$4,$5,'PIN-LOCK-CONCURRENT','Prueba','Concurrente'),($3,$6,$7,'PIN-LOCK-B','Prueba','Empresa B')", [employeeA, employeeConcurrent, employeeB, companyA, branchA, companyB, branchB]);
+      await client.query("insert into public.employees(id,company_id,branch_id,employee_number,first_name,last_name) values ($1,$4,$5,'PIN-LOCK-A','Prueba','Secuencial'),($2,$4,$5,'PIN-LOCK-CONCURRENT','Prueba','Concurrente'),($3,$6,$7,'PIN-LOCK-B','Prueba','Empresa B'),($8,$4,$5,'PIN-LOCK-NONE','Prueba','Sin PIN')", [employeeA, employeeConcurrent, employeeB, companyA, branchA, companyB, branchB, employeeWithoutPin]);
       await client.query("insert into private.employee_pin_credentials(company_id,employee_id,pin_hash) values ($1,$2,extensions.crypt('123456',extensions.gen_salt('bf',4))),($1,$3,extensions.crypt('123456',extensions.gen_salt('bf',4))),($4,$5,extensions.crypt('123456',extensions.gen_salt('bf',4)))", [companyA, employeeA, employeeConcurrent, companyB, employeeB]);
       await client.query("insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,created_at,updated_at) values ($1,'authenticated','authenticated',$2,'','now()','now()','now()')", [supervisorUser, `pin-lockout-${supervisorUser}@example.invalid`]);
       await client.query("insert into public.company_memberships(id,company_id,user_id,role,active) values ($1,$2,$3,'supervisor',true)", [supervisorMembership, companyA, supervisorUser]);
@@ -121,7 +125,7 @@ await withClient(async (client) => {
       await client.query("insert into public.supervisor_branches(company_id,membership_id,branch_id) values ($1,$2,$3)", [companyA, supervisorMembership, branchA]);
       await client.query("insert into public.authorized_devices(id,company_id,branch_id,membership_id,label) values ($1,$2,$3,$4,'Disposable PIN integration device')", [deviceId, companyA, branchA, supervisorMembership]);
       await client.query("insert into private.device_token_hashes(device_id,token_hash) values ($1,extensions.digest(convert_to($2,'UTF8'),'sha256'))", [deviceId, deviceToken]);
-      await client.query("insert into private.employee_qr_tokens(employee_id,token_hash) values ($1,extensions.digest(convert_to($2,'UTF8'),'sha256')),($3,extensions.digest(convert_to($4,'UTF8'),'sha256'))", [employeeA, qrTokenA, employeeConcurrent, qrTokenConcurrent]);
+      await client.query("insert into private.employee_qr_tokens(employee_id,token_hash) values ($1,extensions.digest(convert_to($2,'UTF8'),'sha256')),($3,extensions.digest(convert_to($4,'UTF8'),'sha256')),($5,extensions.digest(convert_to($6,'UTF8'),'sha256'))", [employeeA, qrTokenA, employeeConcurrent, qrTokenConcurrent, employeeWithoutPin, qrTokenWithoutPin]);
       await client.query("commit");
     } catch (error) {
       await client.query("rollback");
@@ -181,4 +185,18 @@ await withClient(async (client) => {
   await assert.rejects(scannerRpc("preview", qrTokenA, "123456"), (error) => error.code === "P0002", "revoked QR is rejected");
   await assert.rejects(scannerRpc("preview", qrTokenConcurrent, "123456", "unauthorized-device"), (error) => error.code === "42501", "unauthorized device is rejected");
 
-  console.log("PASS: scanner RPCs commit attempts 1–5 across transactions, enforce lockout/expiry, reject revoked or unauthorized credentials, record no blocked attendance, and serialize 12 concurrent requests.");
+  assert.equal((await scannerRpc("preview", qrTokenWithoutPin, null)).pinError, "pin_not_configured", "enabled PIN policy rejects an employee without a configured PIN");
+  await withClient((client) => client.query("update public.companies set require_employee_pin=false where id=$1", [companyA]));
+  const noPinPreview = await scannerRpc("preview", qrTokenWithoutPin, null);
+  assert.equal(noPinPreview.employeeId, employeeWithoutPin, "attendance preview succeeds without sending a PIN when policy is disabled");
+  assert.ok(noPinPreview.allowedActions.some(({ type }) => type === "clock_in"), "PIN-free preview returns the authorized clock-in action");
+  const noPinConfirmation = await scannerRpc("confirm", qrTokenWithoutPin, null);
+  assert.equal(noPinConfirmation.eventType, "clock_in", "attendance registration succeeds without PIN when policy is disabled");
+  const noPinAttendance = await withClient(async (client) => {
+    const { rows: [row] } = await client.query("select (select count(*)::integer from public.attendance_sessions where company_id=$1 and employee_id=$2) as sessions, (select count(*)::integer from public.attendance_events ev join public.attendance_sessions s on s.company_id=ev.company_id and s.id=ev.session_id where ev.company_id=$1 and s.employee_id=$2) as events", [companyA, employeeWithoutPin]);
+    return row;
+  });
+  assert.equal(noPinAttendance.sessions, 1, "PIN-disabled employee has one synthetic session");
+  assert.equal(noPinAttendance.events, 1, "PIN-disabled registration records one synthetic event");
+
+  console.log("PASS: scanner RPCs enforce lockout when enabled and permit one synthetic attendance registration without PIN when company policy is disabled.");

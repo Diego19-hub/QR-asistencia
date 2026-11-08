@@ -19,7 +19,7 @@ La auditoría completa y su matriz de hallazgos están en [docs/QR-007-CODE-AUDI
 
 Se registraron oportunidades de mantenibilidad para horarios, usuarios/accesos, credenciales y escáner. No se consideran errores por su tamaño. El escáner queda postergado hasta cerrar QR-006. Portal y reportes tienen oportunidades de rendimiento condicionales a mediciones; no hay baseline ni afirmación de cuello de botella.
 
-El informe de seguridad local aún cataloga braces@3.0.3 como High; GitHub Advisory Database muestra que GHSA-vfj7-8cjw-p6xm fue retirado el 2026-10-23. npm audit no pudo consultar registry.npmjs.org por DNS en esta auditoría, así que sigue pendiente verificar el árbol completo y conciliar SECURITY-AUDIT.md. Este dato no equivale a afirmar que no existan vulnerabilidades.
+El informe de seguridad local aún cataloga braces@3.0.3 como High; GitHub Advisory Database muestra que GHSA-vfj7-8cjw-p6xm fue retirado el 2026-10-23. npm audit no pudo consultar registry.npmjs.org por DNS en esta auditoría, así que sigue pendiente verificar el árbol completo y conciliar con el estado actual de advisories y el lockfile. Este dato no equivale a afirmar que no existan vulnerabilidades.
 
 Estado: candidatos documentados, sin retiro/refactor aprobado. QR-008, QR-009 y QR-010 conservan implementación separada.
 

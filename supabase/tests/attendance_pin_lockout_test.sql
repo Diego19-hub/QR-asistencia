@@ -1,10 +1,14 @@
 -- Transactional PIN lockout regression tests. Run only in local disposable Supabase.
 BEGIN;
-SELECT plan(35);
+SELECT plan(38);
 
 INSERT INTO public.companies(id,name) VALUES
  ('92000000-0000-4000-8000-000000000001','PIN lockout synthetic A'),
  ('92000000-0000-4000-8000-000000000002','PIN lockout synthetic B');
+SELECT is((SELECT require_employee_pin FROM public.companies WHERE id='92000000-0000-4000-8000-000000000001'),false,'PIN requirement defaults off for a new company');
+SELECT is((SELECT require_employee_pin FROM public.companies WHERE id='92000000-0000-4000-8000-000000000002'),false,'separate new companies also default to PIN optional');
+UPDATE public.companies SET require_employee_pin=true WHERE id='92000000-0000-4000-8000-000000000001';
+SELECT is((SELECT require_employee_pin FROM public.companies WHERE id='92000000-0000-4000-8000-000000000001'),true,'company can enable the PIN requirement');
 INSERT INTO public.branches(id,company_id,name,timezone) VALUES
  ('93000000-0000-4000-8000-000000000001','92000000-0000-4000-8000-000000000001','PIN branch A','America/Mexico_City'),
  ('93000000-0000-4000-8000-000000000002','92000000-0000-4000-8000-000000000002','PIN branch B','America/Mexico_City');

@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { apiError, resolveAdminScope, scopeError } from "@/lib/admin/scope";
 import { employeeIdSchema } from "@/lib/employees/validation";
 import { credentialApiError } from "@/lib/employees/credential-api-error";
+import { encryptQrToken } from "@/lib/employees/qr-token-encryption";
 
 export const runtime = "nodejs";
 
@@ -36,14 +37,19 @@ export async function POST(request: Request, { params }: RouteContext) {
   }
 
   // The token exists only in this request's memory and the one-time response.
-  // Only its SHA-256 digest is sent to Postgres and persisted.
+  // Postgres receives the SHA-256 lookup digest and an authenticated encrypted
+  // copy for employee self-service; the plaintext token is returned once.
   const rawToken = randomBytes(32).toString("base64url");
   const tokenHash = createHash("sha256").update(rawToken, "utf8").digest("hex");
+  let encryptedToken: string;
+  try { encryptedToken = encryptQrToken(rawToken, result.scope.company.companyId, id); }
+  catch { return apiError("credential_encryption_unavailable", "No se puede emitir la credencial hasta configurar la clave de cifrado del servidor.", 503); }
   const { data, error } = await result.scope.supabase.rpc("issue_employee_qr_token", {
     p_company_id: result.scope.company.companyId,
     p_employee_id: id,
     p_token_hash_hex: tokenHash,
     p_replace: replace,
+    p_encrypted_token: encryptedToken,
   });
   if (error) return credentialApiError(error);
   return Response.json({ credential: data, token: rawToken }, { headers: { "Cache-Control": "no-store, private" } });

@@ -52,6 +52,9 @@ export function AdminShell({
   const [activeHash, setActiveHash] = useState("");
   const [changingCompany, setChangingCompany] = useState(false);
   const [companyError, setCompanyError] = useState("");
+  const [createCompanyOpen, setCreateCompanyOpen] = useState(false);
+  const [creatingCompany, setCreatingCompany] = useState(false);
+  const [createCompanyError, setCreateCompanyError] = useState("");
   useEffect(() => {
     if (!mobileOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setMobileOpen(false); };
@@ -82,6 +85,30 @@ export function AdminShell({
       : navigation.find((item) => currentLink(item.href))?.label ?? "Inicio";
   const tabQuery = searchParams.toString();
 
+  async function createCompany(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (creatingCompany) return;
+    setCreatingCompany(true);
+    setCreateCompanyError("");
+    const form = new FormData(event.currentTarget);
+    try {
+      const response = await fetch("/api/companies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: form.get("name"), legalName: form.get("legalName") || null, rfc: form.get("rfc") || null }),
+      });
+      const body = await response.json() as { item?: { id: string }; error?: { message?: string } };
+      if (!response.ok || !body.item?.id) throw new Error(body.error?.message ?? "No fue posible crear la empresa.");
+      setCompanyId(body.item.id);
+      setCreateCompanyOpen(false);
+      router.refresh();
+    } catch (error) {
+      setCreateCompanyError(error instanceof Error ? error.message : "No fue posible crear la empresa.");
+    } finally {
+      setCreatingCompany(false);
+    }
+  }
+
   const sidebar = (
     <div className="flex h-full flex-col bg-[#101c35] text-white">
       <div className="flex items-center gap-3 px-6 py-6">
@@ -109,7 +136,7 @@ export function AdminShell({
   );
 
   return <AdminContextProvider value={{ company, companies, setCompanyId }}>
-    <div className="min-h-screen bg-[#f5f7fb] text-slate-900">
+    <div className="readable-interface min-h-screen bg-[#f5f7fb] text-slate-900">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-[250px] lg:block">{sidebar}</aside>
       {mobileOpen ? <div className="fixed inset-0 z-40 lg:hidden"><button aria-label="Cerrar navegación" className="absolute inset-0 bg-slate-950/50" onClick={() => setMobileOpen(false)} /><aside id="admin-navigation-drawer" aria-label="Menú administrativo" className="relative h-full w-[min(280px,85vw)] shadow-2xl">{sidebar}</aside></div> : null}
       <div className="lg:pl-[250px]">
@@ -142,6 +169,7 @@ export function AdminShell({
                 {companies.map((item) => <option key={item.companyId} value={item.companyId}>{item.companyName}</option>)}
               </select><ChevronDown size={13} className="text-slate-400" />
             </label>
+            {company.role === "owner" ? <button type="button" aria-label="Crear otra empresa" onClick={() => { setCreateCompanyError(""); setCreateCompanyOpen(true); }} className="inline-flex min-h-10 shrink-0 items-center rounded-xl border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-800 hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 sm:px-3"><span className="sm:hidden">Crear</span><span className="hidden sm:inline">Crear otra empresa</span></button> : null}
             <div className="hidden size-9 place-items-center rounded-full bg-[#e8efff] text-xs font-bold text-blue-800 sm:grid">{userName.slice(0, 2).toUpperCase()}</div>
           </div>
         </header>
@@ -157,6 +185,7 @@ export function AdminShell({
         {companyError ? <div role="alert" className="mx-4 mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800 sm:mx-7">{companyError}</div> : null}
         <main className="mx-auto min-h-[calc(100vh-72px)] max-w-[1500px] px-4 py-6 sm:px-7 sm:py-8">{children}</main>
       </div>
+      {createCompanyOpen ? <div className="fixed inset-0 z-[90] grid place-items-center overflow-y-auto bg-slate-950/55 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget && !creatingCompany) setCreateCompanyOpen(false); }}><section role="dialog" aria-modal="true" aria-labelledby="create-company-title" className="my-auto w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl sm:p-7"><div className="flex items-start justify-between gap-4"><div><p className="text-xs font-semibold uppercase tracking-wider text-blue-700">Nueva empresa</p><h2 id="create-company-title" className="mt-1 text-xl font-bold text-slate-950">Crear otra empresa</h2><p className="mt-2 text-sm leading-6 text-slate-600">Tu cuenta quedará registrada como propietaria. Podrás cambiar entre tus empresas desde el selector.</p></div><button type="button" aria-label="Cerrar" disabled={creatingCompany} onClick={() => setCreateCompanyOpen(false)} className="grid size-10 shrink-0 place-items-center rounded-lg text-slate-600 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 disabled:opacity-50">×</button></div><form onSubmit={(event) => void createCompany(event)} className="mt-5 space-y-4"><label className="block text-sm font-medium text-slate-700">Nombre comercial<input name="name" required maxLength={180} className="mt-1.5 h-11 w-full rounded-xl border border-slate-300 px-3 text-base text-slate-950 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100" /></label><label className="block text-sm font-medium text-slate-700">Razón social (opcional)<input name="legalName" maxLength={240} className="mt-1.5 h-11 w-full rounded-xl border border-slate-300 px-3 text-base text-slate-950 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100" /></label><label className="block text-sm font-medium text-slate-700">RFC (opcional)<input name="rfc" maxLength={13} className="mt-1.5 h-11 w-full rounded-xl border border-slate-300 px-3 text-base uppercase text-slate-950 focus:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-100" /></label>{createCompanyError ? <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-800">{createCompanyError}</p> : null}<div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end"><button type="button" disabled={creatingCompany} onClick={() => setCreateCompanyOpen(false)} className="min-h-11 rounded-xl border border-slate-200 px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Cancelar</button><button type="submit" disabled={creatingCompany} className="min-h-11 rounded-xl bg-blue-700 px-5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-wait disabled:opacity-50">{creatingCompany ? "Creando…" : "Crear y cambiar a esta empresa"}</button></div></form></section></div> : null}
     </div>
   </AdminContextProvider>;
 }

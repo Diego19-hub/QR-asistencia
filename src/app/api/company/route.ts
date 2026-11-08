@@ -6,20 +6,40 @@ const companySchema = z.object({
   name: z.string().trim().min(1).max(180),
   legalName: z.string().trim().max(240).nullable(),
   rfc: z.string().trim().toUpperCase().max(13).nullable(),
+  requireEmployeePin: z.boolean().optional(),
 }).strict().superRefine((value, context) => {
   if (value.rfc && !/^[A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3}$/.test(value.rfc)) {
     context.addIssue({ code: "custom", path: ["rfc"], message: "Revisa el formato del RFC." });
   }
 });
 
+function isMissingPinSettingColumn(error: { code?: string; message?: string } | null) {
+  return Boolean(
+    error
+    && /require_employee_pin/i.test(error.message ?? "")
+    && (error.code === "42703" || error.code === "PGRST204"),
+  );
+}
+
+function companyLookupError(error: { code?: string; message?: string } | null) {
+  if (isMissingPinSettingColumn(error)) {
+    return apiError(
+      "company_attendance_settings_migration_required",
+      "La base de datos todavía no incluye la configuración de asistencia. Se requiere aplicar 20261107230000_optional_attendance_pin_and_recoverable_qr.sql antes de consultar o guardar el requisito de PIN.",
+      503,
+    );
+  }
+  return apiError("company_lookup_failed", "No fue posible consultar los datos de la empresa.", 503);
+}
+
 export async function GET(request: Request) {
   const result = await resolveAdminScope(request);
   if (!result.ok) return scopeError(result);
   const { scope } = result;
   const { data, error } = await scope.supabase.from("companies")
-    .select("id,name,legal_name,rfc,updated_at")
+    .select("id,name,legal_name,rfc,require_employee_pin,updated_at")
     .eq("id", scope.company.companyId).maybeSingle();
-  if (error) return apiError("company_lookup_failed", "No fue posible consultar los datos de la empresa.", 503);
+  if (error) return companyLookupError(error);
   if (!data) return apiError("company_not_found", "No se encontró la empresa activa.", 404);
   const permission = await checkAdminCompanyPermission(scope, "company.manage");
   if (!permission.allowed && permission.reason === "unavailable") {
@@ -44,11 +64,15 @@ export async function PATCH(request: Request) {
     name: parsed.data.name,
     legal_name: parsed.data.legalName || null,
     rfc: parsed.data.rfc || null,
+    ...(parsed.data.requireEmployeePin === undefined ? {} : { require_employee_pin: parsed.data.requireEmployeePin }),
     updated_at: new Date().toISOString(),
-  }).eq("id", scope.company.companyId).select("id,name,legal_name,rfc,updated_at").maybeSingle();
+  }).eq("id", scope.company.companyId).select("id,name,legal_name,rfc,require_employee_pin,updated_at").maybeSingle();
   if (error?.code === "42501") return apiError("company_manage_required", "Tu membresía no tiene permiso para modificar esta empresa.", 403);
   if (error?.code === "23505") return apiError("company_rfc_conflict", "Ese RFC ya está registrado.", 409);
-  if (error) return apiError("company_update_failed", "No fue posible guardar la configuración de la empresa.", 503);
+  if (error) {
+    if (isMissingPinSettingColumn(error)) return companyLookupError(error);
+    return apiError("company_update_failed", "No fue posible guardar la configuración de la empresa.", 503);
+  }
   if (!data) return apiError("company_not_found", "No se encontró la empresa activa.", 404);
   return Response.json({ item: data }, { headers: { "Cache-Control": "no-store" } });
 }

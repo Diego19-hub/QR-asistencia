@@ -22,6 +22,7 @@ SELECT ok(NOT has_function_privilege('anon','public.request_supervisor_device(uu
 INSERT INTO public.companies(id,name) VALUES
  ('a2000000-0000-4000-8000-000000000001','QR004 synthetic A'),
  ('a2000000-0000-4000-8000-000000000002','QR004 synthetic B');
+UPDATE public.companies SET require_employee_pin=true WHERE id='a2000000-0000-4000-8000-000000000001';
 INSERT INTO public.branches(id,company_id,name,timezone) VALUES
  ('a3000000-0000-4000-8000-000000000001','a2000000-0000-4000-8000-000000000001','A branch one','America/Mexico_City'),
  ('a3000000-0000-4000-8000-000000000002','a2000000-0000-4000-8000-000000000001','A branch two','America/Mexico_City'),

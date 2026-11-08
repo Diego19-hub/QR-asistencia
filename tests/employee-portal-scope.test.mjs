@@ -51,3 +51,13 @@ test("portal credential response calls the status RPC and never reads token mate
   assert.match(source, /get_own_employee_credential_status/);
   assert.doesNotMatch(source, /token_hash|qr_token/i);
 });
+
+test("portal presents a generated QR only after requesting the employee-only recovery endpoint", () => {
+  const component = readFileSync(new URL("../src/components/employee/employee-portal.tsx", import.meta.url), "utf8");
+  assert.match(component, /\/api\/employee\/credential\?employeeId=/);
+  assert.match(component, /QRCode\.toDataURL\(body\.token/);
+  assert.match(component, /Mi credencial/);
+  assert.match(component, /item\.credential\.status === "not_issued"/);
+  assert.match(component, /credentialMeta\.recoverable === false/);
+  assert.match(component, /setCredentialQr\(null\)/);
+});

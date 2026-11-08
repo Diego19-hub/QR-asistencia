@@ -370,15 +370,15 @@ function InvitationRow({ invitation, shareUrl, activeRole, busy, onResend, onRev
       {canManage ? (
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap gap-2">
-            <button type="button" disabled={Boolean(busy)} onClick={() => onResend(invitation)} className="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 px-2 text-[11px] font-semibold text-slate-700"><RefreshCw size={12} />Reenviar correo</button>
-            <button type="button" disabled={Boolean(busy)} onClick={() => onGenerateShareLink(invitation)} className="h-8 rounded-lg border border-emerald-200 px-2 text-[11px] font-semibold text-emerald-800">{invitation.shareLinkCreated ? "Regenerar enlace WhatsApp" : "Crear enlace WhatsApp"}</button>
-            <button type="button" disabled={Boolean(busy)} onClick={() => onRevoke(invitation)} className="h-8 rounded-lg border border-rose-100 px-2 text-[11px] font-semibold text-rose-700">Revocar</button>
+            <button type="button" disabled={Boolean(busy)} onClick={() => onResend(invitation)} className="inline-flex min-h-10 h-auto items-center gap-1 rounded-lg border border-slate-200 px-2 py-2 text-[11px] font-semibold leading-tight text-slate-700"><RefreshCw size={12} />Reenviar correo</button>
+            <button type="button" disabled={Boolean(busy)} onClick={() => onGenerateShareLink(invitation)} className="min-h-10 h-auto rounded-lg border border-emerald-200 px-2 py-2 text-[11px] font-semibold leading-tight text-emerald-800">{invitation.shareLinkCreated ? "Regenerar enlace WhatsApp" : "Crear enlace WhatsApp"}</button>
+            <button type="button" disabled={Boolean(busy)} onClick={() => onRevoke(invitation)} className="min-h-10 h-auto rounded-lg border border-rose-100 px-2 py-2 text-[11px] font-semibold leading-tight text-rose-700">Revocar</button>
           </div>
           {shareUrl ? <div className="w-full space-y-2 sm:max-w-lg">
             <input aria-label="Enlace individual de invitación" readOnly value={shareUrl} className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-2 text-xs text-slate-600" />
             <div className="flex gap-2">
-              <button type="button" onClick={() => onCopyShareLink(invitation.id)} className="h-8 rounded-lg border border-slate-200 px-3 text-[11px] font-semibold text-slate-700">Copiar enlace</button>
-              <a href={createWhatsAppShareUrl("Te invitaron a Asistencia QR. Inicia sesión con el correo confirmado de la invitación y acepta el acceso.", shareUrl)} target="_blank" rel="noreferrer" className="inline-flex h-8 items-center rounded-lg bg-emerald-700 px-3 text-[11px] font-semibold text-white">Compartir por WhatsApp</a>
+              <button type="button" onClick={() => onCopyShareLink(invitation.id)} className="min-h-10 h-auto rounded-lg border border-slate-200 px-3 py-2 text-[11px] font-semibold leading-tight text-slate-700">Copiar enlace</button>
+              <a href={createWhatsAppShareUrl("Te invitaron a Asistencia QR. Inicia sesión con el correo confirmado de la invitación y acepta el acceso.", shareUrl)} target="_blank" rel="noreferrer" className="inline-flex min-h-10 h-auto items-center rounded-lg bg-emerald-700 px-3 py-2 text-[11px] font-semibold leading-tight text-white">Compartir por WhatsApp</a>
             </div>
           </div> : invitation.shareLinkCreated ? <p className="max-w-lg text-[11px] text-amber-700">El enlace se muestra solo una vez. Regénéralo para copiar o compartir; el anterior dejará de funcionar.</p> : null}
         </div>

@@ -71,7 +71,12 @@ async function scannerContext(request: Request, redeemChallenge: boolean) {
       );
     }
     const context = data as Record<string, unknown>;
-    contexts.push({ ...context, requestStatus });
+    const { data: attendancePolicy, error: policyError } = await supabase.from("companies")
+      .select("require_employee_pin").eq("id", companyId).maybeSingle();
+    if (policyError || !attendancePolicy) {
+      return contextError("attendance_policy_unavailable", "No fue posible cargar la política de asistencia. Verifica que la migración de configuración de PIN esté aplicada.", 503);
+    }
+    contexts.push({ ...context, requireEmployeePin: attendancePolicy.require_employee_pin, requestStatus });
   }
   return Response.json({ contexts }, { headers: { "Cache-Control": "no-store, private" } });
 }

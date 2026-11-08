@@ -5,6 +5,7 @@ import {
   canManageAssignedRole,
   classifyCompanyPermissionCheck,
   destinationForRole,
+  isAdministrativeRole,
   invitationSchema,
   membershipActionSchema,
   selectInitialMembership,
@@ -58,4 +59,11 @@ test("all memberships require explicit selection; no array-first routing", () =>
   assert.equal(destinationForRole("admin"), "/admin");
   assert.equal(destinationForRole("supervisor"), "/scanner");
   assert.equal(destinationForRole("employee"), "/mi-qr");
+});
+
+test("owner and admin share the administrative entry while other roles stay outside it", () => {
+  assert.equal(isAdministrativeRole("owner"), true);
+  assert.equal(isAdministrativeRole("admin"), true);
+  assert.equal(isAdministrativeRole("supervisor"), false);
+  assert.equal(isAdministrativeRole("employee"), false);
 });

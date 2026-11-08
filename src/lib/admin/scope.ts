@@ -1,9 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 
-import { classifyCompanyPermissionCheck, type CompanyPermissionCheck } from "@/lib/access/user-management";
+import { classifyCompanyPermissionCheck, isAdministrativeRole, type CompanyPermissionCheck, type MembershipRole } from "@/lib/access/user-management";
 import { createClient } from "@/lib/supabase/server";
-
-const ADMIN_ROLES = new Set(["owner", "admin"]);
 
 export type AdminCompany = {
   companyId: string;
@@ -40,7 +38,7 @@ export async function resolveAdminScope(request: Request): Promise<ScopeResult> 
     return { ok: false, status: 503, code: "membership_lookup_failed", message: "No fue posible validar tus permisos." };
   }
 
-  const adminMemberships = (memberships ?? []).filter((membership) => ADMIN_ROLES.has(membership.role));
+  const adminMemberships = (memberships ?? []).filter((membership) => isAdministrativeRole(membership.role as MembershipRole));
   if (!adminMemberships.length) {
     return { ok: false, status: 403, code: "admin_required", message: "Tu cuenta no tiene permisos administrativos." };
   }

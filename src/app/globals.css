@@ -20,3 +20,64 @@ button,
 input {
   font: inherit;
 }
+
+/* Keep button feedback consistent while leaving each component's palette intact. */
+button {
+  transition-property: color, background-color, border-color, box-shadow, scale, filter;
+  transition-duration: 140ms;
+  transition-timing-function: ease-out;
+}
+
+button:not(:disabled):hover {
+  filter: brightness(0.96);
+}
+
+button:not(:disabled):active {
+  scale: 0.985;
+}
+
+button:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 2px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* Readability scale for administration, authentication and employee portal. */
+.readable-interface .text-sm {
+  font-size: 1.0625rem;
+  line-height: 1.6rem;
+}
+
+.readable-interface .text-xs {
+  font-size: 1rem;
+  line-height: 1.5rem;
+}
+
+.readable-interface .text-\[13px\] {
+  font-size: 1rem;
+  line-height: 1.5rem;
+}
+
+.readable-interface .text-\[10px\],
+.readable-interface .text-\[11px\] {
+  font-size: 0.9375rem;
+  line-height: 1.375rem;
+}
+
+.readable-interface .text-\[9px\] {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition-duration: 0.01ms;
+  }
+
+  button:not(:disabled):active {
+    scale: 1;
+  }
+}

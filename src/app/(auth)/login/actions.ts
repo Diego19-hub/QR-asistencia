@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
+import { readLoginCredentials } from "@/lib/access/login-credentials";
 import { selectInitialMembership, type MembershipRole } from "@/lib/access/user-management";
 import { clearActiveMembershipCookie, setActiveMembershipCookie } from "@/lib/access/active-membership-cookie";
 import {
@@ -14,15 +15,8 @@ import {
 export async function signIn(formData: FormData) {
   const requestedNext = accessReturnDestination(formData.get("next"));
   const loginError = (code: string) => `/login?error=${encodeURIComponent(code)}${requestedNext ? `&next=${encodeURIComponent(requestedNext)}` : ""}`;
-  const email = formData.get("email");
-  const password = formData.get("password");
-
-  if (
-    typeof email !== "string" ||
-    typeof password !== "string" ||
-    !email.trim() ||
-    !password
-  ) {
+  const credentials = readLoginCredentials(formData);
+  if (!credentials) {
     redirect(loginError("invalid"));
   }
 
@@ -31,10 +25,7 @@ export async function signIn(formData: FormData) {
   let destination: string | null = null;
   try {
     const supabase = await createClient();
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
+    const { data, error } = await supabase.auth.signInWithPassword(credentials);
     signInError = error;
     authStatus = (error as (Error & { status?: number }) | null)?.status;
     if (!error && data.user) {
