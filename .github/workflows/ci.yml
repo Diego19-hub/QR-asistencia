@@ -43,6 +43,11 @@ jobs:
       - run: npm run test:security:rpc-ci:local
       - name: QR-004 Phase 10 residual authorization (59 pgTAP assertions)
         run: npm run test:security:phase10-residual:local
+      - name: QR-004 targeted authorization and race integration (local disposable stack)
+        run: npm run test:security:authorization-races:local
+        env:
+          QR004_CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
+          QR004_CHROME_NO_SANDBOX: "1"
       - run: npm run test:e2e
         env:
           QR004_CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}

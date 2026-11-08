@@ -21,13 +21,13 @@ Se registraron oportunidades de mantenibilidad para horarios, usuarios/accesos, 
 
 El informe de seguridad local aún cataloga braces@3.0.3 como High; GitHub Advisory Database muestra que GHSA-vfj7-8cjw-p6xm fue retirado el 2026-10-23. npm audit no pudo consultar registry.npmjs.org por DNS en esta auditoría, así que sigue pendiente verificar el árbol completo y conciliar con el estado actual de advisories y el lockfile. Este dato no equivale a afirmar que no existan vulnerabilidades.
 
-Estado: candidatos documentados, sin retiro/refactor aprobado. QR-008, QR-009 y QR-010 conservan implementación separada.
+**Actualización 2026-11-06:** QR-008 quedó cerrada con inventario conservador e integrada por PR #23; no se eliminó ningún candidato porque la evidencia no fue concluyente. QR-009 quedó integrada por PR #25 como investigación/benchmark, con decisión de no incorporar las variantes experimentales. El paquete acotado de QR-010 quedó cerrado tras extraer `AssignmentHistory` y validar la carga; las oportunidades de extracción adicionales quedan documentadas como trabajo futuro en [plan QR-010](QR-010-MAINTAINABILITY-PLAN.md), no como refactorización ya realizada.
 
 ## Inventario QR-008 (2026-10-30)
 
 La revisión posterior al merge de QR-007 está registrada en [docs/QR-008-SAFE-CLEANUP.md](QR-008-SAFE-CLEANUP.md). `argon2@0.45.1` permanece como dependencia directa: `npm explain` no encontró dependientes transitivos y las búsquedas del repositorio no hallaron imports/cargas de la API; el Dockerfile sí menciona módulos nativos como argon2 y el historial/documentación de despliegue registran sus lifecycle scripts. No es suficiente evidencia para descartar uso operativo, por lo que no se elimina.
 
-No se confirmó ningún import, símbolo, script, prueba, placeholder, recurso o documento obsoleto que pueda retirarse con riesgo bajo. Se conservaron las pruebas de seguridad y los documentos operativos. QR-008 avanza como inventario documentado sin eliminaciones; volver a evaluar dependencias solo con evidencia de todos sus consumidores, incluidos los externos al código fuente.
+No se confirmó ningún import, símbolo, script, prueba, placeholder, recurso o documento obsoleto que pueda retirarse con riesgo bajo. Se conservaron las pruebas de seguridad y los documentos operativos. QR-008 se cerró como inventario documentado sin eliminaciones; volver a evaluar dependencias solo con evidencia de todos sus consumidores, incluidos los externos al código fuente.
 
 ## Pruebas que deben protegerse
 

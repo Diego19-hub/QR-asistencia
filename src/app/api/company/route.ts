@@ -3,11 +3,14 @@ import { z } from "zod";
 import { apiError, checkAdminCompanyPermission, permissionCheckError, resolveAdminScope, scopeError } from "@/lib/admin/scope";
 
 const companySchema = z.object({
-  name: z.string().trim().min(1).max(180),
-  legalName: z.string().trim().max(240).nullable(),
-  rfc: z.string().trim().toUpperCase().max(13).nullable(),
+  name: z.string().trim().min(1).max(180).optional(),
+  legalName: z.string().trim().max(240).nullable().optional(),
+  rfc: z.string().trim().toUpperCase().max(13).nullable().optional(),
   requireEmployeePin: z.boolean().optional(),
 }).strict().superRefine((value, context) => {
+  if (!Object.keys(value).length) {
+    context.addIssue({ code: "custom", message: "Incluye al menos un ajuste." });
+  }
   if (value.rfc && !/^[A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3}$/.test(value.rfc)) {
     context.addIssue({ code: "custom", path: ["rfc"], message: "Revisa el formato del RFC." });
   }
@@ -25,7 +28,7 @@ function companyLookupError(error: { code?: string; message?: string } | null) {
   if (isMissingPinSettingColumn(error)) {
     return apiError(
       "company_attendance_settings_migration_required",
-      "La base de datos todavía no incluye la configuración de asistencia. Se requiere aplicar 20261107230000_optional_attendance_pin_and_recoverable_qr.sql antes de consultar o guardar el requisito de PIN.",
+      "La base de datos todavía no incluye la configuración de asistencia. Se requiere aplicar 20261107211000_optional_employee_pin_requirement.sql antes de consultar o guardar el requisito de PIN.",
       503,
     );
   }
@@ -60,13 +63,14 @@ export async function PATCH(request: Request) {
   const permissionError = permissionCheckError(await checkAdminCompanyPermission(scope, "company.manage"), "Tu membresía no tiene el permiso company.manage para modificar esta empresa.");
   if (permissionError) return permissionError;
 
-  const { data, error } = await scope.supabase.from("companies").update({
-    name: parsed.data.name,
-    legal_name: parsed.data.legalName || null,
-    rfc: parsed.data.rfc || null,
-    ...(parsed.data.requireEmployeePin === undefined ? {} : { require_employee_pin: parsed.data.requireEmployeePin }),
-    updated_at: new Date().toISOString(),
-  }).eq("id", scope.company.companyId).select("id,name,legal_name,rfc,require_employee_pin,updated_at").maybeSingle();
+  const changes: Record<string, string | boolean | null> = { updated_at: new Date().toISOString() };
+  if (parsed.data.name !== undefined) changes.name = parsed.data.name;
+  if (parsed.data.legalName !== undefined) changes.legal_name = parsed.data.legalName || null;
+  if (parsed.data.rfc !== undefined) changes.rfc = parsed.data.rfc || null;
+  if (parsed.data.requireEmployeePin !== undefined) changes.require_employee_pin = parsed.data.requireEmployeePin;
+  const { data, error } = await scope.supabase.from("companies").update(changes)
+    .eq("id", scope.company.companyId)
+    .select("id,name,legal_name,rfc,require_employee_pin,updated_at").maybeSingle();
   if (error?.code === "42501") return apiError("company_manage_required", "Tu membresía no tiene permiso para modificar esta empresa.", 403);
   if (error?.code === "23505") return apiError("company_rfc_conflict", "Ese RFC ya está registrado.", 409);
   if (error) {

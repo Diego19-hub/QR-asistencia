@@ -1,11 +1,12 @@
 BEGIN;
 SELECT plan(26);
 
--- Static audit of the effective application SECURITY DEFINER catalog after the
--- 27 canonical migrations. Attendance and PIN RPCs are inspected here only.
+-- Static audit of the effective application SECURITY DEFINER catalog in the
+-- current isolated schema, including the reviewed scanner auto-authorization RPC.
+-- Attendance and PIN RPCs are inspected here only.
 SELECT is((SELECT count(*)::integer FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-  WHERE p.prosecdef AND p.prokind='f' AND n.nspname IN ('public','private')),46,
-  'effective application catalog contains the reviewed 46 SECURITY DEFINER functions');
+  WHERE p.prosecdef AND p.prokind='f' AND n.nspname IN ('public','private')),47,
+  'effective application catalog contains 47 SECURITY DEFINER functions');
 SELECT ok(NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
   WHERE p.prosecdef AND p.prokind='f' AND n.nspname IN ('public','private')
     AND pg_get_userbyid(p.proowner)<>'postgres'),
@@ -25,8 +26,8 @@ SELECT ok(NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pro
   'PUBLIC has no direct EXECUTE grant on application SECURITY DEFINER functions');
 SELECT is((SELECT count(*)::integer FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
   WHERE p.prosecdef AND p.prokind='f' AND n.nspname='public'
-    AND has_function_privilege('authenticated',p.oid,'EXECUTE')),33,
-  'the 33 public application RPCs are callable by authenticated and enforce their own authorization');
+    AND has_function_privilege('authenticated',p.oid,'EXECUTE')),34,
+  'the 34 public application RPCs are callable by authenticated and enforce their own authorization');
 SELECT ok((SELECT count(*)=5 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
   WHERE p.prosecdef AND p.prokind='f' AND n.nspname='private'
     AND has_function_privilege('authenticated',p.oid,'EXECUTE')

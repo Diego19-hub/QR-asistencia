@@ -84,7 +84,7 @@ No se declara el árbol libre de vulnerabilidades. `npm audit` de QR-007 quedó 
 - La referencia ABI de Docker y el historial de lifecycle no demuestran uso funcional; se registran como incertidumbre, no como fallo.
 - El build pasó con advertencia de trazado por el symlink de `node_modules`; no se usó un artefacto de esa copia para despliegue.
 - No se ejecutó `test:security:jwt`, que está documentado para un destino remoto.
-- No se alteró el estado de seguridad: QR-003 sigue P0 y NO-GO; QR-004, QR-005 y QR-006 siguen en curso.
+- **Actualización 2026-11-06:** PR #23 está fusionado en `main`; QR-008 queda **Hecha** como inventario conservador. QR-003 se cerró para la corrección del PIN con el riesgo de recuperación de Testing aceptado; QR-004 también se cerró con riesgos residuales aceptados. Sus cierres no equivalen a aceptación del lanzamiento. Esta sección conserva los resultados originales del inventario y no atribuye a QR-008 eliminaciones que no se realizaron.
 
 ## 8. Recomendaciones
 

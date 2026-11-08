@@ -37,6 +37,15 @@ export async function POST(request: Request) {
   if (!parsed.success) return Response.json({ error: { message: "Los datos del escaneo están incompletos o tienen un formato inválido." } }, { status: 422 });
 
   const data = parsed.data;
+  const { data: company, error: companyError } = await supabase.from("companies")
+    .select("require_employee_pin").eq("id", data.companyId).maybeSingle();
+  if (companyError) return Response.json({ error: { message: "No fue posible validar la configuración de asistencia." } }, { status: 503, headers: { "Cache-Control": "no-store" } });
+  if (!company) return Response.json({ error: { message: "No tienes acceso a esta empresa." } }, { status: 403, headers: { "Cache-Control": "no-store" } });
+  const requirePin = company.require_employee_pin === true;
+  if (requirePin && (typeof data.pin !== "string" || !/^\d{6,12}$/.test(data.pin))) {
+    return Response.json({ error: { message: "El PIN debe contener entre 6 y 12 dígitos." } }, { status: 422, headers: { "Cache-Control": "no-store" } });
+  }
+  const pin = requirePin ? data.pin as string : null;
   const cookieStore = await cookies();
   const deviceToken = cookieStore.get(`qr_device_${data.companyId}`)?.value;
   if (!deviceToken) return Response.json({ error: { message: "Este dispositivo aún no está autorizado." } }, { status: 403 });
@@ -45,13 +54,13 @@ export async function POST(request: Request) {
     ? await supabase.rpc("scan_employee_attendance", {
       p_company_id: data.companyId,
       p_employee_qr_token: data.qrToken,
-      p_pin: data.pin,
+      p_pin: pin,
       p_device_token: deviceToken,
     })
     : await supabase.rpc("confirm_employee_attendance", {
       p_company_id: data.companyId,
       p_employee_qr_token: data.qrToken,
-      p_pin: data.pin,
+      p_pin: pin,
       p_device_token: deviceToken,
       p_event: data.event,
       p_idempotency_key: data.idempotencyKey,

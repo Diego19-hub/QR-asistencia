@@ -2,7 +2,7 @@
 
 ## Estado
 
-**En curso.** La corrección y sus pruebas locales están implementadas en `fix/qr-006-scanner-stability`. Falta CI del PR y validación en navegadores/dispositivos móviles físicos. QR-003 permanece P0, pospuesta y NO-GO; QR-004 y QR-005 siguen En curso.
+**Hecha dentro del alcance de estabilidad automatizada.** La corrección se integró mediante PR #21 y tiene pruebas locales/E2E con Chromium y cámara simulada. La aceptación en navegadores y dispositivos móviles físicos queda en QR-011. QR-003 y QR-004 tienen cierres administrativos con alcances/riesgos documentados; esos cierres no equivalen a aceptación de lanzamiento.
 
 ## Alcance y aislamiento
 
@@ -86,4 +86,4 @@ Un intento inicial de build desde el checkout se interrumpió al observar que Ne
 - No se valida lectura/decodificación QR, escaneo repetido, idempotencia de asistencia, PIN ni lockout. Permanecen bloqueados por QR-003 y fuera de esta fase.
 - La prueba local no reemplaza revisión segregada de QR-004.
 
-**Conclusión:** las regresiones reproducibles de inicialización doble, liberación de cámara, errores del navegador, desconexión, respuestas fuera de orden, desmontaje/cambio de empresa, revocación y mensajes HTTP tienen cobertura local y corrección acotada. QR-006 permanece En curso hasta CI del nuevo commit y revisión de cámaras y navegadores móviles físicos; estas pruebas de viewport no acreditan hardware real.
+**Conclusión:** las regresiones reproducibles de inicialización doble, liberación de cámara, errores del navegador, desconexión, respuestas fuera de orden, desmontaje/cambio de empresa, revocación y mensajes HTTP tienen cobertura local y corrección acotada. QR-006 está Hecha dentro del alcance automatizado integrado. La validación física de cámaras y navegadores móviles queda en QR-011; las pruebas de viewport no acreditan hardware real.

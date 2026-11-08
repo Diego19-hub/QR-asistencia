@@ -85,3 +85,7 @@ Las mediciones Fase 4 (bytes de navegación) y Fase 5 (interacción y Resource T
 4. **La marca `Hecha` de QR-009 se refiere exclusivamente a la investigación en la rama del PR.** Hasta fusionarla, `main` mantiene su estado anterior; el estado de lanzamiento sigue **NO-GO**.
 
 **No se realizan cambios remotos en Supabase, migraciones, RLS, cache compartida, PIN, escaneo, CI ni despliegues como parte de este cierre.**
+
+## Actualización de integración — 2026-11-06
+
+PR #25 se fusionó el 2026-11-02 mediante el merge commit `b72b81a2653d3265ab0bee92246c8c8365fdf964`. Por tanto, las advertencias de este informe sobre PR abierto/no fusionado son una fotografía previa al merge. El body del PR registra que CI #128 se canceló en un SHA anterior; no se toma ese run como aprobación integral del merge commit. QR-009 queda integrada como investigación y benchmark con decisión de no adoptar lazy loading; no como mejora de rendimiento desplegada. QR-003 está cerrada para la corrección del PIN con riesgo de recuperación aceptado; QR-011 sigue bloqueada y conserva la aceptación operativa y el riesgo de backup/restore. El merge no autoriza despliegue.

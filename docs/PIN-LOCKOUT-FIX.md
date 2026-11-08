@@ -41,15 +41,19 @@ La matriz `tests/security-jwt-matrix.integration.mjs` está fijada explícitamen
 
 ## Estado de Supabase Testing
 
-La consulta histórica anterior se actualizó en una auditoría de solo lectura el 2026-10-28: el proyecto `llxyziffgtqnzlguxhyt` tenía 24 migraciones, incluidas 23 con nombre común respecto a `main`. No constaban QR-003 ni QR-002. Las RPC remotas todavía lanzaban excepción para PIN inválido. Las dependencias relevantes, definiciones y grants comparados coincidieron con una réplica local construida desde los SQL archivados; esa comparación limitada no descarta modificaciones manuales ajenas a esos objetos. No se modificó Testing ni Producción.
+La consulta histórica del 2026-10-28 indicó que el proyecto `llxyziffgtqnzlguxhyt` tenía 24 migraciones y que QR-003/QR-002 no constaban entonces. Esa fotografía ya no es el estado actual.
+
+### Actualización de Testing — 2026-11-06
+
+El historial remoto registra ahora `20261018120000_persist_employee_pin_failures`. Las RPC remotas presentan los estados estructurados y la prueba dinámica sintética de cinco intentos pasó: contador 5 persistido, bloqueo de 15 minutos, PIN correcto rechazado durante el lockout y cero sesiones/eventos. La prueba se revirtió en una transacción y se verificó que no quedaron fixtures. Detalle: [QR-003-TESTING-RUNTIME-VALIDATION-2026-11-06.md](QR-003-TESTING-RUNTIME-VALIDATION-2026-11-06.md). Producción no se consultó ni modificó.
 
 El preflight, estrategia de manifiesto y dry-run exclusivo de QR-003 están en [QR-003-MIGRATION-RECONCILIATION.md](QR-003-MIGRATION-RECONCILIATION.md). No aplicar la migración como parte de una tarea documental.
 
-El procedimiento de backup, recuperación y POC sintética local está en [QR-003-BACKUP-RECOVERY-PLAN.md](QR-003-BACKUP-RECOVERY-PLAN.md). Estado operativo vigente en la última comprobación: no había respaldos listados ni PITR; por ello no se autoriza escritura hasta confirmar una recuperación viable.
+El procedimiento de backup, recuperación y POC sintética local está en [QR-003-BACKUP-RECOVERY-PLAN.md](QR-003-BACKUP-RECOVERY-PLAN.md). La disponibilidad actual de respaldos y PITR no se verificó en esta actualización; la recuperación alojada sigue siendo un requisito pendiente para el dictamen de lanzamiento.
 
 ## Procedimiento para futura revisión autorizada
 
-Regenerar el manifiesto temporal a partir del estado actual de Testing, verificar hashes e inspeccionar las funciones/grants con `SELECT`, y exigir que `supabase db push --dry-run --project-ref llxyziffgtqnzlguxhyt --skip-vault` liste solo QR-003. El dry-run confirmado en la auditoría del 2026-10-28 no sustituye la repetición inmediata antes de un cambio. La aplicación y las pruebas con datos sintéticos en Testing requieren autorización explícita en una tarea posterior.
+El historial actual ya registra la migración QR-003 y la prueba sintética fue autorizada el 2026-11-06. No se debe volver a aplicar ni reparar el ledger basándose solo en estos informes. Antes de una migración futura se debe repetir el preflight y dry-run contra el ref exacto.
 
 ## Reversión y riesgos
 

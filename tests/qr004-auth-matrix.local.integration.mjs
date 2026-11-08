@@ -29,12 +29,15 @@ assert.ok(isolatedModes.length <= 1 && !(isolatedModes.length && (e2eOnly || per
 const browserOnly = e2eOnly || performanceOnly;
 const performanceResultsFile = process.env.QR009_RESULTS_FILE ?? join(tmpdir(), `qr009-runtime-${Date.now()}.json`);
 const projectId = `qr004_disposable_${randomBytes(6).toString("hex")}`;
-const qrCredentialEncryptionKey = randomBytes(32).toString("base64url");
+// The local fixture key uses the same 64-hex format as production configuration.
+// It is generated per run, passed only to the disposable Next process, and redacted.
+const qrCredentialEncryptionKey = randomBytes(32).toString("hex");
 // Keep Mailpit enabled. Auth invite email is captured locally and cannot leave this stack.
 const excluded = "realtime,storage-api,imgproxy,postgres-meta,studio,edge-runtime,logflare,vector,supavisor";
 const auditOnlyExcluded = "gotrue,realtime,storage-api,imgproxy,kong,postgrest,postgres-meta,studio,edge-runtime,logflare,vector,supavisor,mailpit";
 const generalSuites = [
   "attendance_integrity_test.sql",
+  "attendance_pin_lockout_test.sql",
   "employee_portal_rls_behavior_test.sql",
   "company_user_access_behavior_test.sql",
   "company_user_access_management_test.sql",
@@ -56,7 +59,7 @@ const suites = supervisorDeviceRlsOnly ? ["qr007_supervisor_device_rls_test.sql"
       : rpcSecurityCiOnly ? rpcSecurityCiSuites
         : phase10ResidualOnly ? phase10ResidualSuites : authorizationRacesOnly ? [] : generalSuites;
 const rpcSecurityCiExpected = new Map([
-  ["qr007_supervisor_device_rls_test.sql", 27],
+  ["qr007_supervisor_device_rls_test.sql", 50],
   ["qr004_privileged_rpc_authorization_test.sql", 26],
   ["qr004_phase9_rpc_authorization_test.sql", 62],
 ]);
@@ -377,12 +380,13 @@ try {
     const pendingReviewedMigrations = [
       "supabase/migrations/20261105172831_supervisor_device_request_authorization_lock.sql",
       "supabase/migrations/20261105234619_invitation_account_setup_required.sql",
+      "supabase/migrations/20261107174656_supervisor_scanner_auto_authorization.sql",
     ];
     for (const migration of pendingReviewedMigrations) {
       if (await readFile(join(root, migration), "utf8").then(() => true, () => false) && !canonicalMigrations.includes(migration)) canonicalMigrations.push(migration);
     }
     canonicalMigrations.sort();
-    assert.equal(canonicalMigrations.length, 30, "isolated auth/RLS/RPC audit requires canonical migrations plus the reviewed supervisor-device and invitation-account-setup migrations");
+    assert.equal(canonicalMigrations.length, 32, "isolated auth/RLS/RPC audit requires canonical migrations plus the reviewed device, invitation-setup and automatic scanner authorization migrations");
     for (const migration of canonicalMigrations) {
       await cp(join(root, migration), join(workdir, migration));
     }
@@ -455,7 +459,7 @@ try {
   }
   if (rpcSecurityCiOnly) {
     assert.deepEqual(suites, rpcSecurityCiSuites, "unified RPC CI mode runs only the three approved suites in order");
-    assert.equal(rpcSecurityCiTotal, 115, "unified RPC CI mode must pass exactly 115 pgTAP assertions");
+    assert.equal(rpcSecurityCiTotal, 138, "unified RPC CI mode must pass exactly 138 pgTAP assertions");
   }
 
   if (phase10ResidualOnly) {
@@ -520,7 +524,7 @@ try {
   } else if (phase9RpcOnly) {
     process.stdout.write("PASS isolated Phase 9.1 RPC authorization suite only; no HTTP Auth, QR processing, PIN verification, scan, or attendance flow started\n");
   } else if (rpcSecurityCiOnly) {
-    process.stdout.write("PASS isolated RPC security CI suite: 27 + 26 + 62 = 115 pgTAP assertions; no HTTP Auth, Next.js, QR processing, PIN, scan, or attendance flow started\n");
+    process.stdout.write("PASS isolated RPC security CI suite: 50 + 26 + 62 = 138 pgTAP assertions; no HTTP Auth, Next.js, QR processing, PIN, scan, or attendance flow started\n");
   } else if (phase10ResidualOnly) {
     process.stdout.write("PASS isolated QR-004 Phase 10.2 authorization/audit suite only; no HTTP Auth, Next.js, QR processing, PIN, scan, or attendance flow started\n");
   } else {
@@ -672,7 +676,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
         build.once("exit", (code) => resolveExit(code ?? 1));
       });
       if (buildExit !== 0) {
-        for (const secret of [anonKey, adminServiceKey, dbUrl].filter(Boolean)) buildOutput = buildOutput.split(secret).join("[redacted]");
+        for (const secret of [anonKey, adminServiceKey, dbUrl, qrCredentialEncryptionKey].filter(Boolean)) buildOutput = buildOutput.split(secret).join("[redacted]");
         throw new Error(`isolated Next.js production build failed (${buildExit}): ${buildOutput.replace(/https?:\/\/[^\s)]+/g, "[url]").split(/\r?\n/).filter(Boolean).slice(-8).join(" | ").slice(0, 800)}`);
       }
       process.stdout.write("PASS isolated Next.js production build completed with loopback-only Supabase configuration\n");
@@ -782,6 +786,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       QR005_INACTIVE_EMPLOYEE_PASSWORD: inactiveEmployee.password,
       QR005_MULTI_ADMIN_EMAIL: multiAdmin.email,
       QR005_MULTI_ADMIN_PASSWORD: multiAdmin.password,
+      QR005_MULTI_ADMIN_COMPANY_B_MEMBERSHIP_ID: multiAdmin.memberships[1].id,
       QR005_MULTI_SUPERVISOR_EMAIL: multiSupervisor.email,
       QR005_MULTI_SUPERVISOR_PASSWORD: multiSupervisor.password,
       QR005_NO_BRANCH_SUPERVISOR_EMAIL: noBranchSupervisor.email,
@@ -831,7 +836,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     // real Next Server Actions, and a row-lock-controlled revoke/accept race.
     // This mode deliberately does not seed or touch attendance rows or PIN state.
     let targetedAssertions = 0;
-    const verify = Object.fromEntries(["equal", "notEqual", "deepEqual", "ok"].map((method) => [method, (...args) => {
+    const verify = Object.fromEntries(["equal", "notEqual", "deepEqual", "notDeepEqual", "ok"].map((method) => [method, (...args) => {
       targetedAssertions += 1;
       return assert[method](...args);
     }]));
@@ -1117,6 +1122,21 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     verify.deepEqual(await adminApiSnapshot(companyA), revokedSnapshot, "repeated device revocation does not duplicate audit or state changes");
     process.stdout.write("PASS R10-05 supervisor/device HTTP/Auth: branch assignment, request approval, tenant/role/permission denials, revocation and no-side-effect snapshots\n");
 
+    const ownerManagedSupervisor = await createHttpUser("r1005-owner-branch-admin-target", "supervisor", companyA);
+    const ownerSupervisorRecord = await service.from("supervisors").insert({ company_id: companyA, membership_id: ownerManagedSupervisor.memberships[0].id });
+    if (ownerSupervisorRecord.error) throw new Error("failed preparing an owner branch-assignment fixture");
+    const ownerAssignmentBefore = await adminApiSnapshot(companyA);
+    const ownerTenantBBefore = await adminApiSnapshot(companyB);
+    response = await request(`/api/supervisors?companyId=${companyA}`, {
+      user: ownerA, method: "PATCH", body: { membershipId: ownerManagedSupervisor.memberships[0].id, branchId: branchA, assigned: true },
+    });
+    verify.equal(response.status, 200, "company owner can assign an active branch to its own supervisor membership");
+    const ownerAssignmentAfter = await adminApiSnapshot(companyA);
+    verify.equal(ownerAssignmentAfter.supervisor_branches.some((row) => row.membership_id === ownerManagedSupervisor.memberships[0].id && row.branch_id === branchA), true, "owner branch assignment persists only in the selected tenant");
+    verify.equal(ownerAssignmentAfter.audit.some((row) => row.action === "SUPERVISOR_BRANCH_ASSIGNED" && row.entity_id === ownerManagedSupervisor.memberships[0].id), true, "owner branch assignment creates the expected audit event");
+    verify.deepEqual(await adminApiSnapshot(companyB), ownerTenantBBefore, "owner assignment does not modify another tenant");
+    verify.notDeepEqual(ownerAssignmentAfter.supervisor_branches, ownerAssignmentBefore.supervisor_branches, "owner assignment changes the scoped branch list");
+
     const seedAssignedSupervisor = async (label) => {
       const user = await createHttpUser(label, "supervisor", companyA);
       const supervisor = await service.from("supervisors").insert({ company_id: companyA, membership_id: user.memberships[0].id });
@@ -1124,6 +1144,64 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       if (supervisor.error || branch.error) throw new Error("failed preparing a synthetic assigned supervisor");
       return user;
     };
+    const runAutoEnrollmentRevocationRace = async (label, beginRevocation) => {
+      const target = await seedAssignedSupervisor(`r1005-auto-device-${label}`);
+      const membershipId = target.memberships[0].id;
+      const beforeTenantB = await adminApiSnapshot(companyB);
+      const tx = await dbPool.connect();
+      let committed = false;
+      let enrollment;
+      try {
+        await tx.query("begin");
+        await tx.query("set local role authenticated");
+        await tx.query("select set_config('request.jwt.claim.role','authenticated',true)");
+        await tx.query("select set_config('request.jwt.claim.sub',$1,true)", [ownerA.userId]);
+        await tx.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({ role: "authenticated", sub: ownerA.userId })]);
+        await beginRevocation(tx, membershipId);
+        enrollment = request("/api/supervisor/scanner/context", { user: target, method: "POST" });
+        const waitsForEnrollmentLock = async () => {
+          const deadline = Date.now() + 10_000;
+          while (Date.now() < deadline) {
+            const waiting = await dbPool.query("select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and query ilike '%ensure_supervisor_scanner_device%' limit 1");
+            if (waiting.rowCount) return true;
+            await new Promise((resolveWait) => setTimeout(resolveWait, 40));
+          }
+          return false;
+        };
+        const lockWait = await Promise.race([waitsForEnrollmentLock(), enrollment.then(() => false)]);
+        verify.equal(lockWait, true, `${label} revocation serializes against automatic device enrollment`);
+        await tx.query("commit");
+        committed = true;
+        const denied = await enrollment;
+        verify.equal(denied.status, 403, `automatic enrollment is rejected after ${label} revocation commits`);
+      } finally {
+        if (!committed) await tx.query("rollback").catch(() => {});
+        await Promise.allSettled([enrollment].filter(Boolean));
+        tx.release();
+      }
+      const finalState = await dbPool.query(`select m.role::text role,m.active,
+        (select count(*)::int from public.supervisor_branches sb where sb.company_id=m.company_id and sb.membership_id=m.id and sb.branch_id=$2) assigned,
+        (select count(*)::int from public.authorized_devices d where d.company_id=m.company_id and d.membership_id=m.id) devices,
+        (select count(*)::int from public.audit_log a where a.company_id=m.company_id and a.entity_id=m.id and a.action='SUPERVISOR_DEVICE_AUTO_AUTHORIZED') auto_audits
+        from public.company_memberships m where m.id=$1`, [membershipId, branchA]);
+      verify.equal(finalState.rows[0]?.devices, 0, `${label} revocation race creates no device`);
+      verify.equal(finalState.rows[0]?.auto_audits, 0, `${label} revocation race creates no authorization audit`);
+      verify.deepEqual(await adminApiSnapshot(companyB), beforeTenantB, `${label} revocation race has no effects in another tenant`);
+    };
+    await runAutoEnrollmentRevocationRace("membership-revocation", async (tx, membershipId) => {
+      const result = await tx.query("select public.deactivate_company_membership($1,$2) changed", [companyA, membershipId]);
+      verify.equal(result.rows[0]?.changed, true, "owner starts synthetic membership deactivation before browser enrollment");
+    });
+    await runAutoEnrollmentRevocationRace("role-change", async (tx, membershipId) => {
+      const result = await tx.query("select public.change_company_membership_role($1,$2,'employee'::public.company_role) changed", [companyA, membershipId]);
+      verify.equal(result.rows[0]?.changed, true, "owner starts synthetic supervisor role change before browser enrollment");
+    });
+    await runAutoEnrollmentRevocationRace("branch-removal", async (tx, membershipId) => {
+      const result = await tx.query("select public.set_supervisor_branch($1,$2,$3,false) result", [companyA, membershipId, branchA]);
+      verify.equal(result.rows[0]?.result?.assigned, false, "owner starts synthetic branch removal before browser enrollment");
+    });
+    process.stdout.write("PASS automatic browser enrollment serializes with membership, role and branch revocation without device/audit side effects\n");
+
     const membershipRequestRaceSupervisor = await seedAssignedSupervisor("r1005-membership-device-request-race-supervisor");
     const membershipRequestRaceTx = await dbPool.connect();
     let membershipRequestRaceCommitted = false;
@@ -1390,10 +1468,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     verify.equal(typeof issuedQr.token, "string", "raw QR token is returned to the authorized caller once");
     verify.equal(JSON.stringify(issuedQr.credential).includes(issuedQr.token), false, "credential metadata does not repeat raw QR token");
     const issuedQrHash = createHash("sha256").update(issuedQr.token).digest("hex");
-    const storedIssuedQr = (await dbPool.query("select encode(token_hash,'hex') hash,encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0];
-    verify.equal(storedIssuedQr?.hash === issuedQrHash, true, "the QR token hash remains the attendance lookup key");
-    verify.ok(storedIssuedQr?.encrypted_token?.startsWith("v1."), "a server-encrypted QR copy is persisted for employee self-service");
-    verify.equal(storedIssuedQr?.encrypted_token?.includes(issuedQr.token), false, "encrypted storage never contains the raw QR token");
+    verify.equal((await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash === issuedQrHash, true, "only the QR token hash is persisted");
     const activeQrSnapshot = await qrSnapshot();
     response = await request(qrPath, { user: adminA, method: "POST", body: {} });
     verify.equal(response.status, 409, "duplicate QR issuance requires explicit replacement");
@@ -1402,17 +1477,13 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     verify.equal(response.status, 200, "authorized explicit QR replacement succeeds");
     const replacementQr = await response.json();
     verify.notEqual(replacementQr.token, issuedQr.token, "replacement rotates the raw QR token");
-    const replacedCredential = (await dbPool.query("select encode(token_hash,'hex') hash,encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0];
-    const replacedHash = replacedCredential?.hash;
-    verify.ok(replacedCredential?.encrypted_token?.startsWith("v1."), "replacement updates the encrypted QR recovery value");
-    verify.equal(replacedCredential?.encrypted_token?.includes(replacementQr.token), false, "replacement ciphertext does not expose the raw token");
+    const replacedHash = (await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash;
     verify.equal(replacedHash === createHash("sha256").update(replacementQr.token).digest("hex"), true, "replacement persists only the new token hash");
     verify.equal(replacedHash !== issuedQrHash, true, "previous raw token hash is invalidated by replacement");
     response = await request(qrPath, { user: adminA, method: "DELETE" });
     verify.equal(response.status, 200, "authorized administrator can revoke a QR credential");
     verify.ok((await dbPool.query("select revoked_at from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.revoked_at, "QR revocation timestamp is persisted");
-    verify.equal((await dbPool.query("select encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.encrypted_token, null, "revocation clears the encrypted QR recovery value");
-    process.stdout.write("PASS QR-004 employee QR credentials HTTP/Auth: tenant/role/permission guards, hash plus encrypted storage, rotation, revocation and snapshots; PIN endpoints untouched\n");
+    process.stdout.write("PASS QR-004 employee QR credentials HTTP/Auth: tenant/role/permission guards, one-time token hashing, rotation, revocation and snapshots; PIN endpoints untouched\n");
 
     const inactiveApiAdmin = await createHttpUser("r1005-inactive-admin", "admin", companyA);
     await service.from("company_memberships").update({ active: false }).eq("id", inactiveApiAdmin.memberships[0].id);
@@ -1749,6 +1820,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/company?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 200);
   const ownerCompanyResponse = await response.json();
   assert.equal(ownerCompanyResponse.item.id, companyA);
+  assert.equal(ownerCompanyResponse.item.require_employee_pin, false, "company PIN requirement defaults off for the synthetic tenant");
   assert.equal(ownerCompanyResponse.canManage, true, "active owner can manage their own company");
   response = await request(`/api/branches?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 200);
   assert.ok((await response.json()).items.some((branch) => branch.id === branchA), "owner can read own-company branches");
@@ -1769,12 +1841,6 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const beforeOwnerWriteA = await companyAndDataSnapshot(companyA), beforeOwnerWriteB = await companyAndDataSnapshot(companyB);
   response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: ownerCompanyWrite }); assert.equal(response.status, 200);
   assert.equal((await response.json()).item.name, ownerCompanyWrite.name, "owner can update their own company through the API");
-  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { ...ownerCompanyWrite, requireEmployeePin: true } }); assert.equal(response.status, 200);
-  assert.equal((await response.json()).item.require_employee_pin, true, "owner can enable the attendance PIN requirement through the company settings API");
-  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 200);
-  assert.equal((await response.json()).item.require_employee_pin, true, "company GET returns the persisted PIN requirement for Owner");
-  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { ...ownerCompanyWrite, requireEmployeePin: false } }); assert.equal(response.status, 200);
-  assert.equal((await response.json()).item.require_employee_pin, false, "owner can disable and persist the attendance PIN requirement");
   const directOwnerCompanyUpdate = await ownerA.client.from("companies").update({ legal_name: "Synthetic owner direct RLS update" }).eq("id", companyA).select("id,legal_name").single();
   assert.deepEqual(directOwnerCompanyUpdate.data, { id: companyA, legal_name: "Synthetic owner direct RLS update" }, "owner can update only their own company through authenticated PostgreSQL RLS");
   const ownerCompanyAudit = (await snapshot(companyA)).audit;
@@ -1782,13 +1848,30 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/company?companyId=${companyB}`, { user: ownerA, method: "PATCH", body: { ...ownerCompanyWrite, name: "Foreign tenant mutation" } }); assert.equal(response.status, 403);
   assert.deepEqual(await companyAndDataSnapshot(companyB), beforeOwnerWriteB, "owner cross-tenant PATCH denial preserves the other company's data and audit snapshot");
   assert.notDeepEqual(await companyAndDataSnapshot(companyA), beforeOwnerWriteA, "authorized owner update changes only its own tenant and records audit");
-  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { name: ownerCompanyBefore.name, legalName: ownerCompanyBefore.legal_name, rfc: ownerCompanyBefore.rfc, requireEmployeePin: ownerCompanyBefore.require_employee_pin } }); assert.equal(response.status, 200);
+  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { name: ownerCompanyBefore.name, legalName: ownerCompanyBefore.legal_name, rfc: ownerCompanyBefore.rfc } }); assert.equal(response.status, 200);
+
+  const beforePinSettingA = await companyAndDataSnapshot(companyA), beforePinSettingB = await companyAndDataSnapshot(companyB);
+  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.require_employee_pin, true, "owner can enable PIN requirement for their own company");
+  assert.equal((await companyRecord(companyA)).require_employee_pin, true, "enabled PIN setting persists in the owner tenant");
+  assert.ok((await snapshot(companyA)).audit.some((entry) => entry.entity_table === "companies" && entry.action === "UPDATE"), "PIN setting change is audited");
+  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { requireEmployeePin: false } }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.require_employee_pin, false, "owner can disable PIN requirement for their own company");
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.require_employee_pin, true, "authorized company administrator can enable PIN requirement");
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { requireEmployeePin: false } }); assert.equal(response.status, 200);
+  assert.equal((await response.json()).item.require_employee_pin, false, "authorized company administrator can disable PIN requirement");
+  response = await request(`/api/company?companyId=${companyB}`, { user: ownerA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 403, "owner cannot change another company's PIN policy");
+  assert.deepEqual(await companyAndDataSnapshot(companyB), beforePinSettingB, "cross-tenant PIN policy update preserves foreign company and audit snapshot");
+  assert.notDeepEqual(await companyAndDataSnapshot(companyA), beforePinSettingA, "authorized PIN policy changes update and audit only the owner tenant");
 
   const validCompanyPayload = { name: `Synthetic Company A Updated ${randomUUID()}`, legalName: "Synthetic Tenant A LLC", rfc: "SYN010101ABC" };
   const beforeCompanyRoleDenialsA = await companyAndDataSnapshot(companyA);
   response = await request(`/api/company?companyId=${companyA}`, { method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 401);
   response = await request(`/api/company?companyId=${companyA}`, { user: supervisorA, method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 403);
   response = await request(`/api/company?companyId=${companyA}`, { user: employeeA, method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 403);
+  response = await request(`/api/company?companyId=${companyA}`, { user: supervisorA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 403);
+  response = await request(`/api/company?companyId=${companyA}`, { user: employeeA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 403);
   assert.deepEqual(await companyAndDataSnapshot(companyA), beforeCompanyRoleDenialsA, "anonymous and non-admin PATCH denials preserve company and audit snapshots");
   response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 200);
   assert.equal((await response.json()).item.name, validCompanyPayload.name);
@@ -1820,6 +1903,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal(readOnlyCompany.canManage, false, "GET reports company.manage denial without blocking company.read");
   assert.equal(response.headers.get("cache-control"), "no-store");
   response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { name: "Unauthorized synthetic mutation", legalName: null, rfc: null } }); assert.equal(response.status, 403);
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 403, "company.manage denial also protects PIN policy changes");
   const directDeniedCompanyUpdate = await adminA.client.from("companies").update({ name: "Unauthorized direct mutation" }).eq("id", companyA).select("id");
   assert.ok(directDeniedCompanyUpdate.error?.code === "42501" || (directDeniedCompanyUpdate.data ?? []).length === 0, "PostgreSQL RLS rejects direct company update without company.manage");
   response = await request(`/api/company?companyId=${companyB}`, { user: adminA, method: "PATCH", body: { name: "Foreign synthetic mutation", legalName: null, rfc: null } }); assert.equal(response.status, 403);
@@ -2490,9 +2574,19 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const storedQrCredential = (await dbPool.query("select encode(token_hash,'hex') hash,encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0];
   const storedQrHash = storedQrCredential?.hash;
   assert.equal(storedQrHash, issuedQrHash, "database retains the SHA-256 QR lookup hash");
-  assert.match(storedQrCredential?.encrypted_token ?? "", /^v1\./, "database also stores only a versioned encrypted recovery envelope");
-  assert.equal(storedQrCredential?.encrypted_token?.includes(issuedQr.token), false, "encrypted storage does not contain the raw token");
+  assert.match(storedQrCredential?.encrypted_token ?? "", /^v1\./, "database stores a versioned encrypted recovery envelope");
+  assert.equal(storedQrCredential?.encrypted_token?.includes(issuedQr.token), false, "encrypted storage does not contain the raw QR token");
   assert.notEqual(storedQrHash, issuedQr.token);
+  response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`, { user: employeeA });
+  assert.equal(response.status, 200, "employee can recover only their own active credential");
+  assert.equal(response.headers.get("cache-control"), "no-store, private");
+  const ownCredential = await response.json();
+  assert.equal(ownCredential.status, "active");
+  assert.equal(ownCredential.token, issuedQr.token, "dedicated self-service route decrypts the current credential on demand");
+  response = await request(`/api/employee/credential?employeeId=${employeeB.employeeId}`, { user: employeeA });
+  assert.equal(response.status, 403, "employee cannot recover another employee's credential");
+  response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`);
+  assert.equal(response.status, 401, "anonymous credential recovery is rejected");
   const beforeDuplicateQr = await snapshot(companyA);
   response = await request(qrPath, { user: adminA, method: "POST", body: {} }); assert.equal(response.status, 409);
   assert.deepEqual(await snapshot(companyA), beforeDuplicateQr, "duplicate QR issue without replace has no side effects");
@@ -2503,18 +2597,23 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal(regeneratedCredential.hash, regeneratedHash);
   assert.match(regeneratedCredential.encrypted_token ?? "", /^v1\./);
   assert.equal(regeneratedCredential.encrypted_token.includes(regeneratedQr.token), false);
+  response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`, { user: employeeA });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).token, regeneratedQr.token, "employee sees the replacement token after regeneration");
   assert.equal(Number((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action in ('EMPLOYEE_QR_ISSUED','EMPLOYEE_QR_REGENERATED')", [companyA, employeeA.employeeId])).rows[0].n), 2);
   const repeatedQrHash = (await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].hash;
   response = await request(qrPath, { user: adminA, method: "DELETE" }); assert.equal(response.status, 200);
   assert.equal((await response.json()).credential.qrStatus, "revoked");
   assert.equal((await dbPool.query("select revoked_at is not null revoked from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].revoked, true);
-  assert.equal((await dbPool.query("select encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].encrypted_token, null, "revocation clears encrypted token recovery data");
+  assert.equal((await dbPool.query("select encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].encrypted_token, null, "revocation clears encrypted recovery data");
+  response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`, { user: employeeA });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "revoked", "employee self-service reflects revocation without returning a token");
   const afterQrRevoke = await snapshot(companyA);
   response = await request(qrPath, { user: adminA, method: "DELETE" }); assert.equal(response.status, 200, "repeated QR revoke is an idempotent no-op");
   assert.deepEqual(await snapshot(companyA), afterQrRevoke, "repeated QR revoke creates no duplicate audit event");
-  assert.equal((await dbPool.query("select encode(token_hash,'hex') hash,encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].hash, repeatedQrHash, "revocation preserves the digest for status history");
-  assert.equal((await dbPool.query("select encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].encrypted_token, null, "revocation removes encrypted recovery data");
-  process.stdout.write("PASS employee QR credential APIs enforce Auth/role/tenant/permission, one-time no-store token disclosure, encrypted recovery, replacement, revocation and snapshots; PIN endpoint denials preserve lockout state\n");
+  assert.equal((await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0].hash, repeatedQrHash, "revocation preserves only the digest, never a raw token");
+  process.stdout.write("PASS employee QR credential APIs enforce Auth/role/tenant/permission, one-time no-store token disclosure, replacement, revocation and hash-only persistence; PIN endpoint denials preserve lockout state\n");
 
   // Supervisor enrollment lifecycle with real local Auth cookies and direct
   // RPC checks. No attendance scan or PIN verification is performed here.
@@ -2594,10 +2693,12 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.match(response.headers.get("cache-control") ?? "", /no-store/i);
   response = await request(scannerContextPath, { user: employeeA }); assert.equal(response.status, 403, "employee cannot use the supervisor scanner context");
   response = await request(`/api/supervisor/scanner/context?companyId=${companyB}`, { user: supervisorA }); assert.equal(response.status, 403, "supervisor cannot select a foreign company");
+  const beforeReadOnlyScannerContext = await snapshot(companyA);
   response = await request(scannerContextPath, { user: supervisorA }); assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store, private");
   const unpairedScannerContext = await response.json();
   assert.equal(unpairedScannerContext.contexts[0].authorized, false, "active supervisor without a device cookie receives an unauthorized context");
+  assert.deepEqual(await snapshot(companyA), beforeReadOnlyScannerContext, "GET scanner context never enrolls a device or writes audit state");
   response = await request(scannerContextPath, { user: supervisorA, cookieExtra: `qr_device_${companyA}=forged-synthetic-device-token` }); assert.equal(response.status, 200);
   assert.equal((await response.json()).contexts[0].authorized, false, "a manipulated device cookie does not authorize scanning");
   const beforeInvalidScannerOrigin = await snapshot(companyA);
@@ -2617,51 +2718,49 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(scannerContextPath, { user: supervisorA, cookieExtra: `qr_active_membership_id=${supervisorA.memberships[0].id}` }); assert.equal(response.status, 200, "selected own supervisor membership restores context access");
   response = await request(`/api/supervisor/scanner/context?companyId=${companyB}`, { user: supervisorA, cookieExtra: `qr_active_membership_id=${supervisorA.memberships[0].id}` }); assert.equal(response.status, 403, "selected company cannot be overridden by another membership's company ID");
 
-  const httpChallenge = randomBytes(32).toString("base64url");
-  const httpRequest = await supervisorA.client.rpc("request_supervisor_device", {
-    p_company_id: companyA, p_branch_id: branchA, p_label: "Synthetic HTTP context device", p_challenge: httpChallenge,
-  });
-  assert.ok(!httpRequest.error && httpRequest.data?.requestId, "synthetic context device request exists");
-  const httpApproval = await adminA.client.rpc("review_supervisor_device_request", {
-    p_company_id: companyA, p_request_id: httpRequest.data.requestId, p_approve: true,
-  });
-  assert.ok(!httpApproval.error && httpApproval.data?.deviceId, "synthetic context device is approved before HTTP challenge redemption");
-  const httpRedeemResponse = await fetch(new URL(scannerContextPath, appUrl), {
+  const beforeHttpAutoAuthorization = await snapshot(companyA);
+  const httpAutoAuthorizationResponse = await fetch(new URL(scannerContextPath, appUrl), {
     method: "POST",
     headers: {
-      cookie: `${supervisorA.cookie}; qr_active_membership_id=${supervisorA.memberships[0].id}; qr_enroll_${companyA}=${encodeURIComponent(httpChallenge)}`,
+      cookie: `${supervisorA.cookie}; qr_active_membership_id=${supervisorA.memberships[0].id}`,
       origin: appUrl, "x-forwarded-proto": "https",
     },
   });
-  assert.equal(httpRedeemResponse.status, 200, "approved local enrollment challenge redeems through the actual scanner context route");
-  assert.equal(httpRedeemResponse.headers.get("cache-control"), "no-store, private");
-  const httpRedeemedContext = await httpRedeemResponse.json();
-  assert.equal(httpRedeemedContext.contexts[0].authorized, true);
-  assert.equal(httpRedeemedContext.contexts[0].requestStatus, "authorized");
-  assert.equal(JSON.stringify(httpRedeemedContext).includes(httpChallenge), false, "scanner context response never returns raw device challenge");
-  const httpSetCookie = httpRedeemResponse.headers.get("set-cookie") ?? "";
+  assert.equal(httpAutoAuthorizationResponse.status, 200, "assigned supervisor browser is enabled by the real scanner context route");
+  assert.equal(httpAutoAuthorizationResponse.headers.get("cache-control"), "no-store, private");
+  const httpAutoContext = await httpAutoAuthorizationResponse.json();
+  assert.equal(httpAutoContext.contexts[0].authorized, true);
+  assert.equal(httpAutoContext.contexts[0].requestStatus, "authorized");
+  assert.equal(httpAutoContext.contexts[0].branchId, branchA, "automatic device remains scoped to its assigned active branch");
+  assert.equal(JSON.stringify(httpAutoContext).includes("qr_device_"), false, "scanner context response does not expose its device cookie or token");
+  const httpSetCookie = httpAutoAuthorizationResponse.headers.get("set-cookie") ?? "";
   assert.match(httpSetCookie, new RegExp(`qr_device_${companyA}=`), "successful POST stores the device token in its cookie");
   assert.match(httpSetCookie, /HttpOnly/i);
   assert.match(httpSetCookie, /Secure/i, "forwarded HTTPS marks the device cookie Secure");
   assert.match(httpSetCookie, /SameSite=lax/i);
   assert.match(httpSetCookie, /Path=\/api/i);
-  assert.equal((await dbPool.query("select status,redeemed_at is not null redeemed from private.device_authorization_requests where id=$1", [httpRequest.data.requestId])).rows[0]?.redeemed, true, "HTTP challenge redemption is persisted once");
-  assert.equal(Number((await dbPool.query("select count(*)::int n from private.device_token_hashes where device_id=$1", [httpApproval.data.deviceId])).rows[0].n), 1, "HTTP redemption stores only one device-token hash");
-  const afterHttpRedemption = await snapshot(companyA);
+  const httpAutoDevice = (await dbPool.query("select d.id,d.branch_id,d.active,h.token_hash from public.authorized_devices d join private.device_token_hashes h on h.device_id=d.id where d.company_id=$1 and d.membership_id=$2 and d.label='Navegador del supervisor' order by d.created_at desc limit 1", [companyA, supervisorA.memberships[0].id])).rows[0];
+  assert.equal(httpAutoDevice?.branch_id, branchA, "database records the membership's assigned branch");
+  assert.equal(httpAutoDevice?.active, true);
+  const httpRawToken = decodeURIComponent(httpSetCookie.match(new RegExp(`qr_device_${companyA}=([^;,]+)`))?.[1] ?? "");
+  assert.equal(httpAutoDevice?.token_hash.toString("hex"), createHash("sha256").update(httpRawToken).digest("hex"), "database stores only the browser token hash");
+  assert.equal(Number((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='SUPERVISOR_DEVICE_AUTO_AUTHORIZED'", [companyA, httpAutoDevice.id])).rows[0].n), 1, "automatic device authorization creates an audit event");
+  assert.deepEqual((await snapshot(companyA)).device_requests, beforeHttpAutoAuthorization.device_requests, "automatic authorization creates no approval request");
+  const afterHttpAutoAuthorization = await snapshot(companyA);
   const httpDeviceCookie = httpSetCookie.match(new RegExp(`qr_device_${companyA}=([^;,]+)`))?.[1];
   assert.ok(httpDeviceCookie, "device cookie value is present only in Set-Cookie");
   response = await request(scannerContextPath, { user: supervisorA, cookieExtra: `qr_active_membership_id=${supervisorA.memberships[0].id}; qr_device_${companyA}=${httpDeviceCookie}` });
   assert.equal(response.status, 200);
   assert.equal((await response.json()).contexts[0].authorized, true, "issued device cookie authorizes only its server-recorded device");
-  const repeatedHttpRedemption = await fetch(new URL(scannerContextPath, appUrl), {
+  const repeatedHttpAuthorization = await fetch(new URL(scannerContextPath, appUrl), {
     method: "POST", headers: {
-      cookie: `${supervisorA.cookie}; qr_active_membership_id=${supervisorA.memberships[0].id}; qr_enroll_${companyA}=${encodeURIComponent(httpChallenge)}`,
+      cookie: `${supervisorA.cookie}; qr_active_membership_id=${supervisorA.memberships[0].id}; qr_device_${companyA}=${httpDeviceCookie}`,
       origin: appUrl, "x-forwarded-proto": "https",
     },
   });
-  assert.equal(repeatedHttpRedemption.status, 200, "repeated HTTP redemption is handled without creating another authorization");
-  assert.equal((await repeatedHttpRedemption.json()).contexts[0].authorized, false, "replayed challenge does not mint a second device cookie");
-  assert.deepEqual(await snapshot(companyA), afterHttpRedemption, "replayed HTTP redemption creates no additional request, device or audit changes");
+  assert.equal(repeatedHttpAuthorization.status, 200, "repeated context load reuses the automatically authorized device");
+  assert.equal((await repeatedHttpAuthorization.json()).contexts[0].authorized, true);
+  assert.deepEqual(await snapshot(companyA), afterHttpAutoAuthorization, "repeated context load creates no duplicate request, device or audit changes");
 
   const noDeviceContext = await supervisorA.client.rpc("get_supervisor_scanner_context", { p_company_id: companyA, p_device_token: null });
   assert.equal(noDeviceContext.data?.authorized, false);
@@ -2704,9 +2803,11 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal(Number((await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='SUPERVISOR_DEVICE_REVOKED'", [companyA, approved.deviceId])).rows[0].n), 1);
   const revokedContext = await supervisorA.client.rpc("get_supervisor_scanner_context", { p_company_id: companyA, p_device_token: enrollmentChallenge });
   assert.equal(revokedContext.data?.authorized, false, "revocation immediately removes scanner authorization");
-  response = await request(scannerContextPath, { user: supervisorA, cookieExtra: `qr_active_membership_id=${supervisorA.memberships[0].id}; qr_device_${companyA}=${encodeURIComponent(enrollmentChallenge)}` });
-  assert.equal(response.status, 200);
-  assert.equal((await response.json()).contexts[0].authorized, false, "revoked device cookie cannot authorize the HTTP scanner context");
+  response = await fetch(new URL(scannerContextPath, appUrl), { method: "POST", headers: {
+    cookie: `${supervisorA.cookie}; qr_active_membership_id=${supervisorA.memberships[0].id}; qr_device_${companyA}=${encodeURIComponent(enrollmentChallenge)}`,
+    origin: appUrl, "x-forwarded-proto": "https",
+  } });
+  assert.equal(response.status, 403, "manually revoked device is not silently re-authorized by a context refresh");
   const repeatedRevoke = await adminA.client.rpc("revoke_supervisor_device", { p_company_id: companyA, p_device_id: approved.deviceId });
   assert.equal(repeatedRevoke.error?.code, "P0002");
   assert.deepEqual(await snapshot(companyA), afterDeviceRevoke, "repeated device revocation has no duplicate audit side effects");
@@ -3400,6 +3501,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/admin/audit?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
   response = await request(`/api/admin/audit?companyId=${companyB}`, { user: adminA }); assert.equal(response.status, 403);
   response = await request(`/api/admin/audit?companyId=${companyA}&from=not-a-date`, { user: adminA }); assert.equal(response.status, 400);
+  response = await request(`/api/admin/audit?companyId=${companyA}&from=2026-02-30`, { user: adminA }); assert.equal(response.status, 400, "audit rejects a calendar-impossible start date");
+  response = await request(`/api/admin/audit?companyId=${companyA}&to=2026-02-30`, { user: adminA }); assert.equal(response.status, 400, "audit rejects a calendar-impossible end date");
   response = await request(`/api/admin/audit?companyId=${companyA}&from=2026-11-06&to=2026-11-05`, { user: adminA }); assert.equal(response.status, 400);
   response = await request(`/api/admin/audit?companyId=${companyA}&action=not%20a%20valid%20action`, { user: adminA }); assert.equal(response.status, 400);
 
@@ -3438,6 +3541,12 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.equal(auditPage.pagination.total, 11);
   assert.equal(auditPage.items.length, 1);
   assert.ok(auditAIds.includes(auditPage.items[0].entity_id));
+  response = await request(`/api/admin/audit?companyId=${companyA}&from=${auditProbeDate}&to=${auditProbeDate}&action=${auditProbeAction}&pageSize=100`, { user: adminA });
+  assert.equal(response.status, 200);
+  auditPage = await response.json();
+  assert.equal(auditPage.pagination.pageSize, 50, "audit page size clamps to the maximum");
+  assert.equal(auditPage.pagination.total, 11);
+  assert.equal(auditPage.items.length, 11);
   response = await request(`/api/admin/permissions?companyId=${companyA}`, { user: supervisorA }); assert.equal(response.status, 403);
   response = await request(`/api/admin/permissions?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
   const catalog = await response.json(); assert.ok(Array.isArray(catalog.permissions) && Array.isArray(catalog.rolePermissions));
@@ -3472,24 +3581,24 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const auditRevoke = await dbPool.query("select count(*)::int n from public.audit_log where company_id=$1 and entity_id=$2 and action='USER_INVITATION_REVOKED'", [companyA, revokedInvite.data]); assert.equal(auditRevoke.rows[0].n, 1);
   process.stdout.write("PASS invitation RPC enforces recipient, expiry, revocation, single-use and audit semantics with local JWT identities\n");
 
-  // Keep this last because it intentionally adds a second owner membership;
-  // earlier scenarios assert single-company resolution for this identity.
+  // Keep owner company creation last: it adds another owner membership and
+  // would otherwise change single-company selection assumptions above.
   const beforeAdditionalCompanyB = await companyAndDataSnapshot(companyB);
   response = await request("/api/companies", { method: "POST", body: { name: "Synthetic unauthenticated company" } }); assert.equal(response.status, 401);
   response = await request("/api/companies", { user: adminA, method: "POST", body: { name: "Synthetic admin company" } }); assert.equal(response.status, 403);
   response = await request("/api/companies", { user: ownerA, method: "POST", body: { name: `Synthetic second company ${randomUUID()}`, legalName: "Synthetic legal name", rfc: null } }); assert.equal(response.status, 201);
   const newlyCreatedCompany = (await response.json()).item;
-  assert.ok(newlyCreatedCompany.id && newlyCreatedCompany.name.startsWith("Synthetic second company"), "owner creates a second company through the authenticated API");
+  assert.ok(newlyCreatedCompany.id && newlyCreatedCompany.name.startsWith("Synthetic second company"));
   response = await request(`/api/company?companyId=${newlyCreatedCompany.id}`, { user: ownerA }); assert.equal(response.status, 200);
-  assert.equal((await response.json()).item.id, newlyCreatedCompany.id, "owner can switch context to the new company");
+  assert.equal((await response.json()).item.id, newlyCreatedCompany.id, "owner can switch to the newly created company");
   response = await request(`/api/company?companyId=${newlyCreatedCompany.id}`, { user: adminA }); assert.equal(response.status, 403, "another tenant's administrator cannot enter the new company");
   response = await request("/api/companies", { user: employeeA, method: "POST", body: { name: "Synthetic employee company" } }); assert.equal(response.status, 403);
   response = await request("/api/companies", { user: ownerA, method: "POST", body: { name: "Invalid synthetic company", rfc: "INVALID" } }); assert.equal(response.status, 422);
   assert.deepEqual(await companyAndDataSnapshot(companyB), beforeAdditionalCompanyB, "company creation denials preserve the unrelated tenant snapshot");
   const newCompanyMembership = await ownerA.client.from("company_memberships").select("role,active").eq("company_id", newlyCreatedCompany.id).eq("user_id", ownerA.userId).maybeSingle();
-  assert.deepEqual(newCompanyMembership.data, { role: "owner", active: true }, "new company assigns only the authenticated owner and remains active");
-  assert.ok((await snapshot(newlyCreatedCompany.id)).audit.some((entry) => entry.actor_user_id === ownerA.userId && entry.entity_table === "companies" && entry.action === "INSERT"), "new company creation writes an audit record");
-  process.stdout.write("PASS owner-only company creation, input validation, tenant isolation, audit and immediate company switching\n");
+  assert.deepEqual(newCompanyMembership.data, { role: "owner", active: true }, "only the authenticated owner receives an active membership");
+  assert.ok((await snapshot(newlyCreatedCompany.id)).audit.some((entry) => entry.actor_user_id === ownerA.userId && entry.entity_table === "companies" && entry.action === "INSERT"), "company creation is audited");
+  process.stdout.write("PASS owner-only company creation, validation, tenant isolation, audit and company switching\n");
   }
   }
 } catch (error) {

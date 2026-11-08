@@ -15,6 +15,14 @@ const cjsModule = { exports: {} };
 new Function("require", "module", "exports", helperJs)(require, cjsModule, cjsModule.exports);
 const { isAllowedRequestOrigin, isCurrentContextRequest } = cjsModule.exports;
 
+const scannerRpcErrorSource = readFileSync(new URL("../src/lib/scanner/scanner-rpc-error.ts", import.meta.url), "utf8");
+const scannerRpcErrorJs = ts.transpileModule(scannerRpcErrorSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
+const scannerRpcErrorModule = { exports: {} };
+new Function("require", "module", "exports", scannerRpcErrorJs)(require, scannerRpcErrorModule, scannerRpcErrorModule.exports);
+const { classifyScannerRpcFailure, scannerRpcErrorResponse } = scannerRpcErrorModule.exports;
+
 function preserveOriginEnv(callback) {
   const previous = {
     appBaseUrl: process.env.APP_BASE_URL,
@@ -125,4 +133,27 @@ test("does not commit an aborted or superseded context response", () => {
   assert.equal(isCurrentContextRequest(1, 2, controller.signal), false);
   controller.abort();
   assert.equal(isCurrentContextRequest(2, 2, controller.signal), false);
+});
+
+test("classifies missing scanner RPC signatures as a permanent schema mismatch", () => {
+  for (const code of ["PGRST202", "PGRST203", "42883"]) {
+    assert.equal(classifyScannerRpcFailure({ code }), "schema_unavailable");
+  }
+  assert.equal(classifyScannerRpcFailure({ code: "42501" }), "authorization");
+  assert.equal(classifyScannerRpcFailure({ code: "08006" }), "temporary");
+  assert.equal(classifyScannerRpcFailure(new Error("connection lost")), "temporary");
+});
+
+test("maps missing RPC, permission and transient database failures to sanitized API responses", () => {
+  assert.deepEqual(scannerRpcErrorResponse({ code: "PGRST202" }, "fallback"), {
+    code: "scanner_schema_not_ready",
+    message: "La base de datos aún requiere una actualización para habilitar el escáner. Contacta al administrador.",
+    status: 503,
+  });
+  assert.deepEqual(scannerRpcErrorResponse({ code: "42501" }, "fallback", "revoked"), {
+    code: "supervisor_forbidden", message: "revoked", status: 403,
+  });
+  assert.deepEqual(scannerRpcErrorResponse({ code: "08006", message: "private database detail" }, "safe fallback"), {
+    code: "scanner_context_failed", message: "safe fallback", status: 503,
+  });
 });

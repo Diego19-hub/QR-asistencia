@@ -4,7 +4,7 @@ test("supervisor autorizado abre el escáner y un rol insuficiente no entra a ad
   await qr.signIn(page, qr.fixture("SUPERVISOR_EMAIL"), qr.fixture("SUPERVISOR_PASSWORD"));
   await expect(page).toHaveURL(/\/scanner(?:\?|$)/);
   await expect(page.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
-  await expect(page.getByText("Dispositivo sin autorización")).toBeVisible();
+  await expect(page.getByText("Dispositivo autorizado")).toBeVisible();
 
   await page.goto("/admin");
   await expect(page).toHaveURL(/\/login\?error=no-company/);

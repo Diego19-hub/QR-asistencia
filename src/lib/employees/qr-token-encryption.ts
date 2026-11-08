@@ -2,50 +2,58 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 const VERSION = "v1";
 
-function encryptionKey() {
-  const encoded = process.env.QR_CREDENTIAL_ENCRYPTION_KEY;
-  if (!encoded) throw new Error("QR_CREDENTIAL_ENCRYPTION_KEY is not configured");
-  if (!/^[A-Za-z0-9_-]{43}$/.test(encoded)) {
-    throw new Error("QR_CREDENTIAL_ENCRYPTION_KEY must be base64url for exactly 32 bytes");
+/** Parse the server-only 256-bit key represented as 64 hexadecimal characters. */
+export function parseEmployeeQrEncryptionKey(value: string | undefined): Buffer {
+  if (!value || !/^[\da-fA-F]{64}$/.test(value)) {
+    throw new Error("QR credential encryption is unavailable.");
   }
-  const key = Buffer.from(encoded, "base64url");
-  if (key.length !== 32 || key.toString("base64url") !== encoded) {
-    throw new Error("QR_CREDENTIAL_ENCRYPTION_KEY must be base64url for exactly 32 bytes");
-  }
-  return key;
+  return Buffer.from(value, "hex");
 }
 
-function credentialContext(companyId: string, employeeId: string) {
-  if (!companyId || !employeeId) throw new Error("QR credential context is incomplete");
+function context(companyId: string, employeeId: string): Buffer {
+  if (!companyId || !employeeId) throw new Error("Invalid QR credential context.");
   return Buffer.from(`${companyId}:${employeeId}`, "utf8");
 }
 
-export function encryptQrToken(token: string, companyId: string, employeeId: string) {
-  if (!/^[A-Za-z0-9_-]{40,60}$/.test(token)) throw new Error("QR credential token is invalid");
+export function encryptEmployeeQrToken(token: string, key: Buffer, companyId: string, employeeId: string): string {
+  if (key.length !== 32 || !/^[A-Za-z0-9_-]{40,60}$/.test(token)) {
+    throw new Error("Invalid QR credential encryption input.");
+  }
   const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
-  cipher.setAAD(credentialContext(companyId, employeeId));
-  const encrypted = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
-  return `${VERSION}.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  cipher.setAAD(context(companyId, employeeId));
+  const ciphertext = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
+  return [VERSION, iv.toString("base64url"), cipher.getAuthTag().toString("base64url"), ciphertext.toString("base64url")].join(".");
 }
 
-export function decryptQrToken(value: string, companyId: string, employeeId: string) {
-  const [version, ivText, tagText, ciphertextText, extra] = value.split(".");
-  if (version !== VERSION || !ivText || !tagText || !ciphertextText || extra !== undefined) {
-    throw new Error("Stored QR credential has an unsupported format");
+export function decryptEmployeeQrToken(envelope: string, key: Buffer, companyId: string, employeeId: string): string {
+  if (key.length !== 32) throw new Error("Invalid QR credential encryption key.");
+  const [version, encodedIv, encodedTag, encodedCiphertext, extra] = envelope.split(".");
+  if (version !== VERSION || !encodedIv || !encodedTag || !encodedCiphertext || extra !== undefined) {
+    throw new Error("Invalid QR credential ciphertext.");
   }
   try {
-    const iv = Buffer.from(ivText, "base64url");
-    const tag = Buffer.from(tagText, "base64url");
-    const ciphertext = Buffer.from(ciphertextText, "base64url");
+    const iv = Buffer.from(encodedIv, "base64url");
+    const tag = Buffer.from(encodedTag, "base64url");
+    const ciphertext = Buffer.from(encodedCiphertext, "base64url");
     if (iv.length !== 12 || tag.length !== 16 || ciphertext.length < 1 || ciphertext.length > 1024) {
-      throw new Error("Invalid QR credential envelope");
+      throw new Error("Invalid QR credential ciphertext.");
     }
-    const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), iv);
-    decipher.setAAD(credentialContext(companyId, employeeId));
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAAD(context(companyId, employeeId));
     decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
   } catch {
-    throw new Error("QR credential could not be decrypted");
+    throw new Error("QR credential could not be decrypted.");
   }
+}
+
+// Compatibility wrappers for the employee self-service flow. Both wrappers
+// use the same canonical key parser, authenticated format, and tenant context.
+export function encryptQrToken(token: string, companyId: string, employeeId: string): string {
+  return encryptEmployeeQrToken(token, parseEmployeeQrEncryptionKey(process.env.QR_CREDENTIAL_ENCRYPTION_KEY), companyId, employeeId);
+}
+
+export function decryptQrToken(envelope: string, companyId: string, employeeId: string): string {
+  return decryptEmployeeQrToken(envelope, parseEmployeeQrEncryptionKey(process.env.QR_CREDENTIAL_ENCRYPTION_KEY), companyId, employeeId);
 }

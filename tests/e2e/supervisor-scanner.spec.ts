@@ -7,7 +7,7 @@ type CameraTestWindow = Window & {
   __qr006ReleaseRevokedCamera?: () => void;
 };
 
-test("dispositivo local se solicita, aprueba y revoca sin registrar asistencia", async ({ page, browser, qr }) => {
+test("sucursal asignada habilita automáticamente el navegador y conserva la revocación sin registrar asistencia", async ({ page, browser, qr }) => {
   const scanRequests: string[] = [];
   await page.addInitScript(() => {
     const testWindow = window as CameraTestWindow;
@@ -48,10 +48,10 @@ test("dispositivo local se solicita, aprueba y revoca sin registrar asistencia",
   });
   await qr.signIn(page, qr.fixture("SUPERVISOR_EMAIL"), qr.fixture("SUPERVISOR_PASSWORD"));
   await expect(page.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
-  const deviceLabel = `QR005 fake camera ${Date.now()}`;
-  await page.getByLabel("Nombre del dispositivo").fill(deviceLabel);
-  await page.getByRole("button", { name: "Solicitar autorización" }).click();
-  await expect(page.getByRole("status")).toContainText("Solicitud enviada");
+  await expect(page.getByText("Dispositivo autorizado")).toBeVisible();
+  await expect(page.getByText("Dispositivo sin autorización")).toHaveCount(0);
+  await expect(page.getByText("Solicitud enviada")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as CameraTestWindow).__qr006CameraCalls)).toBe(0);
 
   const adminContext = await browser.newContext();
   await qr.guardBrowserOrigins(adminContext);
@@ -60,21 +60,20 @@ test("dispositivo local se solicita, aprueba y revoca sin registrar asistencia",
     await qr.signIn(adminPage, qr.fixture("ADMIN_EMAIL"), qr.fixture("ADMIN_PASSWORD"));
     await expect(adminPage).toHaveURL(/\/admin(?:\?|$)/);
     const companyId = qr.fixture("COMPANY_A_ID");
-    const approval = await adminPage.evaluate(async ({ companyId: selectedCompanyId, label }) => {
+    const autoDevice = await adminPage.evaluate(async ({ companyId: selectedCompanyId, membershipId }) => {
       const listResponse = await fetch(`/api/supervisor-devices?companyId=${selectedCompanyId}`, { cache: "no-store" });
       const listed = await listResponse.json() as { requests?: { id: string; label: string; status: string }[] };
-      const pending = (listed.requests ?? []).find((item) => item.label === label && item.status === "pending");
-      if (!listResponse.ok || !pending) return { listStatus: listResponse.status, reviewStatus: null };
-      const reviewResponse = await fetch(`/api/supervisor-devices?companyId=${selectedCompanyId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requestId: pending.id, approve: true }),
-      });
-      const reviewed = await reviewResponse.json();
-      return { listStatus: listResponse.status, reviewStatus: reviewResponse.status, request: reviewed.request };
-    }, { companyId, label: deviceLabel });
-    expect(approval).toMatchObject({ listStatus: 200, reviewStatus: 200 });
-    expect(approval.request.status).toBe("approved");
+      const body = listed as { devices?: { id: string; membershipId: string; branchId: string; active: boolean; label: string }[]; requests?: { membershipId: string; status: string }[] };
+      return {
+        status: listResponse.status,
+        device: (body.devices ?? []).find((item) => item.membershipId === membershipId && item.active) ?? null,
+        pending: (body.requests ?? []).some((item) => item.membershipId === membershipId && item.status === "pending"),
+      };
+    }, { companyId, membershipId: qr.fixture("SUPERVISOR_MEMBERSHIP_ID") });
+    expect(autoDevice.status).toBe(200);
+    expect(autoDevice.device).toMatchObject({ label: "Navegador del supervisor", branchId: qr.fixture("BRANCH_A_ID"), active: true });
+    expect(autoDevice.pending).toBe(false);
+    const deviceId = autoDevice.device!.id;
 
     await page.reload();
     await expect(page.getByText("Dispositivo autorizado")).toBeVisible({ timeout: 20_000 });
@@ -111,75 +110,62 @@ test("dispositivo local se solicita, aprueba y revoca sin registrar asistencia",
     await expect(page.getByRole("button", { name: "Abriendo cámara…" })).toBeDisabled();
     await expect.poll(() => page.evaluate(() => (window as CameraTestWindow).__qr006CameraCalls)).toBe(7);
 
-    const revocation = await adminPage.evaluate(async ({ companyId: selectedCompanyId, label }) => {
+    const revocation = await adminPage.evaluate(async ({ companyId: selectedCompanyId, deviceId: selectedDeviceId }) => {
       const listResponse = await fetch(`/api/supervisor-devices?companyId=${selectedCompanyId}`, { cache: "no-store" });
-      const listed = await listResponse.json() as { devices?: { id: string; label: string; active: boolean }[] };
-      const device = (listed.devices ?? []).find((item) => item.label === label && item.active);
+      const listed = await listResponse.json() as { devices?: { id: string; active: boolean }[] };
+      const device = (listed.devices ?? []).find((item) => item.id === selectedDeviceId && item.active);
       if (!listResponse.ok || !device) return { listStatus: listResponse.status, revokeStatus: null };
       const revokeResponse = await fetch(`/api/supervisor-devices/${device.id}?companyId=${selectedCompanyId}`, { method: "DELETE" });
       return { listStatus: listResponse.status, revokeStatus: revokeResponse.status };
-    }, { companyId, label: deviceLabel });
+    }, { companyId, deviceId });
     expect(revocation).toEqual({ listStatus: 200, revokeStatus: 200 });
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await expect(page.getByText("Dispositivo sin autorización")).toBeVisible();
+    await expect(page.locator('div[role="alert"]').filter({ hasText: "El acceso del dispositivo o de la membresía fue revocado" })).toBeVisible();
     await page.evaluate(() => (window as CameraTestWindow).__qr006ReleaseRevokedCamera?.());
     await expect.poll(() => page.evaluate(() => (window as CameraTestWindow).__qr006Tracks?.length)).toBeGreaterThanOrEqual(3);
     await expect.poll(() => page.evaluate(() => (window as CameraTestWindow).__qr006Tracks?.every((track) => track.readyState === "ended"))).toBe(true);
 
-    const membershipId = qr.fixture("SUPERVISOR_MEMBERSHIP_ID");
-    const revokeMembership = await adminPage.evaluate(async ({ companyId: selectedCompanyId, membershipId: targetMembershipId }) => {
-      const response = await fetch(`/api/admin/access?companyId=${selectedCompanyId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "deactivate", membershipId: targetMembershipId }),
-      });
+    const membershipCheck = await page.evaluate(async () => {
+      const response = await fetch("/api/supervisor/scanner/context", { method: "POST", cache: "no-store" });
       return response.status;
-    }, { companyId, membershipId });
-    expect(revokeMembership).toBe(200);
-    await page.goto("/scanner");
-    await expect(page).toHaveURL(/\/login\?error=no-company/);
+    });
+    expect(membershipCheck).toBe(403);
     expect(scanRequests).toHaveLength(0);
   } finally {
     await adminContext.close();
   }
 });
 
-test("una solicitud de dispositivo rechazada se explica y permite corregirla", async ({ page, browser, qr }) => {
-  await qr.signIn(page, qr.fixture("NETWORK_SUPERVISOR_EMAIL"), qr.fixture("NETWORK_SUPERVISOR_PASSWORD"));
-  await expect(page.getByText("Dispositivo sin autorización")).toBeVisible();
-  const label = `QR006 rejected device ${Date.now()}`;
-  await page.getByLabel("Nombre del dispositivo").fill(label);
-  await page.getByRole("button", { name: "Solicitar autorización" }).click();
-  await expect(page.getByRole("status")).toContainText("Solicitud enviada");
-
-  const adminContext = await browser.newContext();
-  await qr.guardBrowserOrigins(adminContext);
-  const adminPage = await adminContext.newPage();
-  try {
-    await qr.signIn(adminPage, qr.fixture("ADMIN_EMAIL"), qr.fixture("ADMIN_PASSWORD"));
-    await expect(adminPage).toHaveURL(/\/admin(?:\?|$)/);
-    const result = await adminPage.evaluate(async ({ companyId, deviceLabel }) => {
-      const response = await fetch(`/api/supervisor-devices?companyId=${companyId}`, { cache: "no-store" });
-      const body = await response.json() as { requests?: { id: string; label: string; status: string }[] };
-      const request = body.requests?.find((item) => item.label === deviceLabel && item.status === "pending");
-      if (!response.ok || !request) return { listStatus: response.status, reviewStatus: null };
-      const reviewed = await fetch(`/api/supervisor-devices?companyId=${companyId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requestId: request.id, approve: false }),
-      });
-      return { listStatus: response.status, reviewStatus: reviewed.status };
-    }, { companyId: qr.fixture("COMPANY_A_ID"), deviceLabel: label });
-    expect(result).toEqual({ listStatus: 200, reviewStatus: 200 });
-    await page.reload();
-    await expect(page.getByRole("status")).toContainText("La solicitud anterior fue rechazada.");
-    await expect(page.getByRole("button", { name: "Solicitar autorización" })).toBeVisible();
-  } finally {
-    await adminContext.close();
-  }
+test("supervisor sin sucursal no habilita navegador ni puede llamar al escaneo", async ({ page, qr }) => {
+  const scanRequests: number[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/attendance/scan") scanRequests.push(1);
+  });
+  await qr.signIn(page, qr.fixture("NO_BRANCH_SUPERVISOR_EMAIL"), qr.fixture("NO_BRANCH_SUPERVISOR_PASSWORD"));
+  await expect(page.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
+  await expect(page.getByText("Sin sucursal asignada.")).toBeVisible();
+  const context = await page.evaluate(async () => {
+    const response = await fetch("/api/supervisor/scanner/context", { method: "POST", cache: "no-store" });
+    const body = await response.json();
+    return { status: response.status, context: body.contexts?.[0] ?? null, cookie: document.cookie };
+  });
+  expect(context.status).toBe(200);
+  expect(context.context).toMatchObject({ authorized: false, branches: [] });
+  expect(context.cookie).not.toContain("qr_device_");
+  await expect(page.getByText("Dispositivo sin autorización")).toHaveCount(0);
+  await expect(page.getByText("Solicitud enviada")).toHaveCount(0);
+  const deniedScanStatus = await page.evaluate(async (companyId) => {
+    const response = await fetch("/api/attendance/scan", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "preview", companyId, qrToken: "x".repeat(40), pin: "123456" }),
+    });
+    return response.status;
+  }, qr.fixture("COMPANY_A_ID"));
+  expect(deniedScanStatus).toBe(403);
+  expect(scanRequests).toHaveLength(1);
 });
 
-test("cambiar de empresa desmonta el escáner y libera la cámara", async ({ page, browser, qr }) => {
+test("cambiar de empresa auto-habilita solo el nuevo contexto y libera la cámara", async ({ page, qr }) => {
   await page.addInitScript(() => {
     const testWindow = window as CameraTestWindow;
     const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
@@ -197,46 +183,20 @@ test("cambiar de empresa desmonta el escáner y libera la cámara", async ({ pag
   await qr.signIn(page, qr.fixture("MULTI_SUPERVISOR_EMAIL"), qr.fixture("MULTI_SUPERVISOR_PASSWORD"));
   await expect(page).toHaveURL(/\/seleccionar-empresa(?:\?|$)/);
   await page.getByRole("button", { name: new RegExp(`${qr.fixture("COMPANY_A_NAME")}.*Continuar`) }).click();
-  await expect(page.getByText("Dispositivo sin autorización")).toBeVisible();
-  const deviceLabel = `QR006 company switch ${Date.now()}`;
-  await page.getByLabel("Nombre del dispositivo").fill(deviceLabel);
-  await page.getByRole("button", { name: "Solicitar autorización" }).click();
-  await expect(page.getByRole("status")).toContainText("Solicitud enviada");
-
-  const adminContext = await browser.newContext();
-  await qr.guardBrowserOrigins(adminContext);
-  const adminPage = await adminContext.newPage();
-  try {
-    await qr.signIn(adminPage, qr.fixture("ADMIN_EMAIL"), qr.fixture("ADMIN_PASSWORD"));
-    await expect(adminPage).toHaveURL(/\/admin(?:\?|$)/);
-    const approval = await adminPage.evaluate(async ({ companyId, label }) => {
-      const list = await fetch(`/api/supervisor-devices?companyId=${companyId}`, { cache: "no-store" });
-      const body = await list.json() as { requests?: { id: string; label: string; status: string }[] };
-      const request = body.requests?.find((item) => item.label === label && item.status === "pending");
-      if (!list.ok || !request) return { listStatus: list.status, reviewStatus: null };
-      const review = await fetch(`/api/supervisor-devices?companyId=${companyId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requestId: request.id, approve: true }),
-      });
-      return { listStatus: list.status, reviewStatus: review.status };
-    }, { companyId: qr.fixture("COMPANY_A_ID"), label: deviceLabel });
-    expect(approval).toEqual({ listStatus: 200, reviewStatus: 200 });
-
-    await page.reload();
-    await expect(page.getByText("Dispositivo autorizado")).toBeVisible();
-    await page.getByRole("button", { name: "Abrir cámara" }).click();
-    await expect(page.getByRole("button", { name: "Cerrar cámara" })).toBeVisible();
-    await page.getByRole("link", { name: "Cambiar empresa o rol" }).click();
-    await expect(page.getByRole("heading", { name: "Elige empresa y rol" })).toBeVisible();
-    await page.getByRole("button", { name: new RegExp(`${qr.fixture("COMPANY_B_NAME")}.*Continuar`) }).click();
-    await expect(page).toHaveURL(/\/scanner(?:\?|$)/);
-    await expect(page.getByText("Dispositivo sin autorización")).toBeVisible();
-    await expect.poll(() => page.evaluate(() => (window as CameraTestWindow).__qr006Tracks?.every((track) => track.readyState === "ended"))).toBe(true);
-    expect(scanRequests).toHaveLength(0);
-  } finally {
-    await adminContext.close();
-  }
+  await expect(page.getByText("Dispositivo autorizado")).toBeVisible();
+  await expect(page.getByText("Dispositivo sin autorización")).toHaveCount(0);
+  await expect(page.getByText("Solicitud enviada")).toHaveCount(0);
+  await page.getByRole("button", { name: "Abrir cámara" }).click();
+  await expect(page.getByRole("button", { name: "Cerrar cámara" })).toBeVisible();
+  await page.getByRole("link", { name: "Cambiar empresa o rol" }).click();
+  await expect(page.getByRole("heading", { name: "Elige empresa y rol" })).toBeVisible();
+  await page.getByRole("button", { name: new RegExp(`${qr.fixture("COMPANY_B_NAME")}.*Continuar`) }).click();
+  await expect(page).toHaveURL(/\/scanner(?:\?|$)/);
+  await expect(page.getByText("Dispositivo autorizado")).toBeVisible();
+  await expect(page.getByText("Dispositivo sin autorización")).toHaveCount(0);
+  await expect(page.getByText(qr.fixture("COMPANY_B_NAME"), { exact: false })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as CameraTestWindow).__qr006Tracks?.every((track) => track.readyState === "ended"))).toBe(true);
+  expect(scanRequests).toHaveLength(0);
 });
 
 test("supervisor sin sucursal conserva la denegación de contexto", async ({ page, qr }) => {
@@ -245,12 +205,105 @@ test("supervisor sin sucursal conserva la denegación de contexto", async ({ pag
   await expect(page.getByText("Sin sucursal asignada.")).toBeVisible();
 });
 
+test("quitar la sucursal revoca el dispositivo y bloquea el endpoint de escaneo", async ({ page, browser, qr }) => {
+  const scanRequests: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/attendance/scan") scanRequests.push(request.url());
+  });
+  await qr.signIn(page, qr.fixture("SUPERVISOR_EMAIL"), qr.fixture("SUPERVISOR_PASSWORD"));
+  await expect(page.getByText("Dispositivo autorizado")).toBeVisible();
+  const context = await browser.newContext();
+  await qr.guardBrowserOrigins(context);
+  const adminPage = await context.newPage();
+  try {
+    await qr.signIn(adminPage, qr.fixture("ADMIN_EMAIL"), qr.fixture("ADMIN_PASSWORD"));
+    await expect(adminPage).toHaveURL(/\/admin(?:\?|$)/);
+    const result = await adminPage.evaluate(async ({ companyId, membershipId, branchId }) => {
+      const response = await fetch(`/api/supervisors?companyId=${companyId}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ membershipId, branchId, assigned: false }),
+      });
+      return response.status;
+    }, {
+      companyId: qr.fixture("COMPANY_A_ID"),
+      membershipId: qr.fixture("SUPERVISOR_MEMBERSHIP_ID"),
+      branchId: qr.fixture("BRANCH_A_ID"),
+    });
+    expect(result).toBe(200);
+    const refreshed = await page.evaluate(async () => {
+      const response = await fetch("/api/supervisor/scanner/context", { method: "POST", cache: "no-store" });
+      const body = await response.json();
+      return { status: response.status, context: body.contexts?.[0] ?? null };
+    });
+    expect(refreshed).toMatchObject({ status: 200, context: { authorized: false, branches: [] } });
+    await page.reload();
+    await expect(page.getByText("Sin sucursal asignada.")).toBeVisible();
+    const deniedScan = await page.evaluate(async (companyId) => {
+      const response = await fetch("/api/attendance/scan", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "preview", companyId, qrToken: "x".repeat(40), pin: "123456" }),
+      });
+      return response.status;
+    }, qr.fixture("COMPANY_A_ID"));
+    expect(deniedScan).toBe(403);
+    expect(scanRequests).toHaveLength(1);
+  } finally {
+    const restoredBranch = await adminPage.evaluate(async ({ companyId, membershipId, branchId }) => {
+      const response = await fetch(`/api/supervisors?companyId=${companyId}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ membershipId, branchId, assigned: true }),
+      });
+      return response.status;
+    }, {
+      companyId: qr.fixture("COMPANY_A_ID"),
+      membershipId: qr.fixture("SUPERVISOR_MEMBERSHIP_ID"),
+      branchId: qr.fixture("BRANCH_A_ID"),
+    }).catch(() => null);
+    expect(restoredBranch).toBe(200);
+    await context.close();
+  }
+});
+
+test("desactivar la membresía de supervisor bloquea el contexto y el escáner", async ({ page, browser, qr }) => {
+  const scanRequests: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/attendance/scan") scanRequests.push(request.url());
+  });
+  await qr.signIn(page, qr.fixture("SUPERVISOR_EMAIL"), qr.fixture("SUPERVISOR_PASSWORD"));
+  await expect(page.getByText("Dispositivo autorizado")).toBeVisible();
+  const context = await browser.newContext();
+  await qr.guardBrowserOrigins(context);
+  const adminPage = await context.newPage();
+  try {
+    await qr.signIn(adminPage, qr.fixture("ADMIN_EMAIL"), qr.fixture("ADMIN_PASSWORD"));
+    await expect(adminPage).toHaveURL(/\/admin(?:\?|$)/);
+    const status = await adminPage.evaluate(async ({ companyId, membershipId }) => {
+      const response = await fetch(`/api/admin/access?companyId=${companyId}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "deactivate", membershipId }),
+      });
+      return response.status;
+    }, { companyId: qr.fixture("COMPANY_A_ID"), membershipId: qr.fixture("SUPERVISOR_MEMBERSHIP_ID") });
+    expect(status).toBe(200);
+    const denied = await page.evaluate(async () => {
+      const response = await fetch("/api/supervisor/scanner/context", { method: "POST", cache: "no-store" });
+      return response.status;
+    });
+    expect(denied).toBe(403);
+    await page.goto("/scanner");
+    await expect(page).toHaveURL(/\/login\?error=no-company/);
+    expect(scanRequests).toHaveLength(0);
+  } finally {
+    await context.close();
+  }
+});
+
 test("supervisor con membresías en dos empresas solo habilita el contexto de cada empresa", async ({ page, qr }) => {
   await qr.signIn(page, qr.fixture("MULTI_SUPERVISOR_EMAIL"), qr.fixture("MULTI_SUPERVISOR_PASSWORD"));
   await expect(page).toHaveURL(/\/seleccionar-empresa(?:\?|$)/);
   await page.getByRole("button", { name: new RegExp(`${qr.fixture("COMPANY_B_NAME")}.*Continuar`) }).click();
   await expect(page).toHaveURL(/\/scanner(?:\?|$)/);
-  await expect(page.getByText("Dispositivo sin autorización")).toBeVisible();
+  await expect(page.getByText("Dispositivo autorizado")).toBeVisible();
   await expect(page.getByText(qr.fixture("COMPANY_B_NAME"), { exact: false })).toBeVisible();
   await expect(page.getByText(qr.fixture("COMPANY_A_NAME"), { exact: false })).toHaveCount(0);
   const denied = await page.evaluate(async (companyId) => {
@@ -273,42 +326,88 @@ test("fallo transitorio de red en contexto muestra error y se recupera sin inici
   await qr.signIn(page, qr.fixture("NETWORK_SUPERVISOR_EMAIL"), qr.fixture("NETWORK_SUPERVISOR_PASSWORD"));
   await expect(page.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
   await expect(page.locator('div[role="alert"]').filter({ hasText: "No fue posible validar el dispositivo" })).toBeVisible();
-  await expect(page.getByText("Dispositivo sin autorización")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText("Dispositivo autorizado")).toBeVisible({ timeout: 20_000 });
   expect(contextRequests).toBeGreaterThanOrEqual(2);
   expect(attendanceRequests).toHaveLength(0);
 });
 
-test("contexto HTTP diferencia sesión expirada y error temporal sin exponer detalles", async ({ page, qr }) => {
+test("fallo permanente de esquema no se presenta como temporal ni se reintenta al enfocar", async ({ page, qr }) => {
   let contextRequests = 0;
-  const failures = [
-    { status: 401, code: "auth_required", message: "Tu sesión expiró" },
-    { status: 403, code: "supervisor_forbidden", message: "El acceso del dispositivo o de la membresía fue revocado" },
-    { status: 409, code: "company_selection_required", message: "Selecciona una empresa" },
-    { status: 429, code: "rate_limited", message: "Hay demasiadas comprobaciones" },
-    { status: 500, code: "scanner_context_failed", message: "temporalmente indisponible" },
-    { status: 503, code: "scanner_context_failed", message: "temporalmente indisponible" },
-  ];
   await page.route("**/api/supervisor/scanner/context", async (route) => {
     contextRequests += 1;
-    const failure = failures[contextRequests - 1];
-    if (!failure) return route.continue();
+    if (contextRequests === 1) {
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "scanner_schema_not_ready", message: "internal server detail" } }),
+      });
+    }
+    await route.continue();
+  });
+  await qr.signIn(page, qr.fixture("NETWORK_SUPERVISOR_EMAIL"), qr.fixture("NETWORK_SUPERVISOR_PASSWORD"));
+  await expect(page.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
+  await expect(page.locator('div[role="alert"]').filter({ hasText: "requiere una actualización de base de datos" })).toBeVisible();
+  await expect(page.getByText("temporalmente indisponible")).toHaveCount(0);
+  await expect(page.getByText("internal server detail")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Reintentar comprobación del escáner" })).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForTimeout(100);
+  expect(contextRequests).toBe(1);
+  await page.getByRole("button", { name: "Reintentar comprobación del escáner" }).click();
+  await expect(page.getByText("Dispositivo autorizado")).toBeVisible({ timeout: 20_000 });
+  expect(contextRequests).toBe(2);
+});
+
+test("fallos transitorios del contexto se limitan a tres reintentos automáticos y permiten reintento manual", async ({ page, qr }) => {
+  let contextRequests = 0;
+  await page.route("**/api/supervisor/scanner/context", async (route) => {
+    contextRequests += 1;
+    if (contextRequests <= 3) {
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "scanner_context_failed", message: "internal server detail" } }),
+      });
+    }
+    await route.continue();
+  });
+  await qr.signIn(page, qr.fixture("NETWORK_SUPERVISOR_EMAIL"), qr.fixture("NETWORK_SUPERVISOR_PASSWORD"));
+  await expect(page.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
+  await expect(page.locator('div[role="alert"]').filter({ hasText: "se volverá a comprobar hasta tres veces" })).toBeVisible();
+  for (const expected of [2, 3]) {
+    const completedRequest = page.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/supervisor/scanner/context" && response.status() === 503);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await completedRequest;
+    expect(contextRequests).toBe(expected);
+  }
+  await expect(page.locator('div[role="alert"]').filter({ hasText: "tras tres intentos automáticos" })).toBeVisible();
+  await expect(page.getByText("internal server detail")).toHaveCount(0);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForTimeout(100);
+  expect(contextRequests).toBe(3);
+  await page.getByRole("button", { name: "Reintentar comprobación del escáner" }).click();
+  await expect(page.getByText("Dispositivo autorizado")).toBeVisible({ timeout: 20_000 });
+  expect(contextRequests).toBe(4);
+});
+
+test("sesión expirada detiene los reintentos automáticos y no expone el error interno", async ({ page, qr }) => {
+  let contextRequests = 0;
+  await page.route("**/api/supervisor/scanner/context", async (route) => {
+    contextRequests += 1;
     await route.fulfill({
-      status: failure.status,
+      status: 401,
       contentType: "application/json",
-      body: JSON.stringify({ error: { code: failure.code, message: "internal server detail" } }),
+      body: JSON.stringify({ error: { code: "auth_required", message: "internal server detail" } }),
     });
   });
   await qr.signIn(page, qr.fixture("NETWORK_SUPERVISOR_EMAIL"), qr.fixture("NETWORK_SUPERVISOR_PASSWORD"));
   await expect(page.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
-  for (const [index, failure] of failures.entries()) {
-    if (index > 0) await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await expect(page.locator('div[role="alert"]').filter({ hasText: failure.message })).toBeVisible();
-    await expect(page.getByText("internal server detail")).toHaveCount(0);
-  }
+  await expect(page.locator('div[role="alert"]').filter({ hasText: "Tu sesión expiró" })).toBeVisible();
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await expect(page.getByText("Dispositivo sin autorización")).toBeVisible({ timeout: 20_000 });
-  await expect(page.locator('div[role="alert"]').filter({ hasText: /temporalmente indisponible|Tu sesión expiró|comprobaciones|selecciona una empresa|revocado/ })).toHaveCount(0);
-  expect(contextRequests).toBe(failures.length + 1);
+  await page.waitForTimeout(100);
+  expect(contextRequests).toBe(1);
+  await expect(page.getByText("internal server detail")).toHaveCount(0);
 });
 
 test("vista del escáner no desborda horizontalmente en tamaños móviles y tablet", async ({ page, qr }) => {
@@ -344,7 +443,11 @@ test("una respuesta antigua del contexto no reemplaza la comprobación vigente",
   await qr.signIn(page, qr.fixture("NETWORK_SUPERVISOR_EMAIL"), qr.fixture("NETWORK_SUPERVISOR_PASSWORD"));
   await expect(page.getByRole("heading", { name: "Escáner del supervisor" })).toBeVisible();
   await firstStarted;
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  const currentResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/supervisor/scanner/context" && response.status() === 200);
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await currentResponse;
   await expect(page.getByText(qr.fixture("COMPANY_A_NAME"), { exact: false })).toBeVisible({ timeout: 20_000 });
   releaseFirstResponse();
   await expect(page.getByText("Contexto obsoleto de prueba")).toHaveCount(0);

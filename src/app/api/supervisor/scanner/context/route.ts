@@ -1,6 +1,8 @@
+import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { isAllowedRequestOrigin } from "@/lib/http/request-origin";
 import { createClient } from "@/lib/supabase/server";
+import { scannerRpcErrorResponse } from "@/lib/scanner/scanner-rpc-error";
 
 export const runtime = "nodejs";
 
@@ -8,12 +10,17 @@ function contextError(code: string, message: string, status: number) {
   return Response.json({ error: { code, message } }, { status, headers: { "Cache-Control": "no-store, private" } });
 }
 
+function scannerRpcFailure(error: unknown, fallbackMessage: string) {
+  const failure = scannerRpcErrorResponse(error, fallbackMessage);
+  return contextError(failure.code, failure.message, failure.status);
+}
+
 function cookieBase(request: Request) {
   const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
   return { httpOnly: true, secure: process.env.NODE_ENV === "production" || forwardedProto === "https", sameSite: "lax" as const, path: "/api", maxAge: 60 * 60 * 24 * 365 };
 }
 
-async function scannerContext(request: Request, redeemChallenge: boolean) {
+async function scannerContext(request: Request, enableBrowser: boolean) {
   const supabase = await createClient();
   const { data: auth, error: authError } = await supabase.auth.getUser();
   if (authError || !auth.user) return contextError("auth_required", "Inicia sesión para continuar.", 401);
@@ -38,45 +45,52 @@ async function scannerContext(request: Request, redeemChallenge: boolean) {
 
   const contexts: Record<string, unknown>[] = [];
   for (const companyId of companyIds) {
-    const challengeName = `qr_enroll_${companyId}`;
-    const challenge = store.get(challengeName)?.value;
+    const { data: companySettings, error: companySettingsError } = await supabase.from("companies")
+      .select("require_employee_pin").eq("id", companyId).maybeSingle();
+    if (companySettingsError) return contextError("attendance_settings_unavailable", "No fue posible cargar la configuración de asistencia.", 503);
+    if (!companySettings) return contextError("supervisor_forbidden", "No tienes acceso a esta empresa.", 403);
     const deviceCookie = `qr_device_${companyId}`;
     let deviceToken = store.get(deviceCookie)?.value ?? null;
-    let requestStatus = challenge ? "pending" : "unrequested";
-    if (challenge && redeemChallenge) {
-      const { data: redeem, error: redeemError } = await supabase.rpc("redeem_supervisor_device", { p_company_id: companyId, p_challenge: challenge });
-      const redemption = redeem as { status?: string } | null;
-      if (!redeemError && redemption?.status === "authorized") {
-        deviceToken = challenge;
-        store.set(deviceCookie, deviceToken, cookieBase(request));
-        store.delete(challengeName);
-        requestStatus = "authorized";
-      } else if (!redeemError && redemption?.status && redemption.status !== "pending") {
-        requestStatus = redemption.status;
-        if (redemption.status !== "approved") store.delete(challengeName);
-      }
-    }
-    const { data, error: scannerError } = await supabase.rpc("get_supervisor_scanner_context", {
+    const readContext = async () => await supabase.rpc("get_supervisor_scanner_context", {
       p_company_id: companyId,
       p_device_token: deviceToken,
     });
+    let { data, error: scannerError } = await readContext();
     if (scannerError) {
-      const forbidden = scannerError.code === "42501";
-      return contextError(
-        forbidden ? "supervisor_forbidden" : "scanner_context_failed",
-        forbidden
-          ? "Tu cuenta no tiene permisos de escaneo activos para esta empresa. Contacta al administrador."
-          : "No fue posible cargar la sucursal del supervisor. Intenta de nuevo.",
-        forbidden ? 403 : 503,
-      );
+      return scannerRpcFailure(scannerError, "No fue posible cargar la sucursal del supervisor. Intenta de nuevo.");
     }
-    const context = data as Record<string, unknown>;
-    const { data: attendancePolicy, error: policyError } = await supabase.from("companies")
-      .select("require_employee_pin").eq("id", companyId).maybeSingle();
-    if (policyError || !attendancePolicy) {
-      return contextError("attendance_policy_unavailable", "No fue posible cargar la política de asistencia. Verifica que la migración de configuración de PIN esté aplicada.", 503);
+    let context = data as Record<string, unknown>;
+    const branches = Array.isArray(context.branches) ? context.branches as { id?: unknown }[] : [];
+
+    // POST is called by the authenticated scanner page after the server has
+    // selected this membership. An active branch assignment is the approval:
+    // mint a per-browser secret and bind its hash to the first assigned active
+    // branch. Never create a device for a supervisor with no active branch.
+    if (enableBrowser && !context.authorized && branches.length > 0) {
+      const token = deviceToken ?? randomBytes(32).toString("base64url");
+      const branchId = typeof branches[0]?.id === "string" ? branches[0].id : null;
+      if (!branchId) return contextError("scanner_context_failed", "No fue posible validar la sucursal asignada.", 503);
+      const { error: enrollmentError } = await supabase.rpc("ensure_supervisor_scanner_device", {
+        p_company_id: companyId,
+        p_branch_id: branchId,
+        p_label: "Navegador del supervisor",
+        p_device_token: token,
+      });
+      if (enrollmentError) {
+        const failure = scannerRpcErrorResponse(
+          enrollmentError,
+          "No fue posible habilitar este navegador. Intenta de nuevo.",
+          "El acceso del navegador, la membresía o la sucursal ya no está autorizado.",
+        );
+        return contextError(failure.code, failure.message, failure.status);
+      }
+      if (!deviceToken) store.set(deviceCookie, token, cookieBase(request));
+      deviceToken = token;
+      ({ data, error: scannerError } = await readContext());
+      if (scannerError) return scannerRpcFailure(scannerError, "No fue posible cargar la sucursal del supervisor.");
+      context = data as Record<string, unknown>;
     }
-    contexts.push({ ...context, requireEmployeePin: attendancePolicy.require_employee_pin, requestStatus });
+    contexts.push({ ...context, requireEmployeePin: companySettings.require_employee_pin === true, requestStatus: context.authorized ? "authorized" : "unrequested" });
   }
   return Response.json({ contexts }, { headers: { "Cache-Control": "no-store, private" } });
 }

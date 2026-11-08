@@ -147,41 +147,41 @@ test("invitación de supervisor, sucursal y dispositivo completan su ciclo sin r
     await branchCheckbox.click();
     const assignmentResponse = await branchAssignmentResponse;
     expect(assignmentResponse.status()).toBe(200);
-    await expect(adminPage.getByRole("status")).toContainText("Los cambios se guardaron correctamente.");
     await expect(branchCheckbox).toBeChecked();
     await adminPage.reload();
     const assignedRow = adminPage.getByText(email, { exact: true }).locator("xpath=..");
     await expect(assignedRow.getByRole("checkbox", { name: branch.name })).toBeChecked();
 
     const scannerContextAfterAssignment = await inviteePage.evaluate(async (companyId) => {
-      const response = await fetch("/api/supervisor/scanner/context?companyId=" + companyId, { cache: "no-store" });
+      const response = await fetch("/api/supervisor/scanner/context?companyId=" + companyId, { method: "POST", cache: "no-store" });
       const body = await response.json();
       return { status: response.status, context: body.contexts?.[0] ?? null };
     }, qr.fixture("COMPANY_A_ID"));
     expect(scannerContextAfterAssignment.status).toBe(200);
     expect(scannerContextAfterAssignment.context).toMatchObject({
       companyId: qr.fixture("COMPANY_A_ID"),
-      authorized: false,
-      branchId: null,
-      branchName: null,
+      authorized: true,
+      branchId: branch.id,
+      branchName: branch.name,
       branches: [{ id: branch.id, name: branch.name }],
     });
-
     await inviteePage.reload();
-    await expect(inviteePage.getByText("Dispositivo sin autorización")).toBeVisible();
-    await expect(inviteePage.getByLabel("Sucursal")).toHaveValue(branch.id);
-    const deviceLabel = "QR fase 7 synthetic supervisor device";
-    await inviteePage.getByLabel("Nombre del dispositivo").fill(deviceLabel);
-    await inviteePage.getByRole("button", { name: "Solicitar autorización" }).click();
-    await expect(inviteePage.getByRole("status")).toContainText("Solicitud enviada");
-    const requestState = await adminPage.evaluate(async ({ companyId, label }) => {
+    await expect(inviteePage.getByText("Dispositivo autorizado")).toBeVisible();
+    await expect(inviteePage.getByText("Dispositivo sin autorización")).toHaveCount(0);
+    await expect(inviteePage.getByText("Solicitud enviada")).toHaveCount(0);
+    const autoDeviceState = await adminPage.evaluate(async ({ companyId, membershipId, branchId }) => {
       const response = await fetch("/api/supervisor-devices?companyId=" + companyId, { cache: "no-store" });
       const body = await response.json();
-      const request = (body.requests ?? []).find((item: { label: string }) => item.label === label);
-      return { status: response.status, request: request ? { id: request.id, status: request.status } : null };
-    }, { companyId: qr.fixture("COMPANY_A_ID"), label: deviceLabel });
-    expect(requestState).toMatchObject({ status: 200, request: { status: "pending" } });
-    const requestId = requestState.request!.id;
+      const device = (body.devices ?? []).find((item: { membershipId: string; branchId: string; active: boolean }) =>
+        item.membershipId === membershipId && item.branchId === branchId && item.active);
+      const pendingRequest = (body.requests ?? []).find((item: { membershipId: string; status: string }) =>
+        item.membershipId === membershipId && item.status === "pending");
+      return { status: response.status, device: device ?? null, pendingRequest: pendingRequest ?? null };
+    }, { companyId, membershipId, branchId: branch.id });
+    expect(autoDeviceState.status).toBe(200);
+    expect(autoDeviceState.device).toMatchObject({ label: "Navegador del supervisor", active: true, branchId: branch.id });
+    expect(autoDeviceState.pendingRequest).toBeNull();
+    const deviceId = autoDeviceState.device.id;
 
     const adminBContext = await browser.newContext();
     await qr.guardBrowserOrigins(adminBContext);
@@ -190,64 +190,50 @@ test("invitación de supervisor, sucursal y dispositivo completan su ciclo sin r
     try {
       await qr.signIn(adminBPage, qr.fixture("ADMIN_B_EMAIL"), qr.fixture("ADMIN_B_PASSWORD"));
       await expect(adminBPage).toHaveURL(/\/admin(?:\?|$)/);
-      const crossCompanyReview = await adminBPage.evaluate(async ({ companyId, requestId }) => {
-        const response = await fetch("/api/supervisor-devices?companyId=" + companyId, {
-          method: "PATCH", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ requestId, approve: true }),
-        });
+      const crossCompanyRevoke = await adminBPage.evaluate(async ({ companyId, deviceId }) => {
+        const response = await fetch(`/api/supervisor-devices/${deviceId}?companyId=${companyId}`, { method: "DELETE" });
         return response.status;
-      }, { companyId: qr.fixture("COMPANY_B_ID"), requestId });
-      expect(crossCompanyReview).toBe(409);
+      }, { companyId: qr.fixture("COMPANY_B_ID"), deviceId });
+      expect(crossCompanyRevoke).toBe(409);
       const afterCrossCompanyReview = await adminContext.request.get(new URL(`/api/supervisor-devices?companyId=${companyId}`, qr.baseUrl).href);
       const afterCrossCompanyPayload = await afterCrossCompanyReview.json();
       expect(afterCrossCompanyReview.status()).toBe(200);
-      expect(afterCrossCompanyPayload.requests).toContainEqual(expect.objectContaining({ id: requestId, status: "pending" }));
-      expect(afterCrossCompanyPayload.devices).not.toContainEqual(expect.objectContaining({ label: deviceLabel, active: true }));
+      expect(afterCrossCompanyPayload.devices).toContainEqual(expect.objectContaining({ id: deviceId, label: "Navegador del supervisor", active: true }));
     } finally {
       await adminBContext.close();
     }
 
-    await adminPage.reload();
-    await expect(adminPage.getByText(deviceLabel, { exact: false })).toBeVisible();
-    await adminPage.getByRole("button", { name: "Aprobar" }).click();
-    await expect(adminPage.getByRole("status")).toContainText("Los cambios se guardaron correctamente.");
-    await inviteePage.reload();
-    await expect(inviteePage.getByText("Dispositivo autorizado")).toBeVisible();
-    const authorizedContext = await inviteePage.evaluate(async (companyId) => {
-      const response = await fetch("/api/supervisor/scanner/context?companyId=" + companyId, { cache: "no-store" });
+    await qr.signIn(otherSupervisorPage, qr.fixture("NETWORK_SUPERVISOR_EMAIL"), qr.fixture("NETWORK_SUPERVISOR_PASSWORD"));
+    await expect(otherSupervisorPage.getByText("Dispositivo autorizado")).toBeVisible();
+    const otherDeviceContext = await otherSupervisorPage.evaluate(async () => {
+      const response = await fetch("/api/supervisor/scanner/context", { method: "POST", cache: "no-store" });
       const body = await response.json();
       return { status: response.status, context: body.contexts?.[0] ?? null };
-    }, qr.fixture("COMPANY_A_ID"));
-    expect(authorizedContext.status).toBe(200);
-    expect(authorizedContext.context).toMatchObject({ companyId: qr.fixture("COMPANY_A_ID"), authorized: true, branchId: branch.id });
-    expect(authorizedContext.context.deviceId).toBeTruthy();
-
-    await qr.signIn(otherSupervisorPage, qr.fixture("NETWORK_SUPERVISOR_EMAIL"), qr.fixture("NETWORK_SUPERVISOR_PASSWORD"));
-    await expect(otherSupervisorPage.getByText("Dispositivo sin autorización")).toBeVisible();
+    });
+    expect(otherDeviceContext.status).toBe(200);
+    expect(otherDeviceContext.context.authorized).toBe(true);
+    expect(otherDeviceContext.context.deviceId).not.toBe(deviceId);
 
     await inviteePage.getByRole("button", { name: "Abrir cámara" }).click();
     await expect(inviteePage.getByRole("button", { name: "Cerrar cámara" })).toBeVisible();
-    adminPage.once("dialog", (dialog) => void dialog.accept());
-    const revokeResponsePromise = adminPage.waitForResponse((response) =>
-      new URL(response.url()).pathname.startsWith("/api/supervisor-devices/") && response.request().method() === "DELETE");
-    await adminPage.getByRole("button", { name: "Revocar " + deviceLabel }).click();
-    const revokeResponse = await revokeResponsePromise;
-    expect(revokeResponse.status()).toBe(200);
-    await expect(adminPage.getByRole("status")).toContainText("Los cambios se guardaron correctamente.");
+    const revokeStatus = await adminPage.evaluate(async ({ companyId, deviceId }) => {
+      const response = await fetch(`/api/supervisor-devices/${deviceId}?companyId=${companyId}`, { method: "DELETE" });
+      return response.status;
+    }, { companyId, deviceId });
+    expect(revokeStatus).toBe(200);
     const revokedDeviceState = await adminContext.request.get(new URL(`/api/supervisor-devices?companyId=${companyId}`, qr.baseUrl).href);
     const revokedDevicePayload = await revokedDeviceState.json();
     expect(revokedDeviceState.status()).toBe(200);
-    expect(revokedDevicePayload.devices).toContainEqual(expect.objectContaining({ label: deviceLabel, active: false }));
+    expect(revokedDevicePayload.devices).toContainEqual(expect.objectContaining({ id: deviceId, label: "Navegador del supervisor", active: false }));
     const contextAfterRevocation = await inviteePage.evaluate(async () => {
       const response = await fetch("/api/supervisor/scanner/context", { method: "POST", cache: "no-store" });
       const body = await response.json();
-      return { status: response.status, authorized: body.contexts?.[0]?.authorized ?? null };
+      return { status: response.status, code: body.error?.code ?? null };
     });
-    expect(contextAfterRevocation).toEqual({ status: 200, authorized: false });
+    expect(contextAfterRevocation).toEqual({ status: 403, code: "supervisor_forbidden" });
     await inviteePage.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await expect(inviteePage.getByText("Dispositivo sin autorización")).toBeVisible();
+    await expect(inviteePage.locator('div[role="alert"]').filter({ hasText: "El acceso del dispositivo o de la membresía fue revocado" })).toBeVisible();
     await expect.poll(() => inviteePage.evaluate(() => (window as Window & { __qr7Tracks?: MediaStreamTrack[] }).__qr7Tracks?.every((track) => track.readyState === "ended"))).toBe(true);
-    expect(contextAfterRevocation.authorized).toBe(false);
     expect(blockedEndpoints, `Se intentó llamar al endpoint bloqueado: ${blockedEndpoints.join(", ")}`).toEqual([]);
   } finally {
     await adminContext.close();

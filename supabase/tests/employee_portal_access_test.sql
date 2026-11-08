@@ -10,8 +10,9 @@ SELECT ok((SELECT prosecdef FROM pg_proc WHERE oid='public.get_own_employee_cred
 SELECT ok(has_function_privilege('authenticated','public.get_own_employee_credential_status(uuid,uuid)','EXECUTE'), 'authenticated can request own credential status');
 SELECT ok(NOT has_function_privilege('anon','public.get_own_employee_credential_status(uuid,uuid)','EXECUTE'), 'anonymous cannot request credential status');
 SELECT ok(position('employee_qr_tokens' in pg_get_functiondef('public.get_own_employee_credential_status(uuid,uuid)'::regprocedure)) > 0
-  AND position('token_hash' in pg_get_functiondef('public.get_own_employee_credential_status(uuid,uuid)'::regprocedure)) = 0,
-  'credential status function never selects or returns token hashes');
+  AND position('token_hash' in pg_get_functiondef('public.get_own_employee_credential_status(uuid,uuid)'::regprocedure)) = 0
+  AND position('encrypted_token' in pg_get_functiondef('public.get_own_employee_credential_status(uuid,uuid)'::regprocedure)) > 0,
+  'credential status function returns only encrypted QR material and never selects token hashes');
 SELECT ok((SELECT relrowsecurity FROM pg_class WHERE oid='public.schedule_assignments'::regclass), 'schedule assignments remain protected by RLS');
 SELECT ok(EXISTS (SELECT 1 FROM pg_policy WHERE polrelid='public.schedule_assignments'::regclass AND polname='employee_own_assignments_read' AND polcmd='r'), 'employee assignment policy is installed');
 SELECT ok(EXISTS (SELECT 1 FROM pg_policy WHERE polrelid='public.schedule_templates'::regclass AND polname='employee_own_templates_read' AND polcmd='r'), 'employee template policy is installed');

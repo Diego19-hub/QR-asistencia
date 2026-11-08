@@ -71,7 +71,6 @@ button:disabled {
   font-size: 0.875rem;
   line-height: 1.25rem;
 }
-
 @media (prefers-reduced-motion: reduce) {
   button {
     transition-duration: 0.01ms;

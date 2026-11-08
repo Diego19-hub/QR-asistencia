@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { readLoginCredentials } from "@/lib/access/login-credentials";
 import { selectInitialMembership, type MembershipRole } from "@/lib/access/user-management";
 import { clearActiveMembershipCookie, setActiveMembershipCookie } from "@/lib/access/active-membership-cookie";
+import { clearRememberSessionPreference, setRememberSessionPreference } from "@/lib/supabase/session-cookie-preference";
 import {
   accessReturnDestination,
   companySelectionPathForAccessDestination,
@@ -24,6 +25,9 @@ export async function signIn(formData: FormData) {
   let authStatus: number | undefined;
   let destination: string | null = null;
   try {
+    // This non-secret preference lets the SSR cookie adapter retain the same
+    // lifetime when Supabase refreshes the session on later requests.
+    await setRememberSessionPreference(formData.get("rememberSession") === "on");
     const supabase = await createClient();
     const { data, error } = await supabase.auth.signInWithPassword(credentials);
     signInError = error;
@@ -62,10 +66,12 @@ export async function signIn(formData: FormData) {
       }
     }
   } catch {
+    await clearRememberSessionPreference();
     redirect(loginError("service"));
   }
 
   if (signInError) {
+    await clearRememberSessionPreference();
     if (authStatus === 429 || (authStatus !== undefined && authStatus >= 500)) {
       redirect(loginError("service"));
     }
@@ -91,6 +97,7 @@ export async function signOut() {
   }
 
   await clearActiveMembershipCookie();
+  await clearRememberSessionPreference();
 
   redirect("/login");
 }
