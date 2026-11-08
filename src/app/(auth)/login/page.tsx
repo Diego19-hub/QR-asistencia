@@ -61,7 +61,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-4 py-12">
+    <main className="readable-interface flex min-h-screen items-center justify-center px-4 py-12">
       <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-xl shadow-slate-900/5 sm:p-10">
         <div className="mb-8">
           <div className="mb-6 flex size-12 items-center justify-center rounded-xl bg-blue-700 text-lg font-bold text-white">

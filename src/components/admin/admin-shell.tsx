@@ -109,7 +109,7 @@ export function AdminShell({
   );
 
   return <AdminContextProvider value={{ company, companies, setCompanyId }}>
-    <div className="min-h-screen bg-[#f5f7fb] text-slate-900">
+    <div className="readable-interface min-h-screen bg-[#f5f7fb] text-slate-900">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-[250px] lg:block">{sidebar}</aside>
       {mobileOpen ? <div className="fixed inset-0 z-40 lg:hidden"><button aria-label="Cerrar navegación" className="absolute inset-0 bg-slate-950/50" onClick={() => setMobileOpen(false)} /><aside id="admin-navigation-drawer" aria-label="Menú administrativo" className="relative h-full w-[min(280px,85vw)] shadow-2xl">{sidebar}</aside></div> : null}
       <div className="lg:pl-[250px]">

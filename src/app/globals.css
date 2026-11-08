@@ -20,3 +20,30 @@ button,
 input {
   font: inherit;
 }
+
+/* Improve small-text readability in admin, authentication and employee views. */
+.readable-interface .text-sm {
+  font-size: 1.0625rem;
+  line-height: 1.6rem;
+}
+
+.readable-interface .text-xs {
+  font-size: 1rem;
+  line-height: 1.5rem;
+}
+
+.readable-interface .text-\[13px\] {
+  font-size: 1rem;
+  line-height: 1.5rem;
+}
+
+.readable-interface .text-\[10px\],
+.readable-interface .text-\[11px\] {
+  font-size: 0.9375rem;
+  line-height: 1.375rem;
+}
+
+.readable-interface .text-\[9px\] {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}

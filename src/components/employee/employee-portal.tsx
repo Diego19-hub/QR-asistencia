@@ -93,7 +93,7 @@ export function EmployeePortal() {
     return summary;
   }, { detected: 0, approved: 0, pending: 0 }), [item]);
 
-  return <div className="min-h-screen bg-[#f4f7fc] pb-24 text-slate-900 md:pb-8">
+  return <div className="readable-interface min-h-screen bg-[#f4f7fc] pb-24 text-slate-900 md:pb-8">
     <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <div className="flex min-w-0 items-center gap-3"><div className="grid size-10 shrink-0 place-items-center rounded-xl bg-blue-700 text-white"><Clock3 size={20} /></div><div className="min-w-0"><p className="text-xs font-bold tracking-[.12em] text-slate-900">ASISTENCIA</p><p className="truncate text-[11px] text-slate-500">Portal del empleado{item ? ` · ${item.company.name}` : ""}</p></div></div>
