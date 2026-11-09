@@ -8,6 +8,8 @@ import {
   allowHelpQuestion,
   answerHelpQuestion,
   answerFromManual,
+  initialManualSuggestions,
+  relatedManualSuggestions,
   deliverHelpReport,
   geminiConfig,
   redactChatQuestion,
@@ -35,6 +37,31 @@ test("la ayuda reconoce la ausencia de contenido suficiente", () => {
   assert.equal(result.found, false);
   assert.match(result.answer, /No encontré/);
   assert.match(result.answer, /Reportar un problema/);
+  assert.match(result.answer, /preguntas relacionadas/);
+});
+
+test("las preguntas iniciales se limitan a temas documentados en el manual", () => {
+  const suggestions = initialManualSuggestions(manual);
+  assert.deepEqual(suggestions, [
+    "¿Cómo inicio sesión?",
+    "¿Dónde consulto mi horario?",
+    "¿Cómo veo mi credencial QR?",
+    "¿Cómo registro un movimiento de asistencia?",
+    "¿Cómo administro empleados?",
+    "¿Cómo cambio de empresa?",
+  ]);
+  assert.deepEqual(initialManualSuggestions("# Iniciar sesión\n\nEscribe correo y la contraseña."), ["¿Cómo inicio sesión?"]);
+  assert.ok(suggestions.every((item) => typeof item === "string" && item.length > 0));
+});
+
+test("las preguntas relacionadas usan temas del manual y nunca exceden tres", () => {
+  const schedule = relatedManualSuggestions(manual, "¿Cómo consulto mi horario?");
+  assert.ok(schedule.length > 0 && schedule.length <= 3);
+  assert.ok(schedule.includes("¿Cómo creo y asigno un horario?"));
+  const unrelated = relatedManualSuggestions(manual, "¿Cómo configuro la nómina fiscal externa?");
+  assert.ok(unrelated.length <= 3);
+  assert.ok(unrelated.every((item) => initialManualSuggestions(manual).includes(item) || /horario|asistencia|empresa|empleados|QR|PIN|sesión/i.test(item)));
+  assert.deepEqual(relatedManualSuggestions(manual, "¿Qué hago con qzxw987?").slice(0, 3), initialManualSuggestions(manual).slice(0, 3));
 });
 
 test("las respuestas conservan pasos completos del manual en lugar de fragmentos aislados", () => {
@@ -80,7 +107,7 @@ test("Gemini recibe pregunta redactada y solo contexto del manual, usando respue
     payload = JSON.parse(init.body);
     return Response.json({ candidates: [{ content: { parts: [{ text: "Abre Horarios y consulta el calendario semanal." }] } }] });
   });
-  assert.deepEqual(result, { answer: "Abre Horarios y consulta el calendario semanal.", found: true, source: "gemini" });
+  assert.deepEqual(result, { answer: "Abre Horarios y consulta el calendario semanal.", found: true, source: "gemini", suggestions: [] });
   assert.equal(url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent");
   assert.equal(headers["x-goog-api-key"], "fake-test-key");
   assert.doesNotMatch(url, /fake-test-key/);
@@ -123,6 +150,29 @@ test("si Gemini determina que el manual no basta, dirige al reporte separado", a
   assert.equal(result.found, false);
   assert.equal(result.source, "manual");
   assert.match(result.answer, /Reportar un problema/);
+  assert.ok(result.suggestions.length <= 3);
+});
+
+test("la respuesta basada en el manual adjunta opciones relacionadas disponibles", async () => {
+  const result = await answerHelpQuestion(manual, "¿Dónde consulto mi horario?");
+  assert.equal(result.found, true);
+  assert.ok(result.suggestions.length > 0 && result.suggestions.length <= 3);
+  assert.ok(result.suggestions.includes("¿Cómo creo y asigno un horario?"));
+});
+
+test("una sugerencia seleccionada se envía por el mismo flujo de respuesta", () => {
+  assert.match(widget, /onClick=\{\(\) => void askQuestion\(suggestion\)\}/);
+  assert.match(widget, /fetch\("\/api\/help\/answer"/);
+  assert.match(widget, /JSON\.stringify\(\{ question: value \}\)/);
+});
+
+test("la ruta inicial entrega preguntas derivadas del manual sin llamar a Gemini", async () => {
+  const route = await readFile(new URL("../src/app/api/help/suggestions/route.ts", import.meta.url), "utf8");
+  assert.match(route, /initialManualSuggestions\(manual\)/);
+  assert.match(route, /docs.*MANUAL-USUARIO\.md/);
+  assert.doesNotMatch(route, /generateGroundedManualAnswer|GEMINI_API_KEY/);
+  assert.match(route, /isAllowedRequestOrigin/);
+  assert.match(route, /Cache-Control.*no-store/);
 });
 
 test("limita preguntas por clave anonimizada en una ventana de quince minutos", () => {

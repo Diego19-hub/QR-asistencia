@@ -25,7 +25,8 @@ const phase10ResidualOnly = process.argv.includes("--phase10-residual-only");
 const authorizationRacesOnly = process.argv.includes("--authorization-races-only");
 const invitationFlowOnly = process.argv.includes("--invitation-flow-only");
 const companyRegistrationOnly = process.argv.includes("--company-registration-only");
-const isolatedModes = [supervisorDeviceRlsOnly, privilegedRpcAuditOnly, phase9RpcOnly, rpcSecurityCiOnly, phase10ResidualOnly, authorizationRacesOnly, companyRegistrationOnly].filter(Boolean);
+const companySensitiveDataOnly = process.argv.includes("--company-sensitive-data-only");
+const isolatedModes = [supervisorDeviceRlsOnly, privilegedRpcAuditOnly, phase9RpcOnly, rpcSecurityCiOnly, phase10ResidualOnly, authorizationRacesOnly, companyRegistrationOnly, companySensitiveDataOnly].filter(Boolean);
 assert.ok(isolatedModes.length <= 1 && !(isolatedModes.length && (e2eOnly || performanceOnly)), "isolated security modes cannot be combined with another mode");
 const browserOnly = e2eOnly || performanceOnly;
 const performanceResultsFile = process.env.QR009_RESULTS_FILE ?? join(tmpdir(), `qr009-runtime-${Date.now()}.json`);
@@ -56,11 +57,16 @@ const rpcSecurityCiSuites = [
 ];
 const phase10ResidualSuites = ["qr004_phase10_residual_authorization_test.sql"];
 const companyRegistrationSuites = ["first_company_registration_test.sql"];
+const companySensitiveDataSuites = [
+  "first_company_registration_test.sql",
+  "create_additional_company_test.sql",
+  "company_employee_sensitive_data_test.sql",
+];
 const suites = supervisorDeviceRlsOnly ? ["qr007_supervisor_device_rls_test.sql"]
   : privilegedRpcAuditOnly ? ["qr004_privileged_rpc_authorization_test.sql", "qr007_supervisor_device_rls_test.sql"]
     : phase9RpcOnly ? ["qr004_phase9_rpc_authorization_test.sql"]
       : rpcSecurityCiOnly ? rpcSecurityCiSuites
-        : phase10ResidualOnly ? phase10ResidualSuites : authorizationRacesOnly ? [] : companyRegistrationOnly ? companyRegistrationSuites : generalSuites;
+        : phase10ResidualOnly ? phase10ResidualSuites : authorizationRacesOnly ? [] : companyRegistrationOnly ? companyRegistrationSuites : companySensitiveDataOnly ? companySensitiveDataSuites : generalSuites;
 const rpcSecurityCiExpected = new Map([
   ["qr007_supervisor_device_rls_test.sql", 50],
   ["qr004_privileged_rpc_authorization_test.sql", 26],
@@ -451,7 +457,7 @@ try {
       assert.equal(observedCount, plan, `${suite} must report every passing pgTAP assertion`);
       process.stdout.write(`ASSERTIONS ${suite}: ${observedCount}/${plan} PASS\n`);
     }
-    if (companyRegistrationOnly) {
+    if (companyRegistrationOnly || companySensitiveDataOnly) {
       assert.match(sql, /^BEGIN\s*;/im, `${suite} must isolate fixtures in a transaction`);
       assert.match(sql, /^ROLLBACK\s*;/im, `${suite} must roll back synthetic fixtures`);
       assert.doesNotMatch(sql, /\b(?:scan_employee_attendance|confirm_employee_attendance|verify_employee_pin)\s*\(/i, `${suite} must not execute attendance or PIN functions`);
@@ -491,6 +497,9 @@ try {
   if (companyRegistrationOnly) {
     assert.deepEqual(suites, companyRegistrationSuites, "company registration mode runs only its dedicated pgTAP suite");
     process.stdout.write("PASS isolated first-company registration RLS/RPC suite only; no remote project, HTTP Auth, QR, PIN, scan, or attendance flow started\n");
+  } else if (companySensitiveDataOnly) {
+    assert.deepEqual(suites, companySensitiveDataSuites, "sensitive-data mode runs only its dedicated pgTAP suite");
+    process.stdout.write("PASS isolated company/employee sensitive-data RLS/RPC suite only; no remote project, HTTP Auth, QR, PIN, scan, or attendance flow started\n");
   }
 
   if (supervisorDeviceRlsOnly) {
@@ -556,6 +565,8 @@ try {
     process.stdout.write("PASS isolated QR-004 Phase 10.2 authorization/audit suite only; no HTTP Auth, Next.js, QR processing, PIN, scan, or attendance flow started\n");
   } else if (companyRegistrationOnly) {
     process.stdout.write("PASS isolated first-company registration suite used only a disposable local PostgreSQL stack and synthetic Auth rows\n");
+  } else if (companySensitiveDataOnly) {
+    process.stdout.write("PASS isolated company/employee sensitive-data suite used only a disposable local PostgreSQL stack and synthetic Auth rows\n");
   } else {
 
   // Exercise the same API and Server Component guards used by the app. The
@@ -574,6 +585,7 @@ try {
   const companyBResult = await service.from("companies").insert({ name: companyBName }).select("id").single();
   if (companyAResult.error || companyBResult.error) throw new Error("failed creating synthetic HTTP test companies");
   const companyA = companyAResult.data.id, companyB = companyBResult.data.id;
+  await dbPool.query("insert into private.company_sensitive_data(company_id,address,rfc,employer_registration_number) values ($1,'Synthetic QA Address A','SYN010101ABC','RP-QA-A'),($2,'Synthetic QA Address B','TST010101XYZ','RP-QA-B')", [companyA, companyB]);
   const branchAResult = await service.from("branches").insert({ company_id: companyA, name: `HTTP Branch A ${randomUUID()}`, timezone: "America/Mexico_City" }).select("id").single();
   const branchBResult = await service.from("branches").insert({ company_id: companyB, name: `HTTP Branch B ${randomUUID()}`, timezone: "America/Mexico_City" }).select("id").single();
   if (branchAResult.error || branchBResult.error) throw new Error("failed creating synthetic HTTP branches");
@@ -977,9 +989,9 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     verify.equal(response.status, 404, "foreign employee ID is not disclosed");
     apiBeforeA = await adminApiSnapshot(companyA);
     apiBeforeB = await adminApiSnapshot(companyB);
-    response = await request(`/api/employees?companyId=${companyA}`, { user: adminA, method: "POST", body: { employee_number: `R1005-X-${randomUUID()}`, first_name: "Synthetic", last_name: "Foreign Branch", branch_id: branchB } });
+    response = await request(`/api/employees?companyId=${companyA}`, { user: adminA, method: "POST", body: { employee_number: `R1005-X-${randomUUID()}`, first_name: "Synthetic", last_name: "Foreign Branch", nss: "12345678901", branch_id: branchB } });
     verify.equal(response.status, 422, "employee creation rejects a foreign branch");
-    response = await request(`/api/employees?companyId=${companyA}`, { user: adminA, method: "POST", body: { employee_number: `R1005-I-${randomUUID()}`, first_name: "Synthetic", last_name: "Inactive Branch", branch_id: inactiveBranchId } });
+    response = await request(`/api/employees?companyId=${companyA}`, { user: adminA, method: "POST", body: { employee_number: `R1005-I-${randomUUID()}`, first_name: "Synthetic", last_name: "Inactive Branch", nss: "12345678901", branch_id: inactiveBranchId } });
     verify.equal(response.status, 422, "employee creation rejects an inactive branch");
     response = await request(`/api/employees/${employeeA.employeeId}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { branch_id: branchB } });
     verify.equal(response.status, 422, "employee update rejects cross-company reassignment");
@@ -987,11 +999,19 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     verify.equal(response.status, 404, "foreign employee update is not found in selected tenant");
     verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "rejected employee writes leave tenant A and audit unchanged");
     verify.deepEqual(await adminApiSnapshot(companyB), apiBeforeB, "rejected employee writes leave tenant B and audit unchanged");
-    response = await request(`/api/employees?companyId=${companyA}`, { user: adminA, method: "POST", body: { employee_number: `R1005-OK-${randomUUID()}`, first_name: "Synthetic", last_name: "Allowed Employee", branch_id: branchA } });
+    response = await request(`/api/employees?companyId=${companyA}`, { user: adminA, method: "POST", body: { employee_number: `R1005-OK-${randomUUID()}`, first_name: "Synthetic", last_name: "Allowed Employee", nss: "12345678901", branch_id: branchA } });
     verify.equal(response.status, 201, "authorized administrator can create a synthetic employee");
     const createdEmployee = (await response.json()).item;
     response = await request(`/api/employees/${createdEmployee.id}?companyId=${companyA}`, { user: adminA });
     verify.equal(response.status, 200, "authorized administrator can read a same-tenant employee record");
+  const sensitiveEmployeeDetails = (await response.json()).item;
+  verify.equal(sensitiveEmployeeDetails.nss, "23456789012", "authorized employee detail returns the submitted synthetic NSS");
+  verify.equal(sensitiveEmployeeDetails.personal_rfc, "ABCD010101XYZ", "personal RFC is normalized to uppercase in the protected detail view");
+  response = await request(`/api/employees?companyId=${companyA}&pageSize=100`, { user: adminA });
+  const employeeDirectory = await response.json();
+  const directoryEmployee = employeeDirectory.items.find((item) => item.id === createdEmployee.id);
+  verify.ok(directoryEmployee, "created employee appears in the same-tenant directory");
+  verify.equal(Object.hasOwn(directoryEmployee, "nss") || Object.hasOwn(directoryEmployee, "personal_rfc"), false, "employee listing does not expose NSS or personal RFC");
     response = await request(`/api/employees/${createdEmployee.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { first_name: "Synthetic Edited" } });
     verify.equal(response.status, 200, "authorized administrator can edit a same-tenant employee");
     verify.equal((await response.json()).item.first_name, "Synthetic Edited", "authorized employee update persists");
@@ -1827,7 +1847,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const dashboardAClosed = await makeDashboardSession({ companyId: companyA, employeeId: dashboardEmployeeA2.data.id, branchId: otherBranchA, deviceId: dashboardDeviceA2.data.id, timezone: "America/Mexico_City", recordedBy: ownerA.userId, closed: true, label: "company A branch A2 closed" });
   const dashboardAPacificClosed = await makeDashboardSession({ companyId: companyA, employeeId: dashboardEmployeePacific.data.id, branchId: pacificBranchA, deviceId: dashboardDevicePacific.data.id, timezone: "Pacific/Kiritimati", recordedBy: ownerA.userId, closed: true, label: "company A Pacific branch closed" });
   const dashboardBClosed = await makeDashboardSession({ companyId: companyB, employeeId: dashboardEmployeeB.data.id, branchId: branchB, deviceId: dashboardDeviceB.data.id, timezone: "America/Mexico_City", recordedBy: adminB.userId, closed: true, label: "company B closed" });
-  const companyRecord = async (id) => (await dbPool.query("select id,name,legal_name,rfc,require_employee_pin,updated_at from public.companies where id=$1", [id])).rows[0];
+  const companyRecord = async (id) => (await dbPool.query("select c.id,c.name,c.legal_name,p.address,p.rfc,p.employer_registration_number,c.require_employee_pin,c.updated_at from public.companies c left join private.company_sensitive_data p on p.company_id=c.id where c.id=$1", [id])).rows[0];
   const companyAndDataSnapshot = async (id) => ({ company: await companyRecord(id), data: await snapshot(id) });
 
   response = await request(`/api/company?companyId=${companyA}`); assert.equal(response.status, 401);
@@ -1840,7 +1860,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request("/api/company", { user: adminA }); assert.equal(response.status, 200);
   assert.equal((await response.json()).item.id, companyA, "single-company admin resolves its sole active company without a selector");
   response = await request(`/api/company?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
-  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("cache-control"), "no-store, private");
   assert.equal((await response.json()).canManage, true);
   response = await request(`/api/company?companyId=${companyA}`, { user: adminB }); assert.equal(response.status, 403);
 
@@ -1866,7 +1886,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/employees/${employeeB.employeeId}?companyId=${companyA}`, { user: ownerA }); assert.equal(response.status, 404, "owner cannot read another tenant's employee expediente");
 
   const ownerCompanyBefore = await companyRecord(companyA);
-  const ownerCompanyWrite = { name: `Synthetic Owner Update ${randomUUID()}`, legalName: ownerCompanyBefore.legal_name, rfc: ownerCompanyBefore.rfc };
+  const ownerCompanyWrite = { name: `Synthetic Owner Update ${randomUUID()}`, legalName: ownerCompanyBefore.legal_name, address: ownerCompanyBefore.address, rfc: ownerCompanyBefore.rfc, employerRegistrationNumber: ownerCompanyBefore.employer_registration_number };
   const beforeOwnerWriteA = await companyAndDataSnapshot(companyA), beforeOwnerWriteB = await companyAndDataSnapshot(companyB);
   response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: ownerCompanyWrite }); assert.equal(response.status, 200);
   assert.equal((await response.json()).item.name, ownerCompanyWrite.name, "owner can update their own company through the API");
@@ -1877,7 +1897,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/company?companyId=${companyB}`, { user: ownerA, method: "PATCH", body: { ...ownerCompanyWrite, name: "Foreign tenant mutation" } }); assert.equal(response.status, 403);
   assert.deepEqual(await companyAndDataSnapshot(companyB), beforeOwnerWriteB, "owner cross-tenant PATCH denial preserves the other company's data and audit snapshot");
   assert.notDeepEqual(await companyAndDataSnapshot(companyA), beforeOwnerWriteA, "authorized owner update changes only its own tenant and records audit");
-  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { name: ownerCompanyBefore.name, legalName: ownerCompanyBefore.legal_name, rfc: ownerCompanyBefore.rfc } }); assert.equal(response.status, 200);
+  response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { name: ownerCompanyBefore.name, legalName: ownerCompanyBefore.legal_name, address: ownerCompanyBefore.address, rfc: ownerCompanyBefore.rfc, employerRegistrationNumber: ownerCompanyBefore.employer_registration_number } }); assert.equal(response.status, 200);
 
   const beforePinSettingA = await companyAndDataSnapshot(companyA), beforePinSettingB = await companyAndDataSnapshot(companyB);
   response = await request(`/api/company?companyId=${companyA}`, { user: ownerA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 200);
@@ -1894,7 +1914,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   assert.deepEqual(await companyAndDataSnapshot(companyB), beforePinSettingB, "cross-tenant PIN policy update preserves foreign company and audit snapshot");
   assert.notDeepEqual(await companyAndDataSnapshot(companyA), beforePinSettingA, "authorized PIN policy changes update and audit only the owner tenant");
 
-  const validCompanyPayload = { name: `Synthetic Company A Updated ${randomUUID()}`, legalName: "Synthetic Tenant A LLC", rfc: "SYN010101ABC" };
+  const validCompanyPayload = { name: `Synthetic Company A Updated ${randomUUID()}`, legalName: "Synthetic Tenant A LLC", address: "123 Synthetic QA Avenue", rfc: "SYN010101ABC", employerRegistrationNumber: "RP-QA-123" };
   const beforeCompanyRoleDenialsA = await companyAndDataSnapshot(companyA);
   response = await request(`/api/company?companyId=${companyA}`, { method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 401);
   response = await request(`/api/company?companyId=${companyA}`, { user: supervisorA, method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 403);
@@ -1905,19 +1925,19 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: validCompanyPayload }); assert.equal(response.status, 200);
   assert.equal((await response.json()).item.name, validCompanyPayload.name);
   const persistedCompanyA = await companyRecord(companyA);
-  assert.deepEqual({ id: persistedCompanyA.id, name: persistedCompanyA.name, legal_name: persistedCompanyA.legal_name, rfc: persistedCompanyA.rfc }, {
-    id: companyA, name: validCompanyPayload.name, legal_name: validCompanyPayload.legalName, rfc: validCompanyPayload.rfc,
+  assert.deepEqual({ id: persistedCompanyA.id, name: persistedCompanyA.name, legal_name: persistedCompanyA.legal_name, address: persistedCompanyA.address, rfc: persistedCompanyA.rfc, employer_registration_number: persistedCompanyA.employer_registration_number }, {
+    id: companyA, name: validCompanyPayload.name, legal_name: validCompanyPayload.legalName, address: validCompanyPayload.address, rfc: validCompanyPayload.rfc, employer_registration_number: validCompanyPayload.employerRegistrationNumber,
   }, "authorized HTTP PATCH persists through PostgreSQL");
   const directAllowedCompanyUpdate = await adminA.client.from("companies").update({ legal_name: "Synthetic direct RLS update" }).eq("id", companyA).select("id,legal_name").single();
   assert.deepEqual(directAllowedCompanyUpdate.data, { id: companyA, legal_name: "Synthetic direct RLS update" }, "authenticated PostgreSQL RLS permits company update when company.manage is effective");
 
   const beforeInvalidCompanyWritesA = await companyAndDataSnapshot(companyA);
   for (const [payload, label] of [
-    [{ name: "  ", legalName: null, rfc: null }, "empty name"],
-    [{ name: "x".repeat(181), legalName: null, rfc: null }, "overlong name"],
-    [{ name: "Valid", legalName: "x".repeat(241), rfc: null }, "overlong legal name"],
-    [{ name: "Valid", legalName: null, rfc: "INVALID" }, "invalid RFC"],
-    [{ name: "Valid", legalName: null, rfc: null, companyId: companyB }, "unexpected foreign company field"],
+    [{ ...validCompanyPayload, name: "  " }, "empty name"],
+    [{ ...validCompanyPayload, name: "x".repeat(181) }, "overlong name"],
+    [{ ...validCompanyPayload, legalName: "x".repeat(241) }, "overlong legal name"],
+    [{ ...validCompanyPayload, rfc: "INVALID" }, "invalid RFC"],
+    [{ ...validCompanyPayload, companyId: companyB }, "unexpected foreign company field"],
   ]) {
     response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: payload });
     assert.equal(response.status, 422, `company PATCH rejects ${label}`);
@@ -1930,12 +1950,13 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/company?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 200);
   const readOnlyCompany = await response.json();
   assert.equal(readOnlyCompany.canManage, false, "GET reports company.manage denial without blocking company.read");
-  assert.equal(response.headers.get("cache-control"), "no-store");
-  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { name: "Unauthorized synthetic mutation", legalName: null, rfc: null } }); assert.equal(response.status, 403);
+  assert.equal(readOnlyCompany.item.rfc, null, "a company.read-only administrator does not receive company RFC data");
+  assert.equal(response.headers.get("cache-control"), "no-store, private");
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { ...validCompanyPayload, name: "Unauthorized synthetic mutation" } }); assert.equal(response.status, 403);
   response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { requireEmployeePin: true } }); assert.equal(response.status, 403, "company.manage denial also protects PIN policy changes");
   const directDeniedCompanyUpdate = await adminA.client.from("companies").update({ name: "Unauthorized direct mutation" }).eq("id", companyA).select("id");
   assert.ok(directDeniedCompanyUpdate.error?.code === "42501" || (directDeniedCompanyUpdate.data ?? []).length === 0, "PostgreSQL RLS rejects direct company update without company.manage");
-  response = await request(`/api/company?companyId=${companyB}`, { user: adminA, method: "PATCH", body: { name: "Foreign synthetic mutation", legalName: null, rfc: null } }); assert.equal(response.status, 403);
+  response = await request(`/api/company?companyId=${companyB}`, { user: adminA, method: "PATCH", body: { ...validCompanyPayload, name: "Foreign synthetic mutation" } }); assert.equal(response.status, 403);
   assert.deepEqual(await companyAndDataSnapshot(companyA), beforeCompanyPermissionDenialA, "API and RLS permission denials preserve tenant A snapshot");
   assert.deepEqual(await companyAndDataSnapshot(companyB), beforeCompanyPermissionDenialB, "foreign company selection cannot modify tenant B");
   await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "company.manage");
@@ -1943,7 +1964,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   await service.from("company_memberships").update({ active: false }).eq("id", adminA.memberships[0].id);
   const beforeInactiveCompanyMembershipA = await companyAndDataSnapshot(companyA);
   response = await request(`/api/company?companyId=${companyA}`, { user: adminA }); assert.equal(response.status, 403);
-  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { name: "Revoked API mutation", legalName: null, rfc: null } }); assert.equal(response.status, 403);
+  response = await request(`/api/company?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { ...validCompanyPayload, name: "Revoked API mutation" } }); assert.equal(response.status, 403);
   const inactiveCompanyMembershipPatch = await adminA.client.from("companies").update({ name: "Revoked direct mutation" }).eq("id", companyA).select("id");
   assert.ok(inactiveCompanyMembershipPatch.error?.code === "42501" || (inactiveCompanyMembershipPatch.data ?? []).length === 0, "inactive membership cannot directly update company through RLS");
   assert.deepEqual(await companyAndDataSnapshot(companyA), beforeInactiveCompanyMembershipA, "inactive membership API and RLS denials preserve company and audit snapshots");
@@ -2503,7 +2524,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(`/api/employees?branchId=${branchB}`, { user: adminA }); assert.equal(response.status, 403);
   response = await request(`/api/employees/${employeeB.employeeId}`, { user: adminA }); assert.equal(response.status, 404);
   const beforeEmployeeDenialsA = await snapshot(companyA), beforeEmployeeDenialsB = await snapshot(companyB);
-  response = await request("/api/employees", { user: adminA, method: "POST", body: { employee_number: `CROSS-${randomUUID()}`, first_name: "Synthetic", last_name: "Rejected", branch_id: branchB } });
+  response = await request("/api/employees", { user: adminA, method: "POST", body: { employee_number: `CROSS-${randomUUID()}`, first_name: "Synthetic", last_name: "Rejected", nss: "12345678901", branch_id: branchB } });
   assert.equal(response.status, 422, "employee creation rejects a branch from another company");
   response = await request(`/api/employees/${employeeB.employeeId}`, { user: adminA, method: "PATCH", body: { first_name: "Cross Tenant Mutation" } }); assert.equal(response.status, 404);
   response = await request(`/api/employees/${employeeA.employeeId}`, { user: adminA, method: "PATCH", body: { branch_id: branchB } }); assert.equal(response.status, 422);
@@ -2540,7 +2561,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const assignedSupervisor = (await response.json()).data;
   assert.equal(assignedSupervisor.assigned, true);
   assert.deepEqual((await service.from("supervisor_branches").select("company_id,branch_id").eq("membership_id", supervisorA.memberships[0].id).single()).data, { company_id: companyA, branch_id: branchA });
-  response = await request("/api/employees", { user: adminA, method: "POST", body: { employee_number: `HTTP-CREATED-${randomUUID()}`, first_name: "Synthetic", last_name: "Created", branch_id: branchA } }); assert.equal(response.status, 201);
+  response = await request("/api/employees", { user: adminA, method: "POST", body: { employee_number: `HTTP-CREATED-${randomUUID()}`, first_name: "Synthetic", last_name: "Created", nss: "23456789012", personal_rfc: "abcd010101xyz", branch_id: branchA } }); assert.equal(response.status, 201);
   const createdEmployee = (await response.json()).item;
   assert.equal(createdEmployee.branch_id, branchA);
   assert.equal((await service.from("employees").select("company_id,branch_id").eq("id", createdEmployee.id).single()).data.company_id, companyA);
@@ -3636,16 +3657,17 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   // Keep owner company creation last: it adds another owner membership and
   // would otherwise change single-company selection assumptions above.
   const beforeAdditionalCompanyB = await companyAndDataSnapshot(companyB);
-  response = await request("/api/companies", { method: "POST", body: { name: "Synthetic unauthenticated company" } }); assert.equal(response.status, 401);
-  response = await request("/api/companies", { user: adminA, method: "POST", body: { name: "Synthetic admin company" } }); assert.equal(response.status, 403);
-  response = await request("/api/companies", { user: ownerA, method: "POST", body: { name: `Synthetic second company ${randomUUID()}`, legalName: "Synthetic legal name", rfc: null } }); assert.equal(response.status, 201);
+  const validNewCompanyPayload = { name: "Synthetic denied company", legalName: "Synthetic legal name", address: "123 Synthetic QA Avenue", employerRegistrationNumber: "RP-QA-456", rfc: "QAQ010101ABC" };
+  response = await request("/api/companies", { method: "POST", body: validNewCompanyPayload }); assert.equal(response.status, 401);
+  response = await request("/api/companies", { user: adminA, method: "POST", body: validNewCompanyPayload }); assert.equal(response.status, 403);
+  response = await request("/api/companies", { user: ownerA, method: "POST", body: { name: `Synthetic second company ${randomUUID()}`, legalName: "Synthetic legal name", address: "123 Synthetic QA Avenue", employerRegistrationNumber: "RP-QA-456", rfc: "QAQ010101ABC" } }); assert.equal(response.status, 201);
   const newlyCreatedCompany = (await response.json()).item;
   assert.ok(newlyCreatedCompany.id && newlyCreatedCompany.name.startsWith("Synthetic second company"));
   response = await request(`/api/company?companyId=${newlyCreatedCompany.id}`, { user: ownerA }); assert.equal(response.status, 200);
   assert.equal((await response.json()).item.id, newlyCreatedCompany.id, "owner can switch to the newly created company");
   response = await request(`/api/company?companyId=${newlyCreatedCompany.id}`, { user: adminA }); assert.equal(response.status, 403, "another tenant's administrator cannot enter the new company");
-  response = await request("/api/companies", { user: employeeA, method: "POST", body: { name: "Synthetic employee company" } }); assert.equal(response.status, 403);
-  response = await request("/api/companies", { user: ownerA, method: "POST", body: { name: "Invalid synthetic company", rfc: "INVALID" } }); assert.equal(response.status, 422);
+  response = await request("/api/companies", { user: employeeA, method: "POST", body: validNewCompanyPayload }); assert.equal(response.status, 403);
+  response = await request("/api/companies", { user: ownerA, method: "POST", body: { name: "Invalid synthetic company", address: "123 Synthetic QA Avenue", employerRegistrationNumber: "RP-QA-INVALID", rfc: "INVALID" } }); assert.equal(response.status, 422);
   assert.deepEqual(await companyAndDataSnapshot(companyB), beforeAdditionalCompanyB, "company creation denials preserve the unrelated tenant snapshot");
   const newCompanyMembership = await ownerA.client.from("company_memberships").select("role,active").eq("company_id", newlyCreatedCompany.id).eq("user_id", ownerA.userId).maybeSingle();
   assert.deepEqual(newCompanyMembership.data, { role: "owner", active: true }, "only the authenticated owner receives an active membership");

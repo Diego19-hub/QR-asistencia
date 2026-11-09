@@ -16,12 +16,11 @@ const optionalText = (max: number) => z.preprocess(
 export const companyDetailsSchema = z.object({
   companyName: z.string().trim().min(1).max(180),
   legalName: optionalText(240),
-  rfc: z.preprocess(
-    (value) => typeof value === "string" && !value.trim() ? null : typeof value === "string" ? value.trim().toUpperCase() : value,
-    z.string().max(13).nullable().optional(),
-  ),
+  address: z.string().trim().min(1, "El domicilio es obligatorio.").max(500),
+  employerRegistrationNumber: z.string().trim().min(1, "El registro patronal es obligatorio.").max(64),
+  rfc: z.preprocess((value) => typeof value === "string" ? value.trim().toUpperCase() : value, z.string().min(12).max(12)),
 }).strict().superRefine((value, context) => {
-  if (value.rfc && !/^[A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3}$/.test(value.rfc)) {
+  if (!/^[A-Z&Ñ]{3}\d{6}[A-Z0-9]{3}$/.test(value.rfc)) {
     context.addIssue({ code: "custom", path: ["rfc"], message: "Revisa el formato del RFC." });
   }
 });

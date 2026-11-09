@@ -14,13 +14,15 @@ import { createClient } from "@/lib/supabase/server";
 
 const invalidState: CompanyRegistrationActionState = {
   status: "error",
-  message: "Revisa los datos. El nombre es obligatorio y el RFC debe tener un formato válido.",
+  message: "Revisa los datos obligatorios de la empresa y el formato del RFC de persona moral.",
 };
 
 function readCompanyDetails(formData: FormData): CompanyDetails | null {
   const parsed = companyDetailsSchema.safeParse({
     companyName: formData.get("companyName"),
     legalName: formData.get("legalName"),
+    address: formData.get("address"),
+    employerRegistrationNumber: formData.get("employerRegistrationNumber"),
     rfc: formData.get("rfc"),
   });
   return parsed.success ? parsed.data : null;
@@ -43,11 +45,13 @@ async function createFirstCompany(details: CompanyDetails, user: { id: string; e
   const { data, error } = await supabase.rpc("create_first_company_for_current_user", {
     p_name: details.companyName,
     p_legal_name: details.legalName || null,
-    p_rfc: details.rfc || null,
+    p_rfc: details.rfc,
+    p_address: details.address,
+    p_employer_registration_number: details.employerRegistrationNumber,
   });
   if (error) {
     if (error.code === "22023") return { state: invalidState };
-    if (error.code === "23505") return { state: { status: "error", message: "Ese RFC ya está asociado a otra empresa. Revisa el dato o déjalo vacío." } satisfies CompanyRegistrationActionState };
+    if (error.code === "23505") return { state: { status: "error", message: "No fue posible guardar el RFC porque ya existe un registro coincidente. Revisa el dato." } satisfies CompanyRegistrationActionState };
     if (error.code === "42501") return { state: { status: "account-has-company", message: "La cuenta no puede crear una primera empresa. Si ya pertenece a una, inicia sesión con su Owner para crear otra desde el panel." } satisfies CompanyRegistrationActionState };
     return { state: { status: "error", message: "No fue posible completar el alta. Puedes volver a intentarlo; no se guardó una empresa incompleta." } satisfies CompanyRegistrationActionState };
   }
@@ -71,6 +75,8 @@ export async function registerOwner(
     confirmation: formData.get("confirmation"),
     companyName: formData.get("companyName"),
     legalName: formData.get("legalName"),
+    address: formData.get("address"),
+    employerRegistrationNumber: formData.get("employerRegistrationNumber"),
     rfc: formData.get("rfc"),
   });
   if (!parsed.success) {

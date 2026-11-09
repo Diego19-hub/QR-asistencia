@@ -1,10 +1,15 @@
 import { expect, test } from "./fixtures/qr005-test";
 
 test("Ayuda solo abre el chat y Reportar un problema abre y envía el formulario directamente", async ({ page }) => {
+  await page.route("**/api/help/suggestions", async (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ suggestions: ["¿Cómo inicio sesión?", "¿Dónde consulto mi horario?", "¿Cómo veo mi credencial QR?"] }),
+  }));
   await page.route("**/api/help/answer", async (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
-    body: JSON.stringify({ found: true, answer: "Según el manual, sigue estos pasos:\n\nSección: Iniciar sesión\n1. Abre /login.\n2. Escribe tu correo y contraseña.\n3. Pulsa Entrar." }),
+    body: JSON.stringify({ found: true, answer: "Según el manual, sigue estos pasos:\n\nSección: Iniciar sesión\n1. Abre /login.\n2. Escribe tu correo y contraseña.\n3. Pulsa Entrar.", suggestions: ["¿Dónde consulto mi horario?", "¿Cómo veo mi credencial QR?"] }),
   }));
 
   await page.goto("/login");
@@ -20,10 +25,15 @@ test("Ayuda solo abre el chat y Reportar un problema abre y envía el formulario
   await expect(chat.getByLabel("Pregunta")).toBeVisible();
   await expect(chat.getByText(/no incluyas nombres ni datos de empresa o trabajador/i)).toBeVisible();
   await expect(page.getByLabel("Descripción")).toHaveCount(0);
-  await chat.getByLabel("Pregunta").fill("¿Cómo inicio sesión?");
-  await chat.getByRole("button", { name: "Enviar pregunta" }).click();
+  const recommended = chat.getByRole("region", { name: "Preguntas recomendadas" });
+  await expect(recommended.getByRole("button", { name: "¿Cómo inicio sesión?" })).toBeVisible();
+  await recommended.getByRole("button", { name: "¿Cómo inicio sesión?" }).click();
   await expect(chat.getByText(/Según el manual, sigue estos pasos/)).toBeVisible();
   await expect(chat.getByText(/3\. Pulsa Entrar\./)).toBeVisible();
+  const related = chat.getByRole("region", { name: "Preguntas relacionadas" });
+  await expect(related.getByRole("button", { name: "¿Dónde consulto mi horario?" })).toBeVisible();
+  await related.getByRole("button", { name: "¿Dónde consulto mi horario?" }).click();
+  await expect(chat.getByText("Tú")).toHaveCount(2);
   await expect(chat.getByRole("button", { name: "Reportar un problema" })).toHaveCount(0);
 
   await chat.getByRole("button", { name: "Minimizar Chatbot" }).click();

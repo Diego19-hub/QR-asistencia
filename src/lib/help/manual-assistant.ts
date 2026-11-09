@@ -16,7 +16,7 @@ function words(value: string) {
 }
 
 type ManualParagraph = { heading: string; text: string };
-export const manualNotFoundAnswer = "No encontré información suficiente sobre eso en el manual. Puedes usar el botón «Reportar un problema» para avisar al equipo, por separado del chat.";
+export const manualNotFoundAnswer = "No encontré una respuesta exacta en el manual. Prueba alguna de las preguntas relacionadas que aparecen debajo. Si sigues necesitando ayuda, usa «Reportar un problema»; ese formulario es independiente del Chatbot.";
 
 function manualParagraphs(markdown: string): ManualParagraph[] {
   let heading = "Manual de usuario";
@@ -60,6 +60,65 @@ function rankedManualParagraphs(markdown: string, question: string) {
     const score = terms.reduce((total, term) => total + (content.includes(term) ? 1 : 0), 0);
     return { ...paragraph, score };
   }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score);
+}
+
+type ManualQuestionSuggestion = { question: string; heading: string; evidence: string[]; initial?: boolean };
+
+// Each suggested question is enabled only while its heading and supporting phrases remain in the manual.
+const manualQuestionCatalog: ManualQuestionSuggestion[] = [
+  { question: "¿Cómo inicio sesión?", heading: "Iniciar sesión", evidence: ["correo y la contraseña"], initial: true },
+  { question: "¿Dónde consulto mi horario?", heading: "Empleado:", evidence: ["Mi horario", "asignación vigente"], initial: true },
+  { question: "¿Cómo veo mi credencial QR?", heading: "Empleado:", evidence: ["Mi credencial / Mi QR", "muestra el QR propio"], initial: true },
+  { question: "¿Cómo registro un movimiento de asistencia?", heading: "Registrar un movimiento", evidence: ["Escanea la credencial QR activa del empleado", "Confirma el movimiento"], initial: true },
+  { question: "¿Cómo administro empleados?", heading: "Empleados", evidence: ["Nuevo empleado", "Ver expediente"], initial: true },
+  { question: "¿Cómo cambio de empresa?", heading: "Elegir empresa y rol", evidence: ["más de una membresía activa", "Pulsa Continuar"], initial: true },
+  { question: "¿Cómo creo y asigno un horario?", heading: "Horarios", evidence: ["crea una plantilla", "opción de asignación"] },
+  { question: "¿Cómo consulto y filtro asistencias?", heading: "Consultar y filtrar asistencias", evidence: ["Selecciona fechas", "Pulsa Consultar"] },
+  { question: "¿Cómo consulto o exporto reportes?", heading: "Reportes y exportación", evidence: ["Descargar Excel", "PDF"] },
+  { question: "¿Cómo activo o desactivo el requisito de PIN?", heading: "Configuración del PIN", evidence: ["Requerir PIN del empleado", "desactivado por defecto"] },
+  { question: "¿Cómo habilito el escáner como Supervisor?", heading: "Acceso al escáner", evidence: ["membresía activa de rol Supervisor", "sucursal activa asignada"] },
+  { question: "¿Cómo consulto mis horas extra?", heading: "Consultar horas extra", evidence: ["excedente detectado", "tiempo autorizado"] },
+];
+
+function supportedQuestionSuggestions(markdown: string) {
+  const paragraphs = manualParagraphs(markdown);
+  return manualQuestionCatalog.filter((item) => {
+    const heading = normalize(item.heading);
+    const source = normalize(paragraphs
+      .filter((paragraph) => normalize(paragraph.heading).includes(heading))
+      .map(({ heading: section, text }) => `${section}\n${text}`)
+      .join("\n"));
+    return source.length > 0 && item.evidence.every((phrase) => source.includes(normalize(phrase)));
+  });
+}
+
+/** Initial prompts are included only when their supporting instructions still exist in the manual. */
+export function initialManualSuggestions(markdown: string): string[] {
+  return supportedQuestionSuggestions(markdown).filter((item) => item.initial).map((item) => item.question);
+}
+
+/** Ranks manual-backed questions by lexical overlap and returns no more than three. */
+export function relatedManualSuggestions(markdown: string, question: string): string[] {
+  const terms = [...new Set(words(question))];
+  const candidates = supportedQuestionSuggestions(markdown).map((item, index) => {
+    const content = `${item.heading} ${item.evidence.join(" ")}`;
+    const contentTerms = new Set(words(content));
+    const score = terms.reduce((total, term) => total + (contentTerms.has(term) ? 1 : 0), 0);
+    const questionTerms = new Set(words(item.question));
+    const shared = [...terms].filter((term) => questionTerms.has(term)).length;
+    const similarity = shared / Math.max(1, new Set([...terms, ...questionTerms]).size);
+    return { ...item, index, score, similarity };
+  });
+  const notDuplicate = candidates.filter((item) => item.similarity < 0.8);
+  if (!rankedByOverlap(notDuplicate.length ? notDuplicate : candidates).some((item) => item.score > 0)) {
+    return supportedQuestionSuggestions(markdown).filter((item) => item.initial).slice(0, 3).map((item) => item.question);
+  }
+  const ranked = rankedByOverlap(notDuplicate.length ? notDuplicate : candidates);
+  return ranked.slice(0, 3).map((item) => item.question);
+}
+
+function rankedByOverlap<T extends { score: number; index: number }>(items: T[]) {
+  return items.sort((a, b) => b.score - a.score || a.index - b.index);
 }
 
 /** Retrieves only relevant, bounded passages from the user manual for grounded answers. */
@@ -189,18 +248,19 @@ export async function answerHelpQuestion(
   question: string,
   env: NodeJS.ProcessEnv = process.env,
   fetcher: typeof fetch = fetch,
-): Promise<{ answer: string; found: boolean; source: "manual" | "gemini" }> {
+): Promise<{ answer: string; found: boolean; source: "manual" | "gemini"; suggestions: string[] }> {
   const safeQuestion = redactChatQuestion(question).question;
-  const notFound = { answer: manualNotFoundAnswer, found: false, source: "manual" as const };
+  const suggestions = relatedManualSuggestions(markdown, safeQuestion);
+  const notFound = { answer: manualNotFoundAnswer, found: false, source: "manual" as const, suggestions };
   if (safeQuestion.replace(/\[dato omitido\]/g, "").trim().length < 2) return notFound;
   const fallback = answerFromManual(markdown, safeQuestion);
-  if (!fallback.found) return { ...fallback, source: "manual" };
+  if (!fallback.found) return { ...fallback, source: "manual", suggestions };
   const config = geminiConfig(env);
   const context = retrieveManualContext(markdown, safeQuestion);
-  if (!config || !context.found) return { ...fallback, source: "manual" };
+  if (!config || !context.found) return { ...fallback, source: "manual", suggestions };
   const generated = await generateGroundedManualAnswer(config, safeQuestion, context.context, fetcher);
   if (generated === "insufficient") return notFound;
-  return { answer: generated ?? fallback.answer, found: true, source: generated ? "gemini" : "manual" };
+  return { answer: generated ?? fallback.answer, found: true, source: generated ? "gemini" : "manual", suggestions };
 }
 
 export const reportablePages = [

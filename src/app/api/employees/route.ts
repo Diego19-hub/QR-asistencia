@@ -88,18 +88,24 @@ export async function POST(request: Request) {
   if (duplicateError) return apiError("duplicate_check_failed", "No fue posible validar el identificador.", 503);
   if (existing) return apiError("employee_number_conflict", "Ese identificador ya está registrado en la empresa.", 409);
 
-  const { data: employee, error } = await scope.supabase.from("employees").insert({
-    company_id: scope.company.companyId,
-    employee_number: parsed.data.employee_number,
-    first_name: parsed.data.first_name,
-    last_name: parsed.data.last_name,
-    email: parsed.data.email ?? null,
-    branch_id: parsed.data.branch_id ?? null,
-    hired_on: parsed.data.hired_on ?? null,
-  }).select(EMPLOYEE_COLUMNS).single();
+  const { data: createdId, error } = await scope.supabase.rpc("create_employee_with_sensitive_data", {
+    p_company_id: scope.company.companyId,
+    p_employee: {
+      employee_number: parsed.data.employee_number,
+      first_name: parsed.data.first_name,
+      last_name: parsed.data.last_name,
+      email: parsed.data.email ?? null,
+      branch_id: parsed.data.branch_id ?? null,
+      hired_on: parsed.data.hired_on ?? null,
+      nss: parsed.data.nss,
+      personal_rfc: parsed.data.personal_rfc ?? null,
+    },
+  });
   if (error?.code === "23505") return apiError("employee_number_conflict", "Ese identificador ya está registrado en la empresa.", 409);
   if (error?.code === "42501") return apiError("employee_write_forbidden", "Las políticas de seguridad no permiten crear empleados en esta sucursal.", 403);
-  if (error || !employee) return apiError("employee_create_failed", "No fue posible registrar el empleado.", 503);
+  if (error || !createdId) return apiError("employee_create_failed", "No fue posible registrar el empleado.", 503);
+  const { data: employee, error: lookupError } = await scope.supabase.from("employees").select(EMPLOYEE_COLUMNS).eq("company_id", scope.company.companyId).eq("id", createdId).maybeSingle();
+  if (lookupError || !employee) return apiError("employee_create_failed", "No fue posible confirmar el registro del empleado.", 503);
 
   try {
     return Response.json({ item: await employeeDetails(scope, employee as unknown as EmployeeRow) }, { status: 201, headers: { "Cache-Control": "no-store" } });

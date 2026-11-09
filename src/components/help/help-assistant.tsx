@@ -5,7 +5,7 @@ import type { FormEvent } from "react";
 import { usePathname } from "next/navigation";
 import { BotMessageSquare, CircleHelp, Maximize2, Minus, Send, X } from "lucide-react";
 
-type Message = { kind: "user" | "assistant"; text: string; found?: boolean };
+type Message = { kind: "user" | "assistant"; text: string; found?: boolean; suggestions?: string[] };
 const pages = [
   ["/login", "Inicio de sesión"], ["/seleccionar-empresa", "Selección de empresa"], ["/admin", "Panel"],
   ["/admin/configuracion", "Configuración"], ["/admin/supervisores", "Supervisores y dispositivos"],
@@ -26,6 +26,8 @@ export function HelpAssistant() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
+  const [initialSuggestions, setInitialSuggestions] = useState<string[]>([]);
+  const [suggestionsLoaded, setSuggestionsLoaded] = useState(false);
   const [description, setDescription] = useState("");
   const [page, setPage] = useState("/admin");
   const [sending, setSending] = useState(false);
@@ -56,20 +58,38 @@ export function HelpAssistant() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [activePanel]);
 
-  async function ask(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const value = question.trim();
+  useEffect(() => {
+    if (activePanel !== "chat" || suggestionsLoaded) return;
+    const controller = new AbortController();
+    void fetch("/api/help/suggestions", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return { suggestions: [] as string[] };
+        return await response.json() as { suggestions?: string[] };
+      })
+      .then((body) => setInitialSuggestions(Array.isArray(body.suggestions) ? body.suggestions.slice(0, 6) : []))
+      .catch(() => { if (!controller.signal.aborted) setInitialSuggestions([]); })
+      .finally(() => { if (!controller.signal.aborted) setSuggestionsLoaded(true); });
+    return () => controller.abort();
+  }, [activePanel, suggestionsLoaded]);
+
+  async function askQuestion(input: string) {
+    const value = input.trim();
     if (!value || asking) return;
     setMessages((items) => [...items, { kind: "user", text: value }]);
     setQuestion(""); setAsking(true);
     try {
       const response = await fetch("/api/help/answer", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: value }), cache: "no-store" });
-      const body = await response.json() as { answer?: string; found?: boolean; error?: string };
+      const body = await response.json() as { answer?: string; found?: boolean; error?: string; suggestions?: string[] };
       if (!response.ok || !body.answer) throw new Error(body.error ?? "La ayuda no está disponible en este momento.");
-      setMessages((items) => [...items, { kind: "assistant", text: body.answer!, found: body.found }]);
+      setMessages((items) => [...items, { kind: "assistant", text: body.answer!, found: body.found, suggestions: Array.isArray(body.suggestions) ? body.suggestions.slice(0, 3) : [] }]);
     } catch (reason) {
       setMessages((items) => [...items, { kind: "assistant", text: reason instanceof Error ? reason.message : "La ayuda no está disponible en este momento." }]);
     } finally { setAsking(false); }
+  }
+
+  function ask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void askQuestion(question);
   }
 
   async function submitReport(event: FormEvent<HTMLFormElement>) {
@@ -117,8 +137,8 @@ export function HelpAssistant() {
       <header className="flex items-center justify-between border-b border-slate-100 bg-gradient-to-r from-blue-50 via-white to-white px-4 py-3"><div className="flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl bg-blue-100 text-blue-800"><BotMessageSquare size={20} aria-hidden="true" /></span><h2 id="help-assistant-title" className="text-base font-bold text-slate-950">Chatbot</h2></div><div className="flex items-center gap-1"><button id="chat-minimize-toggle" type="button" onClick={() => setChatMinimized((value) => !value)} aria-label={chatMinimized ? "Restaurar Chatbot" : "Minimizar Chatbot"} className="grid size-10 place-items-center rounded-lg text-slate-600 transition hover:bg-blue-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 active:bg-blue-200"><span className="sr-only">{chatMinimized ? "Restaurar" : "Minimizar"}</span>{chatMinimized ? <Maximize2 size={18} aria-hidden="true" /> : <Minus size={18} aria-hidden="true" />}</button><button type="button" onClick={() => { setChatMinimized(false); setActivePanel(null); }} aria-label="Cerrar Chatbot" className="grid size-10 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-200 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 active:bg-slate-300"><X size={18} aria-hidden="true" /></button></div></header>
       {!chatMinimized ? <>
         <div aria-live="polite" aria-relevant="additions text" className="min-h-36 flex-1 space-y-4 overflow-y-auto bg-slate-50/70 p-4 sm:p-5">
-          {!messages.length ? <p className="rounded-2xl border border-blue-100 bg-white p-4 text-base leading-7 text-slate-700 shadow-sm">Hola. Pregúntame cómo iniciar sesión, elegir una empresa, administrar horarios, usar el escáner o consultar tu credencial. Responderé con pasos que aparecen en el manual de usuario.</p> : null}
-          {messages.map((message, index) => <article key={`${message.kind}-${index}`} className={`max-w-[92%] rounded-2xl p-4 text-base leading-7 shadow-sm ${message.kind === "user" ? "ml-auto bg-blue-700 text-white" : "mr-auto border border-slate-200 bg-white text-slate-800"}`}><p className={`mb-1 text-sm font-bold ${message.kind === "user" ? "text-blue-100" : "text-blue-800"}`}>{message.kind === "user" ? "Tú" : "Chatbot"}</p><p className="whitespace-pre-wrap">{message.text}</p>{message.kind === "assistant" && message.found ? <p className="mt-3 border-t border-slate-100 pt-2 text-sm font-medium text-slate-600">Información del manual de usuario</p> : null}</article>)}
+          {!messages.length ? <><p className="rounded-2xl border border-blue-100 bg-white p-4 text-base leading-7 text-slate-700 shadow-sm">Hola. Elige una pregunta recomendada o escribe la tuya. Responderé con pasos que aparecen en el manual de usuario.</p>{initialSuggestions.length ? <section aria-label="Preguntas recomendadas" className="space-y-2"><h3 className="text-sm font-bold text-slate-700">Preguntas recomendadas</h3><div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{initialSuggestions.map((suggestion) => <button key={suggestion} type="button" disabled={asking} onClick={() => void askQuestion(suggestion)} className="min-h-11 rounded-xl border border-blue-200 bg-white px-3 py-2 text-left text-sm font-medium leading-5 text-blue-900 transition hover:border-blue-400 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200 active:bg-blue-100 disabled:cursor-wait disabled:opacity-60">{suggestion}</button>)}</div></section> : suggestionsLoaded ? null : <p role="status" className="text-sm text-slate-600">Cargando preguntas recomendadas…</p>}</> : null}
+          {messages.map((message, index) => <article key={`${message.kind}-${index}`} className={`max-w-[92%] rounded-2xl p-4 text-base leading-7 shadow-sm ${message.kind === "user" ? "ml-auto bg-blue-700 text-white" : "mr-auto border border-slate-200 bg-white text-slate-800"}`}><p className={`mb-1 text-sm font-bold ${message.kind === "user" ? "text-blue-100" : "text-blue-800"}`}>{message.kind === "user" ? "Tú" : "Chatbot"}</p><p className="whitespace-pre-wrap">{message.text}</p>{message.kind === "assistant" && message.found ? <p className="mt-3 border-t border-slate-100 pt-2 text-sm font-medium text-slate-600">Información del manual de usuario</p> : null}{message.kind === "assistant" && message.suggestions?.length ? <section aria-label="Preguntas relacionadas" className="mt-3 border-t border-slate-100 pt-3"><h3 className="mb-2 text-sm font-bold text-slate-700">Preguntas relacionadas</h3><div className="flex flex-col gap-2">{message.suggestions.slice(0, 3).map((suggestion) => <button key={`${index}-${suggestion}`} type="button" disabled={asking} onClick={() => void askQuestion(suggestion)} className="min-h-11 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-left text-sm font-medium leading-5 text-blue-900 transition hover:border-blue-400 hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-200 active:bg-blue-200 disabled:cursor-wait disabled:opacity-60">{suggestion}</button>)}</div></section> : null}</article>)}
           {asking ? <p role="status" className="text-base text-slate-600">Buscando en el manual…</p> : null}
         </div>
         <form onSubmit={(event) => void ask(event)} className="border-t border-slate-200 bg-white p-3 sm:p-4"><div className="flex gap-2"><label htmlFor="help-question" className="sr-only">Pregunta</label><input id="help-question" value={question} maxLength={300} onChange={(event) => setQuestion(event.target.value)} placeholder="Escribe tu pregunta" className="min-w-0 flex-1 rounded-xl border border-slate-300 px-4 py-3 text-base outline-none placeholder:text-slate-500 focus:border-blue-700 focus:ring-2 focus:ring-blue-100" /><button type="submit" disabled={asking || !question.trim()} aria-label="Enviar pregunta" className="grid size-12 shrink-0 place-items-center rounded-xl bg-blue-700 text-white transition hover:bg-blue-800 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-300 active:bg-blue-900 disabled:cursor-not-allowed disabled:opacity-50"><Send size={18} aria-hidden="true" /></button></div><p className="mt-2 text-sm leading-5 text-slate-600">Privacidad: no incluyas nombres ni datos de empresa o trabajador, correos, RFC, NSS, contraseñas, PIN o tokens. Si Gemini está habilitado, se envía la pregunta redactada y solo los fragmentos pertinentes del manual. El nivel gratuito de Gemini puede usar el contenido enviado para mejorar sus productos según sus condiciones vigentes. Si prefieres, no compartas información sensible.</p></form>

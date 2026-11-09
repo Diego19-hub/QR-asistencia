@@ -5,9 +5,11 @@ import { setActiveMembershipCookie } from "@/lib/access/active-membership-cookie
 const schema = z.object({
   name: z.string().trim().min(1).max(180),
   legalName: z.string().trim().max(240).nullable().optional(),
-  rfc: z.string().trim().toUpperCase().max(13).nullable().optional(),
+  address: z.string().trim().min(1).max(500),
+  employerRegistrationNumber: z.string().trim().min(1).max(64),
+  rfc: z.string().trim().toUpperCase().length(12),
 }).strict().superRefine((value, context) => {
-  if (value.rfc && !/^[A-Z&Ñ]{3,4}\d{6}[A-Z0-9]{3}$/.test(value.rfc)) {
+  if (!/^[A-Z&Ñ]{3}\d{6}[A-Z0-9]{3}$/.test(value.rfc)) {
     context.addIssue({ code: "custom", path: ["rfc"], message: "Revisa el formato del RFC." });
   }
 });
@@ -20,7 +22,7 @@ export async function POST(request: Request) {
   let body: unknown;
   try { body = await request.json(); } catch { return error("invalid_json", "La solicitud no contiene datos válidos.", 400); }
   const parsed = schema.safeParse(body);
-  if (!parsed.success) return error("validation_failed", "Revisa el nombre, la razón social y el RFC.", 422);
+  if (!parsed.success) return Response.json({ error: { code: "validation_failed", message: "Completa el nombre, domicilio, RFC de persona moral y registro patronal.", fields: parsed.error.flatten().fieldErrors } }, { status: 422, headers: { "Cache-Control": "no-store, private" } });
 
   const supabase = await createClient();
   const { data: auth, error: authError } = await supabase.auth.getUser();
@@ -28,7 +30,9 @@ export async function POST(request: Request) {
   const { data, error: rpcError } = await supabase.rpc("create_company_for_current_owner", {
     p_name: parsed.data.name,
     p_legal_name: parsed.data.legalName || null,
-    p_rfc: parsed.data.rfc || null,
+    p_rfc: parsed.data.rfc,
+    p_address: parsed.data.address,
+    p_employer_registration_number: parsed.data.employerRegistrationNumber,
   });
   if (rpcError?.code === "42501") return error("owner_required", "Solo un propietario activo puede crear otra empresa.", 403);
   if (rpcError?.code === "22023") return error("validation_failed", "Revisa los datos de la empresa.", 422);

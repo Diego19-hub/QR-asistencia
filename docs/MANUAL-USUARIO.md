@@ -33,12 +33,12 @@ El Owner puede administrar las empresas de las que tiene una membresía activa d
 2. En el menú, abre **Configuración** (`/admin/configuracion`).
 3. Usa las secciones **Empresa**, **Asistencia**, **Sucursales** y **Configuración avanzada**.
 
-En **Empresa** puedes consultar y editar el nombre comercial, la razón social y el RFC. En **Sucursales** puedes consultar, crear y activar o desactivar sucursales. El servidor exige el permiso `company.manage` y limita las operaciones a la empresa seleccionada.
+En **Empresa** puedes consultar y editar el nombre de la empresa, domicilio, RFC de persona moral y número de registro patronal. La razón social es opcional. El RFC se guarda en mayúsculas y debe cumplir el formato de persona moral. Los cuatro datos obligatorios se validan al guardar. El servidor exige `company.manage` y limita las operaciones a la empresa seleccionada; el RFC y los datos patronales se guardan en almacenamiento privado.
 
 ### Crear otra empresa
 
 1. En la parte superior del panel administrativo, pulsa **Crear otra empresa**. Esta opción está disponible cuando la membresía activa seleccionada tiene rol Owner.
-2. Completa el nombre comercial, que es obligatorio. La razón social y el RFC son opcionales.
+2. Completa nombre, domicilio, RFC de persona moral de 12 caracteres y número de registro patronal. La razón social es opcional.
 3. Envía el formulario y revisa el resultado.
 4. La aplicación cambia a la empresa recién creada, donde el usuario queda como Owner.
 
@@ -67,9 +67,12 @@ El Administrador trabaja dentro de la empresa seleccionada y de los permisos efe
 ### Empleados
 
 1. En el menú del panel, abre **Empleados** (`/admin/empleados`).
-2. Usa la lista para localizar un expediente y pulsa **Ver expediente**.
-3. Desde el listado puedes consultar el estado y la información visible, y activar o desactivar el expediente según los permisos disponibles.
-4. En el expediente se administran los datos permitidos y las credenciales que la pantalla tenga habilitadas. Las credenciales QR se emiten o regeneran desde la administración; regenerar invalida la anterior.
+2. Para crear un expediente, pulsa **Nuevo empleado** y captura nombre(s), apellidos, NSS de 11 dígitos e identificador interno. El RFC personal es opcional; si lo agregas, se normaliza a mayúsculas y debe tener el formato mexicano de persona física. Correo, sucursal y fecha de ingreso se completan según las necesidades del expediente.
+3. Usa la lista para localizar un expediente y pulsa **Ver expediente**. El directorio no muestra NSS ni RFC completos.
+4. En el expediente puedes completar o editar esos datos con los demás datos laborales. El NSS se muestra parcialmente oculto y el RFC personal enmascarado; al editar, el formulario presenta los valores para que un rol autorizado pueda corregirlos.
+5. Las credenciales QR se emiten o regeneran desde la administración; regenerar invalida la anterior.
+
+El NSS y el RFC personal son datos sensibles. Se consultan mediante una operación de servidor para Owner/Administrador con permiso de lectura de empleados; no aparecen en listados, reportes o mensajes de error. Los registros existentes pueden completar el NSS en el expediente. La razón social de empresa es opcional.
 
 La cuenta de acceso de una persona y su expediente de empleado son elementos relacionados, pero distintos. Para que una persona use el portal de empleado, la membresía debe estar vinculada a un expediente activo.
 

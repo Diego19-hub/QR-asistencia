@@ -31,8 +31,14 @@ function CompanyFields({ pending }: { pending: boolean }) {
     <label className="block text-sm font-medium text-slate-800">Razón social <span className="font-normal text-slate-500">(opcional)</span>
       <input name="legalName" type="text" autoComplete="organization-title" maxLength={240} disabled={pending} className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 px-3.5 text-base text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 disabled:bg-slate-100" />
     </label>
-    <label className="block text-sm font-medium text-slate-800">RFC <span className="font-normal text-slate-500">(opcional)</span>
-      <input name="rfc" type="text" autoComplete="off" maxLength={13} disabled={pending} className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 px-3.5 text-base uppercase text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 disabled:bg-slate-100" />
+    <label className="block text-sm font-medium text-slate-800">Domicilio de la empresa *
+      <textarea name="address" autoComplete="street-address" maxLength={500} required disabled={pending} className="mt-1.5 min-h-24 w-full rounded-xl border border-slate-300 px-3.5 py-3 text-base text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 disabled:bg-slate-100" />
+    </label>
+    <label className="block text-sm font-medium text-slate-800">RFC de persona moral *
+      <input name="rfc" type="text" autoComplete="off" maxLength={12} minLength={12} required disabled={pending} className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 px-3.5 text-base uppercase text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 disabled:bg-slate-100" placeholder="12 caracteres" />
+    </label>
+    <label className="block text-sm font-medium text-slate-800">Número de registro patronal *
+      <input name="employerRegistrationNumber" type="text" autoComplete="off" maxLength={64} required disabled={pending} className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 px-3.5 text-base text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 disabled:bg-slate-100" />
     </label>
   </>;
 }

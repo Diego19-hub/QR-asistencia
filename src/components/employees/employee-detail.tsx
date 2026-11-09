@@ -11,13 +11,14 @@ import { EmployeeCredentials } from "@/components/employees/employee-credentials
 type Branch = { id: string; name: string; timezone: string };
 type Employee = {
   id: string; employee_number: string; first_name: string; last_name: string; email: string | null; auth_user_id: string | null;
+  nss: string | null; personal_rfc: string | null;
   branch_id: string | null; active: boolean; hired_on: string | null; terminated_on: string | null;
   created_at: string; updated_at: string; branch: Branch | null;
   currentSchedule: { id: string; name: string; kind: string; startsOn: string; endsOn: string | null; startLocal: string | null; endLocal: string | null; plannedMinutes: number } | null;
 };
 type EmployeePayload = { item: Employee };
 type BranchPayload = { branches: Branch[] };
-type EditField = "employee_number" | "first_name" | "last_name" | "email" | "hired_on" | "branch_id";
+type EditField = "employee_number" | "first_name" | "last_name" | "nss" | "personal_rfc" | "email" | "hired_on" | "branch_id";
 
 const inputClass = "mt-1.5 h-11 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-4 focus:ring-blue-100";
 
@@ -93,6 +94,8 @@ export function EmployeeDetail({ employeeId }: { employeeId: string }) {
       employee_number: String(values.get("employee_number") ?? "").trim(),
       first_name: String(values.get("first_name") ?? "").trim(),
       last_name: String(values.get("last_name") ?? "").trim(),
+      nss: String(values.get("nss") ?? "").trim(),
+      personal_rfc: String(values.get("personal_rfc") ?? "").trim() || null,
       email: String(values.get("email") ?? "").trim() || null,
       branch_id: String(values.get("branch_id") ?? "") || null,
       hired_on: String(values.get("hired_on") ?? "") || null,
@@ -104,7 +107,7 @@ export function EmployeeDetail({ employeeId }: { employeeId: string }) {
       if (!response.ok) {
         const fields = payload.error?.fields as Record<string, string[]> | undefined;
         const fieldErrors: Partial<Record<EditField, string>> = {};
-        for (const name of ["employee_number", "first_name", "last_name", "email", "hired_on", "branch_id"] as const) {
+        for (const name of ["employee_number", "first_name", "last_name", "nss", "personal_rfc", "email", "hired_on", "branch_id"] as const) {
           if (typeof fields?.[name]?.[0] === "string") fieldErrors[name] = fields[name][0];
         }
         setEditFieldErrors(fieldErrors);
@@ -167,18 +170,21 @@ export function EmployeeDetail({ employeeId }: { employeeId: string }) {
             <label className="text-xs font-semibold text-slate-700">Fecha de ingreso<input name="hired_on" type="date" defaultValue={employee.hired_on ?? ""} aria-invalid={Boolean(editFieldErrors.hired_on)} aria-describedby={editFieldErrors.hired_on ? "edit-hire-error" : undefined} className={inputClass} />{editFieldErrors.hired_on ? <span id="edit-hire-error" role="alert" className="mt-1 block text-xs text-rose-700">{editFieldErrors.hired_on}</span> : null}</label>
             <label className="text-xs font-semibold text-slate-700">Nombre(s) *<input required name="first_name" defaultValue={employee.first_name} maxLength={100} aria-invalid={Boolean(editFieldErrors.first_name)} aria-describedby={editFieldErrors.first_name ? "edit-first-name-error" : undefined} className={inputClass} autoComplete="given-name" />{editFieldErrors.first_name ? <span id="edit-first-name-error" role="alert" className="mt-1 block text-xs text-rose-700">{editFieldErrors.first_name}</span> : null}</label>
             <label className="text-xs font-semibold text-slate-700">Apellidos *<input required name="last_name" defaultValue={employee.last_name} maxLength={120} aria-invalid={Boolean(editFieldErrors.last_name)} aria-describedby={editFieldErrors.last_name ? "edit-last-name-error" : undefined} className={inputClass} autoComplete="family-name" />{editFieldErrors.last_name ? <span id="edit-last-name-error" role="alert" className="mt-1 block text-xs text-rose-700">{editFieldErrors.last_name}</span> : null}</label>
+            <label className="text-xs font-semibold text-slate-700">NSS *<input required name="nss" defaultValue={employee.nss ?? ""} maxLength={11} inputMode="numeric" autoComplete="off" aria-invalid={Boolean(editFieldErrors.nss)} aria-describedby={editFieldErrors.nss ? "edit-nss-error" : "edit-sensitive-hint"} className={inputClass} />{editFieldErrors.nss ? <span id="edit-nss-error" role="alert" className="mt-1 block text-xs text-rose-700">{editFieldErrors.nss}</span> : null}</label>
+            <label className="text-xs font-semibold text-slate-700">RFC personal (opcional)<input name="personal_rfc" defaultValue={employee.personal_rfc ?? ""} maxLength={13} autoComplete="off" aria-invalid={Boolean(editFieldErrors.personal_rfc)} aria-describedby={editFieldErrors.personal_rfc ? "edit-personal-rfc-error" : "edit-sensitive-hint"} className={`${inputClass} uppercase`} />{editFieldErrors.personal_rfc ? <span id="edit-personal-rfc-error" role="alert" className="mt-1 block text-xs text-rose-700">{editFieldErrors.personal_rfc}</span> : null}</label>
+            <p id="edit-sensitive-hint" className="text-xs font-normal text-slate-500 sm:col-span-2">El NSS debe tener 11 dígitos. Estos datos solo se muestran en el expediente autorizado y se ocultan en el directorio.</p>
             <label className="text-xs font-semibold text-slate-700">Correo electrónico<input name="email" type="email" defaultValue={employee.email ?? ""} maxLength={254} aria-invalid={Boolean(editFieldErrors.email)} aria-describedby={editFieldErrors.email ? "edit-email-error" : undefined} className={inputClass} autoComplete="email" />{editFieldErrors.email ? <span id="edit-email-error" role="alert" className="mt-1 block text-xs text-rose-700">{editFieldErrors.email}</span> : null}</label>
             <label className="text-xs font-semibold text-slate-700">Sucursal<select name="branch_id" defaultValue={employee.branch_id ?? ""} aria-invalid={Boolean(editFieldErrors.branch_id)} aria-describedby={editFieldErrors.branch_id ? "edit-branch-error" : undefined} className={inputClass}><option value="">Sin sucursal</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select>{editFieldErrors.branch_id ? <span id="edit-branch-error" role="alert" className="mt-1 block text-xs text-rose-700">{editFieldErrors.branch_id}</span> : null}</label>
           </div>
           <div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end"><button type="button" disabled={saving} onClick={cancelEditing} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 text-xs font-semibold text-slate-700 disabled:opacity-50"><X size={14} />Cancelar</button><button disabled={saving} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#14264a] px-4 text-xs font-semibold text-white disabled:opacity-50"><Save size={14} />{saving ? "Guardando…" : "Guardar cambios"}</button></div>
-        </form> : <dl className="mt-6 grid gap-5 sm:grid-cols-2">{[
+        </form> : <><dl className="mt-6 grid gap-5 sm:grid-cols-2">{[
           { icon: BriefcaseBusiness, label: "Identificador", value: employee.employee_number },
           { icon: Mail, label: "Correo", value: employee.email || "No registrado" },
           { icon: UserRound, label: "Cuenta de acceso", value: employee.auth_user_id ? "Vinculada" : "Sin vincular · puede usar QR físico" },
           { icon: MapPin, label: "Sucursal", value: employee.branch?.name || "Sin sucursal asignada" },
           { icon: CalendarDays, label: "Fecha de ingreso", value: employee.hired_on || "No registrada" },
           { icon: CalendarDays, label: "Expediente creado", value: new Date(employee.created_at).toLocaleDateString("es-MX", { dateStyle: "long", timeZone: employee.branch?.timezone ?? "America/Mexico_City" }) },
-        ].map(({ icon: Icon, label, value }) => <div key={label} className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-lg bg-slate-50 text-slate-500"><Icon size={16} /></span><div><dt className="text-[11px] font-medium text-slate-400">{label}</dt><dd className="mt-1 text-sm font-semibold text-slate-800">{value}</dd></div></div>)}</dl>}
+        ].map(({ icon: Icon, label, value }) => <div key={label} className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-lg bg-slate-50 text-slate-500"><Icon size={16} /></span><div><dt className="text-[11px] font-medium text-slate-400">{label}</dt><dd className="mt-1 text-sm font-semibold text-slate-800">{value}</dd></div></div>)}</dl><dl className="mt-6 grid gap-4 border-t border-slate-100 pt-5 sm:grid-cols-2"><div><dt className="text-xs font-medium text-slate-500">NSS</dt><dd className="mt-1 text-sm font-semibold text-slate-800">{employee.nss ? `•••••••${employee.nss.slice(-4)}` : "Pendiente de completar"}</dd></div><div><dt className="text-xs font-medium text-slate-500">RFC personal</dt><dd className="mt-1 text-sm font-semibold text-slate-800">{employee.personal_rfc ? `${employee.personal_rfc.slice(0, 3)}••••••••••` : "No registrado"}</dd></div></dl></>}
       </section>
 
       <aside className="space-y-5"><section className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm"><h2 className="text-sm font-bold text-slate-900">Horario asignado</h2>{employee.currentSchedule ? <div className="mt-4 rounded-xl bg-slate-50 p-4"><p className="text-sm font-semibold text-slate-800">{employee.currentSchedule.name}</p><p className="mt-1 text-sm text-slate-700">{employee.currentSchedule.startLocal?.slice(0, 5) ?? "Horario variable"}{employee.currentSchedule.endLocal ? ` – ${employee.currentSchedule.endLocal.slice(0, 5)}` : ""}</p><p className="mt-3 text-xs text-slate-600">Vigencia desde {employee.currentSchedule.startsOn}{employee.currentSchedule.endsOn ? ` hasta ${employee.currentSchedule.endsOn}` : " · Sin fecha de término"}</p></div> : <p className="mt-3 text-sm leading-relaxed text-slate-600">Este empleado no tiene un horario vigente.</p>}<Link href={`/admin/horarios?employeeId=${employee.id}`} className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#14264a] px-4 text-xs font-semibold text-white hover:bg-blue-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">{employee.currentSchedule ? <><CalendarDays size={14} />Administrar horario</> : <><CalendarDays size={14} />Asignar horario</>}</Link></section><section className="rounded-2xl border border-blue-100 bg-blue-50/60 p-5"><p className="text-xs font-semibold text-blue-900">Historial protegido</p><p className="mt-1.5 text-sm leading-relaxed text-blue-900/80">Al desactivar el expediente, se conserva su relación laboral y cualquier registro histórico.</p></section></aside>

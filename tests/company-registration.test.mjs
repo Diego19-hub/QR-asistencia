@@ -14,6 +14,8 @@ test("owner registration validates and normalizes presentation identity without 
     confirmation: " password with spaces ",
     companyName: "  Empresa QA  ",
     legalName: "  Razón Social QA ",
+    address: "  Domicilio QA  ",
+    employerRegistrationNumber: "  RP-123  ",
     rfc: " abc010203xyz ",
   });
   assert.equal(parsed.fullName, "Ana María Ortega");
@@ -22,16 +24,26 @@ test("owner registration validates and normalizes presentation identity without 
   assert.equal(parsed.confirmation, parsed.password);
   assert.equal(parsed.companyName, "Empresa QA");
   assert.equal(parsed.legalName, "Razón Social QA");
+  assert.equal(parsed.address, "Domicilio QA");
+  assert.equal(parsed.employerRegistrationNumber, "RP-123");
   assert.equal(parsed.rfc, "ABC010203XYZ");
 });
 
 test("registration rejects invalid names, emails, password mismatch, short passwords and malformed RFC", () => {
-  const valid = { fullName: "Ana QA", email: "ana@example.invalid", password: "123456", confirmation: "123456", companyName: "Empresa QA", legalName: "", rfc: "" };
+  const valid = { fullName: "Ana QA", email: "ana@example.invalid", password: "123456", confirmation: "123456", companyName: "Empresa QA", legalName: "", address: "Domicilio QA", employerRegistrationNumber: "RP-123", rfc: "abc010203xyz" };
+  const companyValid = { companyName: "Empresa QA", legalName: "", address: "Domicilio QA", employerRegistrationNumber: "RP-123", rfc: "abc010203xyz" };
   assert.equal(ownerRegistrationSchema.safeParse({ ...valid, fullName: "A" }).success, false);
   assert.equal(ownerRegistrationSchema.safeParse({ ...valid, email: "invalid" }).success, false);
   assert.equal(ownerRegistrationSchema.safeParse({ ...valid, password: "12345", confirmation: "12345" }).success, false);
   assert.equal(ownerRegistrationSchema.safeParse({ ...valid, confirmation: "654321" }).success, false);
-  assert.equal(companyDetailsSchema.safeParse({ companyName: "Empresa QA", legalName: "", rfc: "NO ES RFC" }).success, false);
+  assert.equal(companyDetailsSchema.safeParse({ companyName: "Empresa QA", legalName: "", address: "Domicilio QA", employerRegistrationNumber: "RP-123", rfc: "NO ES RFC" }).success, false);
+  assert.equal(companyDetailsSchema.safeParse({ companyName: "Empresa QA", legalName: "", address: "", employerRegistrationNumber: "RP-123", rfc: "ABC010101ABC" }).success, false);
+  assert.equal(companyDetailsSchema.safeParse({ ...companyValid, address: "x".repeat(501) }).success, false);
+  assert.equal(companyDetailsSchema.safeParse({ ...companyValid, employerRegistrationNumber: "x".repeat(65) }).success, false);
+  assert.equal(companyDetailsSchema.safeParse({ ...companyValid, companyName: "x".repeat(181) }).success, false);
+  assert.equal(companyDetailsSchema.safeParse({ ...companyValid, legalName: "x".repeat(241) }).success, false);
+  assert.equal(companyDetailsSchema.safeParse({ ...companyValid, companyName: "" }).success, false);
+  assert.equal(companyDetailsSchema.safeParse({ ...companyValid, rfc: "A$C010101AB1" }).success, false);
 });
 
 test("login links to first-company registration and no-membership login continues onboarding", async () => {
@@ -52,6 +64,8 @@ test("Auth account creation is separate from company persistence until a session
   assert.match(actions, /data: \{ full_name: parsed\.data\.fullName \}/);
   assert.match(actions, /if \(!data\.session\)[\s\S]*?verification-pending/);
   assert.match(actions, /create_first_company_for_current_user/);
+  assert.match(actions, /p_address: details\.address/);
+  assert.match(actions, /p_employer_registration_number: details\.employerRegistrationNumber/);
   assert.doesNotMatch(actions, /user_id\s*:\s*parsed|p_user_id|role\s*:\s*["']owner["']/);
   assert.doesNotMatch(actions, /console\.(?:log|warn|error)|JSON\.stringify\(formData/);
 });

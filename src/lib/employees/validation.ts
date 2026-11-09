@@ -15,6 +15,12 @@ const optionalDate = z.preprocess(
   z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Usa una fecha válida.").nullable().optional(),
 );
 
+export const employeeNssSchema = z.string().trim().regex(/^\d{11}$/, "El NSS debe contener exactamente 11 dígitos.");
+export const employeeRfcSchema = z.preprocess(
+  (value) => typeof value === "string" && !value.trim() ? null : typeof value === "string" ? value.trim().toUpperCase() : value,
+  z.string().length(13, "El RFC personal debe tener 13 caracteres.").regex(/^[A-Z&Ñ]{4}\d{6}[A-Z0-9]{3}$/, "Revisa el formato del RFC personal.").nullable().optional(),
+);
+
 export const employeeFields = {
   employee_number: z.string().trim().min(1, "El identificador es obligatorio.").max(64),
   first_name: z.string().trim().min(1, "El nombre es obligatorio.").max(100),
@@ -29,6 +35,8 @@ export const createEmployeeSchema = z.object({
   employee_number: employeeFields.employee_number,
   first_name: employeeFields.first_name,
   last_name: employeeFields.last_name,
+  nss: employeeNssSchema,
+  personal_rfc: employeeRfcSchema,
   email: optionalEmail,
   branch_id: optionalUuid,
   hired_on: optionalDate,
@@ -38,6 +46,8 @@ export const patchEmployeeSchema = z.object({
   employee_number: employeeFields.employee_number.optional(),
   first_name: employeeFields.first_name.optional(),
   last_name: employeeFields.last_name.optional(),
+  nss: employeeNssSchema.optional(),
+  personal_rfc: employeeRfcSchema,
   email: optionalEmail,
   branch_id: optionalUuid,
   hired_on: optionalDate,
