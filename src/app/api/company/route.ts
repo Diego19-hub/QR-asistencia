@@ -28,7 +28,7 @@ function companyLookupError(error: { code?: string; message?: string } | null) {
   if (isMissingPinSettingColumn(error)) {
     return apiError(
       "company_attendance_settings_migration_required",
-      "La base de datos todavía no incluye la configuración de asistencia. Se requiere aplicar 20261107211000_optional_employee_pin_requirement.sql antes de consultar o guardar el requisito de PIN.",
+      "La base de datos todavía no incluye la configuración de asistencia. Se requiere aplicar 20261109011259_optional_employee_pin_requirement.sql antes de consultar o guardar el requisito de PIN.",
       503,
     );
   }

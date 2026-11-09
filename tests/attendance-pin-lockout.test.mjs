@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const migration = await readFile("supabase/migrations/20261018120000_persist_employee_pin_failures.sql", "utf8");
-const optionalPinMigration = await readFile("supabase/migrations/20261107211000_optional_employee_pin_requirement.sql", "utf8");
+const optionalPinMigration = await readFile("supabase/migrations/20261109011259_optional_employee_pin_requirement.sql", "utf8");
 const revokeCipherMigration = await readFile("supabase/migrations/20261107230000_optional_attendance_pin_and_recoverable_qr.sql", "utf8");
 const route = await readFile("src/app/api/attendance/scan/route.ts", "utf8");
 const companyRoute = await readFile("src/app/api/company/route.ts", "utf8");
@@ -49,7 +49,7 @@ test("company PIN policy is protected by company.manage and scanner hides the fi
 test("missing PIN schema reports the canonical migration prerequisite", () => {
   assert.match(companyRoute, /function isMissingPinSettingColumn/);
   assert.match(companyRoute, /error\.code === "42703" \|\| error\.code === "PGRST204"/);
-  assert.match(companyRoute, /20261107211000_optional_employee_pin_requirement\.sql/);
+  assert.match(companyRoute, /20261109011259_optional_employee_pin_requirement\.sql/);
   assert.match(companyRoute, /if \(error\) return companyLookupError\(error\)/);
 });
 

@@ -1,5 +1,5 @@
 -- Optional PIN policy and encrypted employee QR storage are introduced by
--- 20261107211000_optional_employee_pin_requirement.sql and
+-- 20261109011259_optional_employee_pin_requirement.sql and
 -- 20261107220000_employee_self_service_qr_display.sql. This final migration
 -- removes the recoverable ciphertext when an administrator revokes a QR.
 begin;
