@@ -52,10 +52,11 @@ test("Dokploy guide documents private GHCR, immutable references, and single-ins
   assert.match(guide, /llxyziffgtqnzlguxhyt/);
 });
 
-test("local Auth disables public sign-up while keeping email login available for invited users", async () => {
+test("local Auth permits first-company signup while email confirmation remains independently configured", async () => {
   const config = await readFile(new URL("../supabase/config.toml", import.meta.url), "utf8");
-  assert.match(config, /\[auth\][\s\S]*?enable_signup = false/);
+  assert.match(config, /\[auth\][\s\S]*?enable_signup = true/);
   assert.match(config, /\[auth\.email\][\s\S]*?enable_signup = true/);
+  assert.match(config, /\[auth\.email\][\s\S]*?enable_confirmations = false/);
 });
 
 test("Testing first-company bootstrap is hard-pinned and keeps the Production guard intact", async () => {

@@ -13,9 +13,14 @@ test("supervisor autorizado abre el escáner y un rol insuficiente no entra a ad
 
 test("cuentas sin membresía activa no alcanzan rutas protegidas", async ({ page, qr }) => {
   for (const key of ["NO_MEMBERSHIP", "INACTIVE_MEMBERSHIP", "INACTIVE_EMPLOYEE"]) {
+    await page.context().clearCookies();
     await qr.signIn(page, qr.fixture(`${key}_EMAIL`), qr.fixture(`${key}_PASSWORD`));
-    await expect(page).toHaveURL(/\/login\?error=no-company/);
-    await expect(page.getByText("Tu cuenta aún no está asignada a una empresa.", { exact: false })).toBeVisible();
+    await expect(page).toHaveURL(/\/crear-empresa(?:\?|$)/);
+    if (key === "NO_MEMBERSHIP") {
+      await expect(page.getByRole("heading", { name: "Completar alta de empresa" })).toBeVisible();
+    } else {
+      await expect(page.getByRole("heading", { name: "Esta cuenta ya está vinculada" })).toBeVisible();
+    }
   }
 });
 

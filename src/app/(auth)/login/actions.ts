@@ -55,7 +55,7 @@ export async function signIn(formData: FormData) {
               membershipId: membership.id,
             }));
             const selected = selectInitialMembership(choices);
-            if (selected.kind === "none") destination = "/login?error=no-company";
+            if (selected.kind === "none") destination = "/crear-empresa";
             else if (selected.kind === "choose") destination = companySelectionPathForAccessDestination(requestedNext);
             else {
               await setActiveMembershipCookie(selected.membership.membershipId ?? "");

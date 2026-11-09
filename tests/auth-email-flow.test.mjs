@@ -25,7 +25,7 @@ test("Invitation setup validates the configured password bounds and a presentati
   assert.match(actions, /list_my_pending_company_invitations/);
   assert.match(actions, /data: \{ full_name: fullName \}/);
   assert.match(localAuthConfig, /^minimum_password_length\s*=\s*6$/m);
-  assert.match(localAuthConfig, /^enable_signup\s*=\s*false$/m);
+  assert.match(localAuthConfig, /^enable_signup\s*=\s*true$/m);
   assert.equal(invitationPassword.isValidInvitationPassword("123456", "123456"), true);
   assert.equal(invitationPassword.isValidInvitationPassword("12345", "12345"), false);
   assert.equal(invitationPassword.isValidInvitationPassword("a".repeat(128), "a".repeat(128)), true);
@@ -103,6 +103,31 @@ test("Auth routes verify server-side and never redirect using request.url or tok
     assert.match(source, /Location", location/);
     assert.doesNotMatch(source, /access_token|refresh_token/);
   }
+
+test("first-company registration exposes a safe Auth confirmation target without changing email confirmation policy", async () => {
+  const [config, signupTemplate, companyPage, companyActions, migration] = await Promise.all([
+    readFile(new URL("../supabase/config.toml", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/templates/confirmation.html", import.meta.url), "utf8"),
+    readFile(new URL("../src/app/(auth)/crear-empresa/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/app/(auth)/crear-empresa/actions.ts", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/migrations/20261109021111_authenticated_first_company_registration.sql", import.meta.url), "utf8"),
+  ]);
+  assert.match(config, /^enable_signup = true$/m);
+  assert.match(config, /\[auth\.email\.template\.confirmation\][\s\S]*?content_path = "\.\/supabase\/templates\/confirmation\.html"/);
+  assert.match(signupTemplate, /\/auth\/confirm\?token_hash=\{\{ \.TokenHash \}\}&amp;type=signup/);
+  assert.match(companyPage, /OwnerRegistrationForm/);
+  assert.match(companyPage, /FirstCompanyCompletionForm/);
+  assert.match(companyActions, /supabase\.auth\.signUp\(/);
+  assert.match(companyActions, /getAuthRedirectUrl\("confirm"\)/);
+  assert.match(companyActions, /!data\.session/);
+  assert.match(companyActions, /email_confirmed_at/);
+  assert.match(companyActions, /create_first_company_for_current_user/);
+  assert.doesNotMatch(companyActions, /service_role|SUPABASE_SERVICE_ROLE_KEY|console\.(?:log|error).*formData/);
+  assert.match(migration, /email_confirmed_at/);
+  assert.match(migration, /auth\.uid\(\)/);
+  assert.doesNotMatch(migration, /p_user_id|p_owner_user_id|p_role/);
+  assert.match(migration, /pg_advisory_xact_lock/);
+});
   assert.match(confirm, /if \(error\) return redirectAuth\("login-invite-error"\)/);
 });
 
