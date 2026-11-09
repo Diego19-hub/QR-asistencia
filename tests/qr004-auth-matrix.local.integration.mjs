@@ -3218,6 +3218,13 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     assert.match(await actionBrowser.bodyText(), /La invitación venció o fue revocada\. Solicita una nueva\./, `${state} invitation displays the safe denial message`);
     assert.deepEqual(await snapshot(companyA), beforeRejectedState, `${state} Server Action rejection preserves invitation, membership and audit snapshots`);
     assert.equal((await dbPool.query("select count(*)::int n from public.company_memberships where company_id=$1 and user_id=$2", [companyA, identity.userId])).rows[0].n, 0, `${state} invitation cannot create membership`);
+    // The next iteration needs a fresh anonymous session. Without signing out,
+    // /login correctly redirects this authenticated no-membership user to the
+    // first-company completion page, so the test would try to fill a login
+    // form that is no longer rendered.
+    await actionBrowser.navigate("/qr004-action-harness");
+    await actionBrowser.runForm("#sign-out");
+    await actionBrowser.waitForPath("/login", `${state} invitation scenario signs out before the next identity`);
   }
 
   // Reproduce user_metadata tampering, then verify that the server-controlled
