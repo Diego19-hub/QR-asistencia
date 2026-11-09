@@ -24,7 +24,8 @@ const rpcSecurityCiOnly = process.argv.includes("--rpc-security-ci-only");
 const phase10ResidualOnly = process.argv.includes("--phase10-residual-only");
 const authorizationRacesOnly = process.argv.includes("--authorization-races-only");
 const invitationFlowOnly = process.argv.includes("--invitation-flow-only");
-const isolatedModes = [supervisorDeviceRlsOnly, privilegedRpcAuditOnly, phase9RpcOnly, rpcSecurityCiOnly, phase10ResidualOnly, authorizationRacesOnly].filter(Boolean);
+const companyRegistrationOnly = process.argv.includes("--company-registration-only");
+const isolatedModes = [supervisorDeviceRlsOnly, privilegedRpcAuditOnly, phase9RpcOnly, rpcSecurityCiOnly, phase10ResidualOnly, authorizationRacesOnly, companyRegistrationOnly].filter(Boolean);
 assert.ok(isolatedModes.length <= 1 && !(isolatedModes.length && (e2eOnly || performanceOnly)), "isolated security modes cannot be combined with another mode");
 const browserOnly = e2eOnly || performanceOnly;
 const performanceResultsFile = process.env.QR009_RESULTS_FILE ?? join(tmpdir(), `qr009-runtime-${Date.now()}.json`);
@@ -44,6 +45,7 @@ const generalSuites = [
   "company_user_share_invitations_test.sql",
   "employee_credentials_test.sql",
   "create_additional_company_test.sql",
+  "first_company_registration_test.sql",
   "qr004_scanner_authorization_test.sql",
   "schedule_integrity_test.sql",
 ];
@@ -53,11 +55,12 @@ const rpcSecurityCiSuites = [
   "qr004_phase9_rpc_authorization_test.sql",
 ];
 const phase10ResidualSuites = ["qr004_phase10_residual_authorization_test.sql"];
+const companyRegistrationSuites = ["first_company_registration_test.sql"];
 const suites = supervisorDeviceRlsOnly ? ["qr007_supervisor_device_rls_test.sql"]
   : privilegedRpcAuditOnly ? ["qr004_privileged_rpc_authorization_test.sql", "qr007_supervisor_device_rls_test.sql"]
     : phase9RpcOnly ? ["qr004_phase9_rpc_authorization_test.sql"]
       : rpcSecurityCiOnly ? rpcSecurityCiSuites
-        : phase10ResidualOnly ? phase10ResidualSuites : authorizationRacesOnly ? [] : generalSuites;
+        : phase10ResidualOnly ? phase10ResidualSuites : authorizationRacesOnly ? [] : companyRegistrationOnly ? companyRegistrationSuites : generalSuites;
 const rpcSecurityCiExpected = new Map([
   ["qr007_supervisor_device_rls_test.sql", 50],
   ["qr004_privileged_rpc_authorization_test.sql", 26],
@@ -411,6 +414,14 @@ try {
   mailpitUrl = `http://127.0.0.1:${base + 4}`;
   localUrl(mailpitUrl, "Mailpit URL");
   assert.match(config, new RegExp(`^project_id = "${projectId}"$`, "m"));
+  if (e2eOnly) {
+    const emailAuthStart = config.indexOf("[auth.email]");
+    const smsAuthStart = config.indexOf("[auth.sms]", emailAuthStart);
+    assert.ok(emailAuthStart >= 0 && smsAuthStart > emailAuthStart, "temporary email Auth section is present");
+    const emailAuthConfig = config.slice(emailAuthStart, smsAuthStart);
+    assert.match(emailAuthConfig, /^enable_confirmations = false$/m, "repository default local Auth confirmation setting is documented");
+    config = `${config.slice(0, emailAuthStart)}${emailAuthConfig.replace(/^enable_confirmations = false$/m, "enable_confirmations = true")}${config.slice(smsAuthStart)}`;
+  }
   await writeFile(join(workdir, "supabase/config.toml"), config, { mode: 0o600 });
   for (const kind of Object.keys(before)) {
     assert.equal(before[kind].some((name) => name.includes(projectId)), false, `random disposable project ID already exists in Docker ${kind}`);
@@ -440,6 +451,17 @@ try {
       assert.equal(observedCount, plan, `${suite} must report every passing pgTAP assertion`);
       process.stdout.write(`ASSERTIONS ${suite}: ${observedCount}/${plan} PASS\n`);
     }
+    if (companyRegistrationOnly) {
+      assert.match(sql, /^BEGIN\s*;/im, `${suite} must isolate fixtures in a transaction`);
+      assert.match(sql, /^ROLLBACK\s*;/im, `${suite} must roll back synthetic fixtures`);
+      assert.doesNotMatch(sql, /\b(?:scan_employee_attendance|confirm_employee_attendance|verify_employee_pin)\s*\(/i, `${suite} must not execute attendance or PIN functions`);
+      assert.doesNotMatch(sql, /\bINSERT\s+INTO\s+public\.(?:attendance_sessions|attendance_events)\b/i, `${suite} must not insert attendance records`);
+      const tapOkCount = [...output.matchAll(/^\s*ok\s+\d+(?:\s+-.*)?$/gim)].length;
+      const summaryCount = output.match(/\bTests=(\d+)\b/i)?.[1]
+        ?? output.match(/\bAll\s+(\d+)\s+tests?\s+passed\b/i)?.[1];
+      const observedCount = tapOkCount || (summaryCount ? Number(summaryCount) : null);
+      assert.equal(observedCount, plan, `${suite} must report every passing pgTAP assertion`);
+    }
     assert.ok(Number.isInteger(plan) && plan > 0, `${suite} must declare a pgTAP plan`);
     if (rpcSecurityCiOnly) {
       assert.match(sql, /^BEGIN\s*;/im, `${suite} must start an isolated fixture transaction`);
@@ -464,6 +486,11 @@ try {
 
   if (phase10ResidualOnly) {
     assert.deepEqual(suites, phase10ResidualSuites, "Phase 10.2 mode runs only the residual authorization suite");
+  }
+
+  if (companyRegistrationOnly) {
+    assert.deepEqual(suites, companyRegistrationSuites, "company registration mode runs only its dedicated pgTAP suite");
+    process.stdout.write("PASS isolated first-company registration RLS/RPC suite only; no remote project, HTTP Auth, QR, PIN, scan, or attendance flow started\n");
   }
 
   if (supervisorDeviceRlsOnly) {
@@ -527,6 +554,8 @@ try {
     process.stdout.write("PASS isolated RPC security CI suite: 50 + 26 + 62 = 138 pgTAP assertions; no HTTP Auth, Next.js, QR processing, PIN, scan, or attendance flow started\n");
   } else if (phase10ResidualOnly) {
     process.stdout.write("PASS isolated QR-004 Phase 10.2 authorization/audit suite only; no HTTP Auth, Next.js, QR processing, PIN, scan, or attendance flow started\n");
+  } else if (companyRegistrationOnly) {
+    process.stdout.write("PASS isolated first-company registration suite used only a disposable local PostgreSQL stack and synthetic Auth rows\n");
   } else {
 
   // Exercise the same API and Server Component guards used by the app. The
@@ -2869,8 +2898,24 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   if (invitationFlowOnly) {
     const anon = createClient(apiUrl, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
     const publicSignup = await anon.auth.signUp({ email: `public-signup-${randomUUID()}@qr-asistencia.invalid`, password: "synthetic-public-password" });
-    assert.ok(publicSignup.error || !publicSignup.data.session, "public signup remains disabled without an invitation");
-    if (publicSignup.data.user?.id) assert.equal((await dbPool.query("select count(*)::int n from auth.users where id=$1", [publicSignup.data.user.id])).rows[0].n, 0, "disabled public signup creates no Auth identity");
+    assert.equal(publicSignup.error, null, "Auth signup supports the explicit first-company registration flow");
+    assert.ok(publicSignup.data.user?.id && publicSignup.data.session, "local email-confirmation-disabled configuration creates an authenticated synthetic identity");
+    const unassignedMemberships = await anon.from("company_memberships").select("id").eq("user_id", publicSignup.data.user.id);
+    assert.equal(unassignedMemberships.error, null);
+    assert.deepEqual(unassignedMemberships.data, [], "new Auth identity receives no company role before the first-company operation");
+    const signupCookieJar = new Map();
+    const signupSsr = createServerClient(apiUrl, anonKey, { cookies: {
+      getAll: () => [...signupCookieJar].map(([name, value]) => ({ name, value })),
+      setAll: (items) => items.forEach(({ name, value }) => signupCookieJar.set(name, value)),
+    } });
+    await signupSsr.auth.setSession({ access_token: publicSignup.data.session.access_token, refresh_token: publicSignup.data.session.refresh_token });
+    const unassignedIdentity = { userId: publicSignup.data.user.id, cookie: [...signupCookieJar].map(([name, value]) => `${name}=${value}`).join("; ") };
+    response = await request("/api/me", { user: unassignedIdentity });
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).memberships, [], "new account has no application access before verified company setup");
+    response = await request("/admin", { user: unassignedIdentity });
+    assert.ok([307, 308].includes(response.status), "unassigned Auth user cannot enter administration");
+    assert.match(response.headers.get("location") ?? "", /no-company/);
   }
   const employeeForInvite = await service.from("employees").insert({ company_id: companyA, branch_id: branchA, employee_number: `INV-${randomBytes(4).toString("hex")}`, first_name: "Expediente", last_name: "Autoritativo", email: inviteEmail, active: true }).select("id").single();
   if (employeeForInvite.error || !employeeForInvite.data?.id) throw new Error("failed creating synthetic employee linked to new-account invitation");
@@ -3012,7 +3057,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     const noInviteIdentity = await createHttpIdentity(`no-pending-invite-${randomUUID()}@qr-asistencia.invalid`, { setupCompleted: false });
     await actionBrowser.navigate("/login");
     await actionBrowser.runForm("form", { email: noInviteIdentity.email, password: noInviteIdentity.password });
-    await actionBrowser.waitForPath("error=no-company");
+    await actionBrowser.waitForPath("/crear-empresa");
     await actionBrowser.navigate("/qr004-action-harness");
     const noInviteBefore = await snapshot(companyA);
     await actionBrowser.runForm("#set-invitation-password", { fullName: "Synthetic Without Invitation", password: "synthetic-no-invite-password", confirmation: "synthetic-no-invite-password" });
@@ -3166,7 +3211,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     const beforeRejectedState = await snapshot(companyA);
     await actionBrowser.navigate("/login");
     await actionBrowser.runForm("form", { email, password: identity.password });
-    await actionBrowser.waitForPath("error=no-company");
+    await actionBrowser.waitForPath("/crear-empresa");
     await actionBrowser.navigate(`/qr004-action-harness?invitationId=${encodeURIComponent(invitationId)}`);
     await actionBrowser.runForm("#accept-invitation");
     await actionBrowser.waitForPath("error=expired", `${state} invitation action must show a safe unavailable-invitation denial`);

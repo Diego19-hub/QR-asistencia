@@ -1,4 +1,5 @@
 import { signIn } from "./actions";
+import Link from "next/link";
 import { accessReturnDestination, companySelectionPathForAccessDestination, destinationForAccessRole } from "@/lib/access/access-links";
 import { selectInitialMembership, type MembershipRole } from "@/lib/access/user-management";
 import { createClient } from "@/lib/supabase/server";
@@ -6,19 +7,19 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 type LoginPageProps = {
-  searchParams: Promise<{ error?: string; next?: string }>;
+  searchParams: Promise<{ error?: string; next?: string; confirmed?: string }>;
 };
 
 const errorMessages: Record<string, string> = {
   invalid: "Escribe tu correo y contraseña.",
   credentials: "No se pudo iniciar sesión. Revisa tus datos e inténtalo de nuevo.",
   service: "No fue posible conectar con el servicio de autenticación. Inténtalo más tarde.",
-  "no-company": "Tu cuenta aún no está asignada a una empresa. Contacta al administrador.",
+  "no-company": "Tu cuenta aún no está asignada a una empresa. Si quieres crear la primera, usa “Crear empresa”.",
   invite: "No fue posible validar el enlace de invitación. Solicita que lo reenvíen.",
 };
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {
-  const { error, next: requestedNext } = await searchParams;
+  const { error, next: requestedNext, confirmed } = await searchParams;
   const next = accessReturnDestination(requestedNext);
   const message = error ? errorMessages[error] : undefined;
 
@@ -49,7 +50,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         }));
         const selectedId = (await cookies()).get("qr_active_membership_id")?.value;
         const selected = selectInitialMembership(choices, selectedId);
-        if (selected.kind === "none") redirect("/login?error=no-company");
+        if (selected.kind === "none") redirect("/crear-empresa");
         if (selected.kind === "choose") redirect(companySelectionPathForAccessDestination(next));
         redirect(destinationForAccessRole(selected.membership.role, next));
       }
@@ -129,6 +130,12 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
             </p>
           ) : null}
 
+          {confirmed ? (
+            <p role="status" className="rounded-lg bg-emerald-50 px-3.5 py-3 text-sm text-emerald-900">
+              Correo confirmado. Inicia sesión para completar la creación de tu empresa.
+            </p>
+          ) : null}
+
           <button
             type="submit"
             className="w-full rounded-lg bg-blue-700 px-4 py-3 font-semibold text-white transition hover:bg-blue-800 focus:outline-none focus:ring-4 focus:ring-blue-600/25"
@@ -137,8 +144,11 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           </button>
         </form>
 
-        <p className="mt-8 text-center text-xs leading-5 text-slate-500">
-          Si no tienes acceso, solicita una cuenta al administrador de tu empresa.
+        <p className="mt-6 text-center text-sm leading-6 text-slate-600">
+          ¿No tienes empresa? <Link href="/crear-empresa" className="font-semibold text-blue-700 underline underline-offset-2">Crear empresa</Link>
+        </p>
+        <p className="mt-3 text-center text-xs leading-5 text-slate-500">
+          Si ya perteneces a una empresa, solicita acceso a su administrador.
         </p>
       </section>
     </main>

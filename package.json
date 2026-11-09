@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
-    "test": "npm run test:attendance && npm run test:reports && npm run test:scanner && npm run test:pin-lockout && npm run test:credentials && npm run test:employee-portal && npm run test:user-access && npm run test:auth-flow && npm run test:company-creation && npm run test:ui-basics && npm run test:deployment && npm run test:backup-tool && npm run test:server-action-cookie-sync && npm run test:schedule-assignment-history",
+    "test": "npm run test:attendance && npm run test:reports && npm run test:scanner && npm run test:pin-lockout && npm run test:credentials && npm run test:employee-portal && npm run test:user-access && npm run test:auth-flow && npm run test:company-creation && npm run test:company-registration && npm run test:ui-basics && npm run test:deployment && npm run test:backup-tool && npm run test:server-action-cookie-sync && npm run test:schedule-assignment-history && npm run test:help",
     "test:attendance": "node --experimental-strip-types --test tests/attendance-presentation.test.mjs",
     "test:scanner": "node --test tests/scanner-context.test.mjs",
     "test:pin-lockout": "node --test tests/attendance-pin-lockout.test.mjs",
@@ -40,8 +40,11 @@
     "test:security:jwt": "node tests/security-jwt-matrix.integration.mjs",
     "test:server-action-cookie-sync": "node --test tests/qr004-server-action-cookie-sync.test.mjs",
     "test:company-creation": "node --test tests/company-creation.test.mjs",
+    "test:company-registration": "node --experimental-strip-types --test tests/company-registration.test.mjs",
+    "test:company-registration:db": "node tests/qr004-auth-matrix.local.integration.mjs --company-registration-only",
     "test:company-creation:db": "test -n \"${COMPANY_CREATION_SUPABASE_WORKDIR:-}\" || { echo 'Set COMPANY_CREATION_SUPABASE_WORKDIR to an isolated disposable Supabase project.' >&2; exit 2; }; grep -Eq '^project_id = \"qr_company_creation_disposable_[A-Za-z0-9_]+\"$' \"$COMPANY_CREATION_SUPABASE_WORKDIR/supabase/config.toml\" || { echo 'Refusing DB tests: project_id is not marked disposable.' >&2; exit 2; }; npx supabase --workdir \"$COMPANY_CREATION_SUPABASE_WORKDIR\" test db --local \"$PWD/supabase/tests/create_additional_company_test.sql\"",
-    "test:ui-basics": "node --test tests/interface-accessibility-basics.test.mjs tests/readability-scale.test.mjs"
+    "test:ui-basics": "node --test tests/interface-accessibility-basics.test.mjs tests/readability-scale.test.mjs",
+    "test:help": "node --experimental-strip-types --test tests/help-assistant.test.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

@@ -23,7 +23,8 @@ test("empleado ve únicamente su portal vinculado y no accede a administración"
 
 test("membresía de empleado inactiva no permite consultar el portal", async ({ page, qr }) => {
   await qr.signIn(page, qr.fixture("INACTIVE_EMPLOYEE_EMAIL"), qr.fixture("INACTIVE_EMPLOYEE_PASSWORD"));
-  await expect(page).toHaveURL(/\/login\?error=no-company/);
+  await expect(page).toHaveURL(/\/crear-empresa(?:\?|$)/);
+  await expect(page.getByRole("heading", { name: "Esta cuenta ya está vinculada" })).toBeVisible();
   await page.goto("/mi-qr");
   await expect(page).toHaveURL(/\/login(?:\?|$)/);
 });

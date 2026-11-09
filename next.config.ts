@@ -13,6 +13,7 @@ const nextConfig: NextConfig = {
   // traced export route so PDF generation keeps working in the minimal image.
   outputFileTracingIncludes: {
     "/api/reports/export": ["./node_modules/pdfkit/js/data/**/*"],
+    "/api/help/answer": ["./docs/MANUAL-USUARIO.md"],
   },
   allowedDevOrigins: allowedTunnelHosts,
   // PDFKit resolves AFM font files relative to its own package directory.
