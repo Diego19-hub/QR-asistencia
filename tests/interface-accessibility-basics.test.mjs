@@ -12,8 +12,8 @@ test("native buttons receive consistent hover, pressed, keyboard focus, and disa
 });
 
 test("administration, login and employee portal use a scoped readable text scale", async () => {
-  assert.match(css, /\.readable-interface \.text-sm\s*\{\s*font-size:\s*1\.0625rem/s);
-  assert.match(css, /\.readable-interface \.text-xs\s*\{\s*font-size:\s*1rem/s);
+  assert.match(css, /\.readable-interface \.text-sm\s*\{\s*font-size:\s*0\.95625rem/s);
+  assert.match(css, /\.readable-interface \.text-xs\s*\{\s*font-size:\s*0\.9rem/s);
   assert.match(css, /\.readable-interface \.text-\\\[10px\\\]/);
   assert.match(css, /\.readable-interface \.text-\\\[11px\\\]/);
   assert.match(css, /\.readable-interface \.text-\\\[9px\\\]/);

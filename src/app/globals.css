@@ -47,29 +47,29 @@ button:disabled {
 
 /* Readability scale for administration, authentication and employee portal. */
 .readable-interface .text-sm {
-  font-size: 1.0625rem;
-  line-height: 1.6rem;
+  font-size: 0.95625rem;
+  line-height: 1.44rem;
 }
 
 .readable-interface .text-xs {
-  font-size: 1rem;
-  line-height: 1.5rem;
+  font-size: 0.9rem;
+  line-height: 1.35rem;
 }
 
 .readable-interface .text-\[13px\] {
-  font-size: 1rem;
-  line-height: 1.5rem;
+  font-size: 0.9rem;
+  line-height: 1.35rem;
 }
 
 .readable-interface .text-\[10px\],
 .readable-interface .text-\[11px\] {
-  font-size: 0.9375rem;
-  line-height: 1.375rem;
+  font-size: 0.84375rem;
+  line-height: 1.2375rem;
 }
 
 .readable-interface .text-\[9px\] {
-  font-size: 0.875rem;
-  line-height: 1.25rem;
+  font-size: 0.7875rem;
+  line-height: 1.125rem;
 }
 @media (prefers-reduced-motion: reduce) {
   button {
