@@ -4,7 +4,7 @@ test("Ayuda solo abre el chat y Reportar un problema abre y envía el formulario
   await page.route("**/api/help/answer", async (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
-    body: JSON.stringify({ found: true, answer: "Según el manual:\n\nSección: Inicio de sesión\nAbre /login e inicia sesión." }),
+    body: JSON.stringify({ found: true, answer: "Según el manual, sigue estos pasos:\n\nSección: Iniciar sesión\n1. Abre /login.\n2. Escribe tu correo y contraseña.\n3. Pulsa Entrar." }),
   }));
 
   await page.goto("/login");
@@ -14,14 +14,22 @@ test("Ayuda solo abre el chat y Reportar un problema abre y envía el formulario
   await expect(reportButton).toBeVisible();
 
   await helpButton.click();
-  const chat = page.getByRole("dialog", { name: "Ayuda de QR-asistencia" });
+  const chat = page.getByRole("dialog", { name: "Chatbot" });
   await expect(chat).toBeVisible();
+  await expect(chat.getByText("Respuestas basadas en el manual")).toHaveCount(0);
   await expect(chat.getByLabel("Pregunta")).toBeVisible();
+  await expect(chat.getByText(/no incluyas nombres ni datos de empresa o trabajador/i)).toBeVisible();
   await expect(page.getByLabel("Descripción")).toHaveCount(0);
   await chat.getByLabel("Pregunta").fill("¿Cómo inicio sesión?");
   await chat.getByRole("button", { name: "Enviar pregunta" }).click();
-  await expect(chat.getByText(/Según el manual/)).toBeVisible();
+  await expect(chat.getByText(/Según el manual, sigue estos pasos/)).toBeVisible();
+  await expect(chat.getByText(/3\. Pulsa Entrar\./)).toBeVisible();
   await expect(chat.getByRole("button", { name: "Reportar un problema" })).toHaveCount(0);
+
+  await chat.getByRole("button", { name: "Minimizar Chatbot" }).click();
+  await expect(chat.getByLabel("Pregunta")).toHaveCount(0);
+  await chat.getByRole("button", { name: "Restaurar Chatbot" }).click();
+  await expect(chat.getByLabel("Pregunta")).toBeVisible();
 
   await helpButton.click();
   await expect(chat).toHaveCount(0);
@@ -65,5 +73,5 @@ test("el reporte muestra un error recuperable sin abrir el chat", async ({ page 
   await reportDialog.getByLabel("Descripción").fill("La pantalla muestra un error al cargar.");
   await reportDialog.getByRole("button", { name: "Enviar reporte" }).click();
   await expect(reportDialog.getByRole("alert")).toHaveText("El canal de reportes no está disponible.");
-  await expect(page.getByRole("dialog", { name: "Ayuda de QR-asistencia" })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "Chatbot" })).toHaveCount(0);
 });

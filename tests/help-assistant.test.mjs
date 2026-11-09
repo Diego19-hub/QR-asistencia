@@ -5,8 +5,13 @@ import { readLimitedBody } from "../src/lib/http/read-limited-body.ts";
 
 import {
   allowHelpReport,
+  allowHelpQuestion,
+  answerHelpQuestion,
   answerFromManual,
   deliverHelpReport,
+  geminiConfig,
+  redactChatQuestion,
+  retrieveManualContext,
   reportablePages,
   sanitizeReportDescription,
   sendTelegramReport,
@@ -22,21 +27,123 @@ test("las respuestas recuperadas provienen del manual y citan su fuente", () => 
   assert.equal(result.found, true);
   assert.match(result.answer, /Sección: .*Configuración del PIN/);
   assert.match(result.answer, /PIN es opcional y está desactivado por defecto/);
-  assert.ok(result.answer.startsWith("Según el manual:"));
+  assert.ok(result.answer.startsWith("Según el manual, sigue estos pasos"));
 });
 
 test("la ayuda reconoce la ausencia de contenido suficiente", () => {
   const result = answerFromManual(manual, "¿Cómo configuro la nómina fiscal externa?");
   assert.equal(result.found, false);
   assert.match(result.answer, /No encontré/);
+  assert.match(result.answer, /Reportar un problema/);
 });
 
-test("el widget declara semántica de diálogo, estado expandido, foco visible y ubicación móvil", () => {
+test("las respuestas conservan pasos completos del manual en lugar de fragmentos aislados", () => {
+  const result = answerFromManual(manual, "¿Cómo creo una plantilla y asigno horarios?");
+  assert.equal(result.found, true);
+  assert.match(result.answer, /Sección: Horarios/);
+  assert.match(result.answer, /\b1\. Abre Horarios/);
+  assert.match(result.answer, /\b4\. Usa la opción de asignación/);
+  assert.match(result.answer, /sucursal, uno o varios empleados y las fechas de vigencia/);
+});
+
+test("recupera solo fragmentos relevantes y limita el contexto enviado al modelo", () => {
+  const source = "# Horarios\n\nAbre Horarios para consultar el calendario semanal.\n\n# Reportes\n\nAbre Reportes para exportar archivos CSV.";
+  const result = retrieveManualContext(source, "¿Cómo consulto horarios?");
+  assert.equal(result.found, true);
+  assert.match(result.context, /Sección: Horarios/);
+  assert.doesNotMatch(result.context, /Sección: Reportes|exportar archivos/);
+  assert.ok(result.context.length <= 3600);
+});
+
+test("redacta datos detectables antes de formar una pregunta para Gemini", () => {
+  const result = redactChatQuestion("El empleado Juan Pérez de empresa Acme: correo juan@example.test, RFC ABC010203XYZ, NSS 12345678901, contraseña: Secreto987, PIN: 123456 y token=eyJabcdefghijklmnopqrstuvwxyz1234567890");
+  assert.equal(result.redacted, true);
+  assert.doesNotMatch(result.question, /Juan Pérez|Acme|juan@example|ABC010203XYZ|12345678901|Secreto987|123456|eyJabcdefghijklmnopqrstuvwxyz/);
+  assert.match(result.question, /dato omitido/);
+});
+
+test("configura Gemini desde variables privadas y valida el identificador del modelo", () => {
+  assert.equal(geminiConfig({}), null);
+  assert.deepEqual(geminiConfig({ GEMINI_API_KEY: "fake-key" }), { apiKey: "fake-key", model: "gemini-2.5-flash" });
+  assert.deepEqual(geminiConfig({ GEMINI_API_KEY: "fake-key", GEMINI_MODEL: "gemini-test-model" }), { apiKey: "fake-key", model: "gemini-test-model" });
+  assert.equal(geminiConfig({ GEMINI_API_KEY: "fake-key", GEMINI_MODEL: "https://evil.test" }), null);
+});
+
+test("Gemini recibe pregunta redactada y solo contexto del manual, usando respuesta simulada", async () => {
+  const source = "# Horarios\n\nAbre Horarios para consultar el calendario semanal.\n\n# Reportes\n\nAbre Reportes para exportar archivos CSV.";
+  let url = "";
+  let headers = {};
+  let payload;
+  const result = await answerHelpQuestion(source, "¿Cómo consulto horarios? correo qa@example.test", { GEMINI_API_KEY: "fake-test-key" }, async (input, init) => {
+    url = String(input);
+    headers = init.headers;
+    payload = JSON.parse(init.body);
+    return Response.json({ candidates: [{ content: { parts: [{ text: "Abre Horarios y consulta el calendario semanal." }] } }] });
+  });
+  assert.deepEqual(result, { answer: "Abre Horarios y consulta el calendario semanal.", found: true, source: "gemini" });
+  assert.equal(url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent");
+  assert.equal(headers["x-goog-api-key"], "fake-test-key");
+  assert.doesNotMatch(url, /fake-test-key/);
+  assert.doesNotMatch(JSON.stringify(payload), /fake-test-key/);
+  const sentText = payload.contents[0].parts[0].text;
+  assert.doesNotMatch(sentText, /qa@example\.test|fake-test-key|Sección: Reportes|archivos CSV/);
+  assert.match(sentText, /\[dato omitido\]/);
+  assert.match(payload.systemInstruction.parts[0].text, /No uses conocimiento general/);
+});
+
+test("sin clave, con cuota agotada o error del proveedor usa la respuesta segura del manual", async () => {
+  const source = "# Horarios\n\nAbre Horarios para consultar el calendario semanal.";
+  let calls = 0;
+  const noKey = await answerHelpQuestion(source, "¿Cómo consulto horarios?", {}, async () => { calls += 1; throw new Error("no se esperaba red"); });
+  assert.equal(noKey.source, "manual");
+  assert.equal(calls, 0);
+
+  const logs = [];
+  const originalError = console.error;
+  console.error = (...items) => logs.push(items);
+  try {
+    const quota = await answerHelpQuestion(source, "¿Cómo consulto horarios? correo qa@example.test", { GEMINI_API_KEY: "private-test-key" }, async () => {
+      calls += 1;
+      return new Response("quota error", { status: 429 });
+    });
+    assert.equal(quota.source, "manual");
+    const networkFailure = await answerHelpQuestion(source, "¿Cómo consulto horarios?", { GEMINI_API_KEY: "private-test-key" }, async () => { throw new TypeError("request includes private-test-key and user text"); });
+    assert.equal(networkFailure.source, "manual");
+  } finally {
+    console.error = originalError;
+  }
+  assert.equal(calls, 1);
+  assert.ok(logs.length > 0);
+  assert.doesNotMatch(JSON.stringify(logs), /qa@example\.test|private-test-key|consulto horarios|user text/);
+});
+
+test("si Gemini determina que el manual no basta, dirige al reporte separado", async () => {
+  const source = "# Horarios\n\nAbre Horarios para consultar el calendario semanal.";
+  const result = await answerHelpQuestion(source, "¿Cómo consulto horarios?", { GEMINI_API_KEY: "fake-key" }, async () => Response.json({ candidates: [{ content: { parts: [{ text: "INSUFFICIENT_MANUAL_CONTEXT" }] } }] }));
+  assert.equal(result.found, false);
+  assert.equal(result.source, "manual");
+  assert.match(result.answer, /Reportar un problema/);
+});
+
+test("limita preguntas por clave anonimizada en una ventana de quince minutos", () => {
+  const store = new Map();
+  for (let i = 0; i < 20; i += 1) assert.equal(allowHelpQuestion("hashed-client", 1000 + i, store), true);
+  assert.equal(allowHelpQuestion("hashed-client", 1021, store), false);
+  assert.equal(allowHelpQuestion("hashed-client", 901_001, store), true);
+});
+
+test("el widget usa el título Chatbot, permite minimizarlo y mantiene semántica accesible y ubicación móvil", () => {
   assert.match(widget, /aria-haspopup="dialog"/);
   assert.match(widget, /aria-controls="help-dialog"/);
   assert.match(widget, /role="dialog"/);
   assert.match(widget, /aria-live="polite"/);
+  assert.match(widget, />Chatbot<\/h2>/);
+  assert.doesNotMatch(widget, /Ayuda de QR-asistencia|Respuestas basadas en el manual/);
+  assert.match(widget, /Minimizar Chatbot/);
+  assert.match(widget, /Restaurar Chatbot/);
   assert.match(widget, /focus-visible:ring/);
+  assert.match(widget, /no incluyas nombres/i);
+  assert.match(widget, /nivel gratuito de Gemini/i);
   assert.match(widget, /employeePortal \? "bottom-24 md:bottom-6"/);
   assert.match(widget, /employeePortal\s*\?\s*"bottom-\[11rem\][\s\S]*md:bottom-36/);
 });
@@ -69,6 +176,9 @@ test("redacta correo, teléfono, credenciales, PIN, tokens e identificadores", (
   assert.doesNotMatch(text, /usuario\.qa@example\.test|555 123 4567|Secreto987|123456|eyJabcdefghijklmnopqrstuvwxyz|123e4567-e89b/);
   assert.match(text, /correo omitido/);
   assert.match(text, /dato sensible omitido/);
+  const identifiers = sanitizeReportDescription("RFC ABC010203XYZ y NSS 12345678901 deben quedar fuera del reporte.");
+  assert.doesNotMatch(identifiers, /ABC010203XYZ|12345678901/);
+  assert.match(identifiers, /dato sensible omitido/);
 });
 
 test("el honeypot y campos inesperados no son aceptados", () => {

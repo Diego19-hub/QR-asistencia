@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { usePathname } from "next/navigation";
-import { BookOpen, CircleHelp, Send, X } from "lucide-react";
+import { BotMessageSquare, CircleHelp, Maximize2, Minus, Send, X } from "lucide-react";
 
 type Message = { kind: "user" | "assistant"; text: string; found?: boolean };
 const pages = [
@@ -22,6 +22,7 @@ export function HelpAssistant() {
   const pathname = usePathname();
   const employeePortal = pathname === "/mi-qr";
   const [activePanel, setActivePanel] = useState<"chat" | "report" | null>(null);
+  const [chatMinimized, setChatMinimized] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
@@ -37,7 +38,7 @@ export function HelpAssistant() {
 
   useEffect(() => {
     if (activePanel === "chat") {
-      document.getElementById("help-question")?.focus();
+      document.getElementById(chatMinimized ? "chat-minimize-toggle" : "help-question")?.focus();
       panelWasOpen.current = true;
     } else if (activePanel === "report") {
       document.getElementById("help-report-description")?.focus();
@@ -46,7 +47,7 @@ export function HelpAssistant() {
       (lastTriggerRef.current === "report" ? reportButtonRef : helpButtonRef).current?.focus();
       panelWasOpen.current = false;
     }
-  }, [activePanel]);
+  }, [activePanel, chatMinimized]);
 
   useEffect(() => {
     if (!activePanel) return;
@@ -88,6 +89,11 @@ export function HelpAssistant() {
   function openPanel(panel: "chat" | "report") {
     lastTriggerRef.current = panel;
     if (panel === "report") setPage(currentPage(pathname));
+    if (panel === "chat" && activePanel === "chat" && chatMinimized) {
+      setChatMinimized(false);
+      return;
+    }
+    if (panel !== "chat") setChatMinimized(false);
     setActivePanel((current) => current === panel ? null : panel);
   }
 
@@ -95,10 +101,11 @@ export function HelpAssistant() {
   const panelPosition = employeePortal
     ? "bottom-[11rem] max-h-[min(66dvh,calc(100dvh-12rem))] md:bottom-36 md:max-h-[min(76dvh,680px)]"
     : "bottom-[8.5rem] max-h-[min(76dvh,calc(100dvh-11rem))] sm:bottom-36 sm:max-h-[min(76dvh,680px)]";
+  const minimizedPosition = employeePortal ? "bottom-[11rem] md:bottom-36" : "bottom-[8.5rem] sm:bottom-36";
 
   return <>
     <div className={`fixed ${triggerPosition} right-4 z-[60] flex flex-col items-end gap-2 sm:right-6`}>
-      <button ref={helpButtonRef} type="button" aria-haspopup="dialog" aria-controls="help-dialog" aria-expanded={activePanel === "chat"} onClick={() => openPanel("chat")} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-blue-700 px-5 text-sm font-semibold text-white shadow-lg transition hover:bg-blue-800 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-300 active:scale-[.98]">
+      <button ref={helpButtonRef} type="button" aria-haspopup="dialog" aria-controls="help-dialog" aria-expanded={activePanel === "chat" && !chatMinimized} onClick={() => openPanel("chat")} className="inline-flex min-h-12 items-center gap-2 rounded-full bg-blue-700 px-5 text-sm font-semibold text-white shadow-lg transition hover:bg-blue-800 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-300 active:scale-[.98]">
         <CircleHelp size={19} aria-hidden="true" />Ayuda
       </button>
       <button ref={reportButtonRef} type="button" aria-haspopup="dialog" aria-controls="report-dialog" aria-expanded={activePanel === "report"} onClick={() => openPanel("report")} className="inline-flex min-h-12 items-center gap-2 rounded-full border border-blue-200 bg-white px-5 text-sm font-semibold text-blue-800 shadow-lg transition hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-300 active:scale-[.98]">
@@ -106,14 +113,16 @@ export function HelpAssistant() {
       </button>
     </div>
 
-    {activePanel === "chat" ? <section id="help-dialog" role="dialog" aria-modal="false" aria-labelledby="help-assistant-title" className={`fixed inset-x-3 ${panelPosition} z-[60] flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl sm:inset-x-auto sm:right-6 sm:w-[min(420px,calc(100vw-2rem))]`}>
-      <header className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-4 py-3"><div className="flex items-center gap-2"><BookOpen size={18} className="text-blue-700" /><div><h2 id="help-assistant-title" className="text-sm font-bold text-slate-900">Ayuda de QR-asistencia</h2><p className="text-xs text-slate-500">Respuestas basadas en el manual</p></div></div><button type="button" onClick={() => setActivePanel(null)} aria-label="Cerrar ayuda" className="grid size-10 place-items-center rounded-lg text-slate-600 hover:bg-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"><X size={18} /></button></header>
-      <div aria-live="polite" className="min-h-28 flex-1 space-y-3 overflow-y-auto p-4">
-        {!messages.length ? <p className="rounded-xl bg-blue-50 p-3 text-sm leading-6 text-blue-950">Pregunta cómo iniciar sesión, cambiar de empresa, administrar usuarios, usar el escáner, consultar tu horario o ver tu QR. Solo responderé con información del manual.</p> : null}
-        {messages.map((message, index) => <article key={`${message.kind}-${index}`} className={`rounded-xl p-3 text-sm leading-6 ${message.kind === "user" ? "ml-6 bg-slate-100 text-slate-900" : "mr-3 bg-blue-50 text-blue-950"}`}><p className="mb-1 text-xs font-semibold">{message.kind === "user" ? "Tú" : "Ayuda"}</p><p className="whitespace-pre-wrap">{message.text}</p>{message.kind === "assistant" && message.found ? <p className="mt-2 text-xs text-blue-800">Fuente: docs/MANUAL-USUARIO.md</p> : null}</article>)}
-        {asking ? <p role="status" className="text-sm text-slate-500">Buscando en el manual…</p> : null}
-      </div>
-      <form onSubmit={(event) => void ask(event)} className="flex gap-2 border-t border-slate-100 p-3"><label htmlFor="help-question" className="sr-only">Pregunta</label><input id="help-question" value={question} maxLength={300} onChange={(event) => setQuestion(event.target.value)} placeholder="Escribe tu pregunta" className="min-w-0 flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100" /><button type="submit" disabled={asking || !question.trim()} aria-label="Enviar pregunta" className="grid size-11 shrink-0 place-items-center rounded-xl bg-blue-700 text-white hover:bg-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"><Send size={17} /></button></form>
+    {activePanel === "chat" ? <section id="help-dialog" role="dialog" aria-modal="false" aria-labelledby="help-assistant-title" className={`fixed inset-x-3 ${chatMinimized ? minimizedPosition : panelPosition} z-[60] flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl ${chatMinimized ? "h-auto" : ""} sm:inset-x-auto sm:right-6 sm:w-[min(460px,calc(100vw-2rem))]`}>
+      <header className="flex items-center justify-between border-b border-slate-100 bg-gradient-to-r from-blue-50 via-white to-white px-4 py-3"><div className="flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl bg-blue-100 text-blue-800"><BotMessageSquare size={20} aria-hidden="true" /></span><h2 id="help-assistant-title" className="text-base font-bold text-slate-950">Chatbot</h2></div><div className="flex items-center gap-1"><button id="chat-minimize-toggle" type="button" onClick={() => setChatMinimized((value) => !value)} aria-label={chatMinimized ? "Restaurar Chatbot" : "Minimizar Chatbot"} className="grid size-10 place-items-center rounded-lg text-slate-600 transition hover:bg-blue-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 active:bg-blue-200"><span className="sr-only">{chatMinimized ? "Restaurar" : "Minimizar"}</span>{chatMinimized ? <Maximize2 size={18} aria-hidden="true" /> : <Minus size={18} aria-hidden="true" />}</button><button type="button" onClick={() => { setChatMinimized(false); setActivePanel(null); }} aria-label="Cerrar Chatbot" className="grid size-10 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-200 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 active:bg-slate-300"><X size={18} aria-hidden="true" /></button></div></header>
+      {!chatMinimized ? <>
+        <div aria-live="polite" aria-relevant="additions text" className="min-h-36 flex-1 space-y-4 overflow-y-auto bg-slate-50/70 p-4 sm:p-5">
+          {!messages.length ? <p className="rounded-2xl border border-blue-100 bg-white p-4 text-base leading-7 text-slate-700 shadow-sm">Hola. Pregúntame cómo iniciar sesión, elegir una empresa, administrar horarios, usar el escáner o consultar tu credencial. Responderé con pasos que aparecen en el manual de usuario.</p> : null}
+          {messages.map((message, index) => <article key={`${message.kind}-${index}`} className={`max-w-[92%] rounded-2xl p-4 text-base leading-7 shadow-sm ${message.kind === "user" ? "ml-auto bg-blue-700 text-white" : "mr-auto border border-slate-200 bg-white text-slate-800"}`}><p className={`mb-1 text-sm font-bold ${message.kind === "user" ? "text-blue-100" : "text-blue-800"}`}>{message.kind === "user" ? "Tú" : "Chatbot"}</p><p className="whitespace-pre-wrap">{message.text}</p>{message.kind === "assistant" && message.found ? <p className="mt-3 border-t border-slate-100 pt-2 text-sm font-medium text-slate-600">Información del manual de usuario</p> : null}</article>)}
+          {asking ? <p role="status" className="text-base text-slate-600">Buscando en el manual…</p> : null}
+        </div>
+        <form onSubmit={(event) => void ask(event)} className="border-t border-slate-200 bg-white p-3 sm:p-4"><div className="flex gap-2"><label htmlFor="help-question" className="sr-only">Pregunta</label><input id="help-question" value={question} maxLength={300} onChange={(event) => setQuestion(event.target.value)} placeholder="Escribe tu pregunta" className="min-w-0 flex-1 rounded-xl border border-slate-300 px-4 py-3 text-base outline-none placeholder:text-slate-500 focus:border-blue-700 focus:ring-2 focus:ring-blue-100" /><button type="submit" disabled={asking || !question.trim()} aria-label="Enviar pregunta" className="grid size-12 shrink-0 place-items-center rounded-xl bg-blue-700 text-white transition hover:bg-blue-800 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-300 active:bg-blue-900 disabled:cursor-not-allowed disabled:opacity-50"><Send size={18} aria-hidden="true" /></button></div><p className="mt-2 text-sm leading-5 text-slate-600">Privacidad: no incluyas nombres ni datos de empresa o trabajador, correos, RFC, NSS, contraseñas, PIN o tokens. Si Gemini está habilitado, se envía la pregunta redactada y solo los fragmentos pertinentes del manual. El nivel gratuito de Gemini puede usar el contenido enviado para mejorar sus productos según sus condiciones vigentes. Si prefieres, no compartas información sensible.</p></form>
+      </> : null}
     </section> : null}
 
     {activePanel === "report" ? <section id="report-dialog" role="dialog" aria-modal="false" aria-labelledby="report-dialog-title" className={`fixed inset-x-3 ${panelPosition} z-[60] flex flex-col overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl sm:inset-x-auto sm:right-6 sm:w-[min(420px,calc(100vw-2rem))]`}>
