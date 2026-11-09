@@ -38,6 +38,21 @@ test("el widget declara semántica de diálogo, estado expandido, foco visible y
   assert.match(widget, /aria-live="polite"/);
   assert.match(widget, /focus-visible:ring/);
   assert.match(widget, /employeePortal \? "bottom-24 md:bottom-6"/);
+  assert.match(widget, /employeePortal\s*\?\s*"bottom-\[11rem\][\s\S]*md:bottom-36/);
+});
+
+test("el chat y el reporte son paneles independientes; el chat no contiene el formulario", () => {
+  assert.match(widget, /aria-controls="help-dialog"/);
+  assert.match(widget, /aria-controls="report-dialog"/);
+  assert.match(widget, /<CircleHelp size=\{19\} aria-hidden="true" \/>Ayuda/);
+  const chatStart = widget.indexOf("{activePanel === \"chat\" ? <section");
+  const reportStart = widget.indexOf("{activePanel === \"report\" ? <section");
+  assert.ok(chatStart >= 0 && reportStart > chatStart);
+  const chatPanel = widget.slice(chatStart, reportStart);
+  const reportPanel = widget.slice(reportStart);
+  assert.doesNotMatch(chatPanel, /submitReport|api\/help\/report|Reportar un problema/);
+  assert.match(reportPanel, /onSubmit=\{\(event\) => void submitReport\(event\)\}/);
+  assert.match(reportPanel, /Enviar reporte/);
 });
 
 test("el reporte exige texto suficiente y una página de la aplicación", () => {
