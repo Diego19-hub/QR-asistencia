@@ -9,6 +9,7 @@ const portal = await readFile(new URL("../src/app/api/employee/portal/route.ts",
 const employeePortal = await readFile(new URL("../src/components/employee/employee-portal.tsx", import.meta.url), "utf8");
 const issuanceMigration = await readFile(new URL("../supabase/migrations/20261107220000_employee_self_service_qr_display.sql", import.meta.url), "utf8");
 const revocationMigration = await readFile(new URL("../supabase/migrations/20261107230000_optional_attendance_pin_and_recoverable_qr.sql", import.meta.url), "utf8");
+const recoveryMigration = await readFile(new URL("../supabase/migrations/20261110011000_admin_employee_qr_credential_recovery.sql", import.meta.url), "utf8");
 
 test("emission confirms that regenerating invalidates the prior QR", () => {
   assert.match(component, /El código anterior dejará de funcionar inmediatamente/);
@@ -38,6 +39,40 @@ test("admin issuance stores only a digest and authenticated ciphertext, returnin
   assert.match(route, /p_encrypted_token: encryptedToken/);
   assert.match(route, /credential: data, token: rawToken/);
   assert.match(route, /Cache-Control.*no-store, private/);
+  assert.match(route, /parseEmployeeQrEncryptionKey\(process\.env\.QR_CREDENTIAL_ENCRYPTION_KEY\)/);
+  assert.match(route, /64 caracteres hexadecimales \(32 bytes\)/);
+  assert.match(route, /decryptEmployeeQrToken\(credential\.encryptedToken, encryptionKey, result\.scope\.company\.companyId, id\)/);
+  assert.match(route, /get_employee_qr_credential_envelope/);
+  assert.match(route, /credential_recovery_required/);
+  assert.doesNotMatch(route, /console\.(?:log|error|warn)/);
+});
+
+test("admin can show an existing QR repeatedly without issuing or replacing it", () => {
+  const recovery = route.match(/if \(parsedPayload\.data\.action === "recover"\) \{[\s\S]*?\n  \}/)?.[0] ?? "";
+  assert.ok(recovery);
+  assert.match(recovery, /get_employee_qr_credential_envelope/);
+  assert.match(recovery, /decryptEmployeeQrToken/);
+  assert.match(recovery, /credential: \{ qrStatus: "active", issuedAt: credential\.issuedAt \?\? null \}, token: rawToken/);
+  assert.doesNotMatch(recovery, /rpc\("(?:issue|revoke)_employee_qr_token|\b(?:INSERT|UPDATE)\b/i);
+  assert.match(component, /onClick=\{\(\) => void recover\(\)\}[^>]*>.*Mostrar QR/s);
+  assert.match(component, /Consulta(ro|r) no cambia la credencial\.|La credencial no se regeneró ni cambió/);
+  assert.match(component, /Usa Mostrar QR para volver a consultarlo sin regenerarlo/);
+});
+
+test("legacy hash-only QR is explicitly marked for one-time regeneration", () => {
+  assert.match(route, /Este QR se emitió antes de habilitar la recuperación segura\. Regénéralo una vez/);
+  assert.match(component, /Los QR antiguos sin copia segura deben regenerarse una vez/);
+  assert.match(recoveryMigration, /encrypted_token/);
+  assert.match(recoveryMigration, /returns jsonb[\s\S]*?security definer/i);
+  assert.match(recoveryMigration, /private\.has_company_permission\(p_company_id, 'employees\.manage'\)/);
+  assert.match(recoveryMigration, /m\.role in \('owner', 'admin'\)/);
+  assert.match(recoveryMigration, /e\.company_id = p_company_id[\s\S]*?e\.id = p_employee_id/);
+  assert.match(recoveryMigration, /encryptedToken[\s\S]*?case when revoked_at_value is null then encrypted_token_value else null end/);
+  assert.match(recoveryMigration, /revoke all on function public\.get_employee_qr_credential_envelope\(uuid, uuid\) from public, anon/);
+  assert.match(recoveryMigration, /grant execute on function public\.get_employee_qr_credential_envelope\(uuid, uuid\) to authenticated/);
+  const recoveryBody = recoveryMigration.split("as $$")[1]?.split("$$;")[0] ?? "";
+  assert.doesNotMatch(recoveryBody, /token_hash|rawToken|plaintext/i);
+  assert.doesNotMatch(recoveryMigration, /rfc|nss/i);
 });
 
 test("employee credential endpoint is self-only, decrypts the canonical RPC result, and is non-cacheable", () => {
