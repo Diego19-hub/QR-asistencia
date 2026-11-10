@@ -2,7 +2,7 @@
 /* Local-only disposable Supabase authorization matrix. Never links a remote project. */
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
@@ -26,7 +26,8 @@ const authorizationRacesOnly = process.argv.includes("--authorization-races-only
 const invitationFlowOnly = process.argv.includes("--invitation-flow-only");
 const companyRegistrationOnly = process.argv.includes("--company-registration-only");
 const companySensitiveDataOnly = process.argv.includes("--company-sensitive-data-only");
-const isolatedModes = [supervisorDeviceRlsOnly, privilegedRpcAuditOnly, phase9RpcOnly, rpcSecurityCiOnly, phase10ResidualOnly, authorizationRacesOnly, companyRegistrationOnly, companySensitiveDataOnly].filter(Boolean);
+const employeeCredentialRecoveryOnly = process.argv.includes("--employee-credential-recovery-only");
+const isolatedModes = [supervisorDeviceRlsOnly, privilegedRpcAuditOnly, phase9RpcOnly, rpcSecurityCiOnly, phase10ResidualOnly, authorizationRacesOnly, companyRegistrationOnly, companySensitiveDataOnly, employeeCredentialRecoveryOnly].filter(Boolean);
 assert.ok(isolatedModes.length <= 1 && !(isolatedModes.length && (e2eOnly || performanceOnly)), "isolated security modes cannot be combined with another mode");
 const browserOnly = e2eOnly || performanceOnly;
 const performanceResultsFile = process.env.QR009_RESULTS_FILE ?? join(tmpdir(), `qr009-runtime-${Date.now()}.json`);
@@ -62,11 +63,12 @@ const companySensitiveDataSuites = [
   "create_additional_company_test.sql",
   "company_employee_sensitive_data_test.sql",
 ];
+const employeeCredentialRecoverySuites = ["employee_credentials_test.sql"];
 const suites = supervisorDeviceRlsOnly ? ["qr007_supervisor_device_rls_test.sql"]
   : privilegedRpcAuditOnly ? ["qr004_privileged_rpc_authorization_test.sql", "qr007_supervisor_device_rls_test.sql"]
     : phase9RpcOnly ? ["qr004_phase9_rpc_authorization_test.sql"]
       : rpcSecurityCiOnly ? rpcSecurityCiSuites
-        : phase10ResidualOnly ? phase10ResidualSuites : authorizationRacesOnly ? [] : companyRegistrationOnly ? companyRegistrationSuites : companySensitiveDataOnly ? companySensitiveDataSuites : generalSuites;
+        : phase10ResidualOnly ? phase10ResidualSuites : authorizationRacesOnly ? [] : companyRegistrationOnly ? companyRegistrationSuites : companySensitiveDataOnly ? companySensitiveDataSuites : employeeCredentialRecoveryOnly ? employeeCredentialRecoverySuites : generalSuites;
 const rpcSecurityCiExpected = new Map([
   ["qr007_supervisor_device_rls_test.sql", 50],
   ["qr004_privileged_rpc_authorization_test.sql", 26],
@@ -383,19 +385,25 @@ try {
   const workdir = join(temp, "project");
   await mkdir(join(workdir, "supabase", "migrations"), { recursive: true });
   await mkdir(join(workdir, "supabase", "tests"), { recursive: true });
-  if (supervisorDeviceRlsOnly || privilegedRpcAuditOnly || phase9RpcOnly || rpcSecurityCiOnly || phase10ResidualOnly || authorizationRacesOnly) {
-    const canonicalMigrations = execFileSync("git", ["ls-files", "-z", "supabase/migrations/*.sql"], { cwd: root, encoding: "utf8" })
-      .split("\0").filter(Boolean);
-    const pendingReviewedMigrations = [
-      "supabase/migrations/20261105172831_supervisor_device_request_authorization_lock.sql",
-      "supabase/migrations/20261105234619_invitation_account_setup_required.sql",
-      "supabase/migrations/20261107174656_supervisor_scanner_auto_authorization.sql",
-    ];
-    for (const migration of pendingReviewedMigrations) {
-      if (await readFile(join(root, migration), "utf8").then(() => true, () => false) && !canonicalMigrations.includes(migration)) canonicalMigrations.push(migration);
+  if (supervisorDeviceRlsOnly || privilegedRpcAuditOnly || phase9RpcOnly || rpcSecurityCiOnly || phase10ResidualOnly || authorizationRacesOnly || employeeCredentialRecoveryOnly) {
+    const migrationDirectory = join(root, "supabase", "migrations");
+    const migrationEntries = await readdir(migrationDirectory, { withFileTypes: true });
+    const canonicalMigrations = [];
+    for (const entry of migrationEntries) {
+      if (!entry.isFile() || !/^\d+_.+\.sql$/.test(entry.name)) continue;
+      const relativePath = `supabase/migrations/${entry.name}`;
+      if ((await stat(join(migrationDirectory, entry.name))).size > 0) canonicalMigrations.push(relativePath);
     }
     canonicalMigrations.sort();
-    assert.equal(canonicalMigrations.length, 32, "isolated auth/RLS/RPC audit requires canonical migrations plus the reviewed device, invitation-setup and automatic scanner authorization migrations");
+    for (const requiredMigration of [
+      "20261105172831_supervisor_device_request_authorization_lock.sql",
+      "20261106012705_invitation_account_setup_required.sql",
+      "20261107205007_supervisor_scanner_auto_authorization.sql",
+      "20261110011000_admin_employee_qr_credential_recovery.sql",
+    ]) {
+      assert.ok(canonicalMigrations.includes(`supabase/migrations/${requiredMigration}`), `isolated auth/RLS/RPC audit requires ${requiredMigration}`);
+    }
+    assert.ok(canonicalMigrations.length > 0, "isolated auth/RLS/RPC audit requires non-empty local migration SQL");
     for (const migration of canonicalMigrations) {
       await cp(join(root, migration), join(workdir, migration));
     }
@@ -581,8 +589,8 @@ try {
   assert.equal(mailpitReady.status, 200, "isolated local Mailpit API is reachable");
   const companyAName = `QR004 HTTP Synthetic A ${randomUUID()}`;
   const companyBName = `QR004 HTTP Synthetic B ${randomUUID()}`;
-  const companyAResult = await service.from("companies").insert({ name: companyAName }).select("id").single();
-  const companyBResult = await service.from("companies").insert({ name: companyBName }).select("id").single();
+  const companyAResult = await service.from("companies").insert({ name: companyAName, legal_name: companyAName }).select("id").single();
+  const companyBResult = await service.from("companies").insert({ name: companyBName, legal_name: companyBName }).select("id").single();
   if (companyAResult.error || companyBResult.error) throw new Error("failed creating synthetic HTTP test companies");
   const companyA = companyAResult.data.id, companyB = companyBResult.data.id;
   await dbPool.query("insert into private.company_sensitive_data(company_id,address,rfc,employer_registration_number) values ($1,'Synthetic QA Address A','SYN010101ABC','RP-QA-A'),($2,'Synthetic QA Address B','TST010101XYZ','RP-QA-B')", [companyA, companyB]);
@@ -609,7 +617,7 @@ try {
   if (supervisorRecord.error) throw new Error(`failed creating synthetic supervisor record (${supervisorRecord.error.code ?? "unknown"})`);
   const assignedBranch = await service.from("supervisor_branches").insert({ company_id: companyA, membership_id: supervisorA.memberships[0].id, branch_id: branchA });
   if (assignedBranch.error) throw new Error(`failed preparing synthetic supervisor branch scope (${assignedBranch.error.code ?? "unknown"})`);
-  if (!browserOnly && !authorizationRacesOnly) {
+  if (!browserOnly && !authorizationRacesOnly && !employeeCredentialRecoveryOnly) {
   const sessionNow = new Date();
   const sessionBase = { company_id: companyA, employee_id: employeeA.employeeId, local_work_date: sessionNow.toISOString().slice(0, 10), timezone: "America/Mexico_City", status: "closed", started_at: new Date(sessionNow.getTime() - 60_000).toISOString(), ended_at: sessionNow.toISOString(), scheduled_minutes: 480 };
   const sessionAResult = await service.from("attendance_sessions").insert({ ...sessionBase, branch_id: branchA }).select("id").single();
@@ -694,7 +702,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
 `, { mode: 0o600 });
   for (const file of ["package.json", "next.config.ts", "postcss.config.mjs", "tsconfig.json"]) await cp(join(root, file), join(appRoot, file));
   await symlink(join(root, "node_modules"), join(appRoot, "node_modules"), "dir");
-  const startNext = async (adminServiceKey = serviceKey) => {
+  const startNext = async (adminServiceKey = serviceKey, encryptionKey = qrCredentialEncryptionKey) => {
     // Keep the chosen loopback port bound while the disposable Supabase stack
     // starts. Otherwise another process can claim it during the long startup
     // window between the availability probe and Next.js listen().
@@ -706,7 +714,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     if (performanceOnly) {
       const build = spawn(process.execPath, [join(root, "node_modules/next/dist/bin/next"), "build", "--webpack"], {
         cwd: appRoot,
-        env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1", NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey, SUPABASE_SERVICE_ROLE_KEY: adminServiceKey, APP_BASE_URL: appUrl, QR_CREDENTIAL_ENCRYPTION_KEY: qrCredentialEncryptionKey },
+        env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1", NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey, SUPABASE_SERVICE_ROLE_KEY: adminServiceKey, APP_BASE_URL: appUrl, ...(typeof encryptionKey === "string" ? { QR_CREDENTIAL_ENCRYPTION_KEY: encryptionKey } : {}) },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let buildOutput = "";
@@ -730,7 +738,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
         PATH: process.env.PATH, NODE_ENV: performanceOnly ? "production" : "development", NEXT_TELEMETRY_DISABLED: "1",
         NEXT_PUBLIC_SUPABASE_URL: apiUrl, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: anonKey,
         SUPABASE_SERVICE_ROLE_KEY: adminServiceKey, APP_BASE_URL: appUrl,
-        QR_CREDENTIAL_ENCRYPTION_KEY: qrCredentialEncryptionKey,
+        ...(typeof encryptionKey === "string" ? { QR_CREDENTIAL_ENCRYPTION_KEY: encryptionKey } : {}),
         ...(invitationFlowOnly ? { QR_AUTH_LOCAL_TEST: "1", QR_AUTH_LOCAL_RESEND_URL: resendUrl, RESEND_API_KEY: "synthetic-resend-test-key", INVITATION_FROM_EMAIL: "QR Tests <no-reply@qr-asistencia.invalid>" } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -872,6 +880,107 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       process.stdout.write("PASS QR-009 performance-only preserved full local attendance snapshots; both tables remain empty\n");
     }
     process.stdout.write(`PASS ${performanceOnly ? "QR-009 performance" : "QR-005 browser"} tests used disposable Auth identities, loopback services, and temporary reports only\n`);
+  } else if (employeeCredentialRecoveryOnly) {
+    // Focused local-only QR credential lifecycle: synthetic tenant/Auth data,
+    // no attendance records, QR scans, or PIN verification.
+    let qrAssertions = 0;
+    const verify = Object.fromEntries(["equal", "deepEqual", "match", "ok", "notEqual"].map((method) => [method, (...args) => {
+      qrAssertions += 1;
+      return assert[method](...args);
+    }]));
+    const qrPath = `/api/employees/${employeeA.employeeId}/qr?companyId=${companyA}`;
+    const qrSnapshot = async () => {
+      const { rows } = await dbPool.query(`select
+        (select coalesce(jsonb_agg(jsonb_build_object('employee_id',q.employee_id,'issued_at',q.issued_at,'revoked_at',q.revoked_at,'token_hash',encode(q.token_hash,'hex'),'encrypted_token',q.encrypted_token) order by q.employee_id),'[]'::jsonb) from private.employee_qr_tokens q where q.employee_id=any($1::uuid[])) qr,
+        (select coalesce(jsonb_agg(jsonb_build_object('action',a.action,'entity_id',a.entity_id) order by a.id),'[]'::jsonb) from public.audit_log a where a.company_id=$2 and a.entity_id=any($1::uuid[]) and a.entity_table='employees') audit`, [[employeeA.employeeId, employeeB.employeeId], companyA]);
+      return rows[0];
+    };
+    const before = await qrSnapshot();
+    await stopNext();
+    await startNext(serviceKey, null);
+    let response = await request(qrPath, { user: adminA, method: "POST", body: {} });
+    verify.equal(response.status, 503, "missing key blocks QR issuance");
+    let errorPayload = await response.json();
+    verify.equal(errorPayload.error?.code, "credential_encryption_unavailable");
+    verify.match(errorPayload.error?.message ?? "", /QR_CREDENTIAL_ENCRYPTION_KEY.*64 caracteres hexadecimales/);
+    response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 503, "missing key blocks recovery");
+    verify.deepEqual(await qrSnapshot(), before, "missing key does not mutate QR or audit state");
+
+    await stopNext();
+    await startNext(serviceKey, "x".repeat(64));
+    response = await request(qrPath, { user: adminA, method: "POST", body: {} });
+    verify.equal(response.status, 503, "invalid key blocks QR issuance");
+    errorPayload = await response.json();
+    verify.equal(errorPayload.error?.code, "credential_encryption_unavailable");
+    verify.deepEqual(await qrSnapshot(), before, "invalid key leaves QR and audit unchanged");
+    await stopNext();
+    await startNext();
+
+    response = await request(qrPath, { method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 401, "anonymous recovery is rejected");
+    response = await request(qrPath, { user: employeeA, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 403, "employee cannot recover an administrative credential");
+    response = await request(`/api/employees/${employeeB.employeeId}/qr?companyId=${companyA}`, { user: adminA, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 404, "administrator cannot recover an employee from another company");
+    response = await request(`/api/employees/${employeeA.employeeId}/qr?companyId=${companyA}`, { user: adminB, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 403, "administrator of another company is rejected");
+    verify.deepEqual(await qrSnapshot(), before, "unauthorized retrievals have no side effects");
+
+    response = await request(qrPath, { user: adminA, method: "POST", body: {} });
+    verify.equal(response.status, 200, "admin can issue QR without RFC/NSS fields");
+    const issued = await response.json();
+    verify.match(issued.token, /^[A-Za-z0-9_-]{43}$/);
+    const active = await qrSnapshot();
+    const activeRecord = active.qr.find((row) => row.employee_id === employeeA.employeeId);
+    verify.equal(activeRecord?.token_hash, createHash("sha256").update(issued.token).digest("hex"));
+    verify.ok(/^v1\./.test(activeRecord?.encrypted_token ?? ""));
+    response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 200, "admin can repeatedly show active QR");
+    verify.equal(response.headers.get("cache-control"), "no-store, private");
+    let recovered = await response.json();
+    verify.equal(recovered.token, issued.token, "recovery returns the same token without rotation");
+    verify.deepEqual(recovered.credential, { qrStatus: "active", issuedAt: issued.credential.issuedAt });
+    response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
+    verify.equal((await response.json()).token, issued.token, "second recovery returns the same token");
+    verify.deepEqual(await qrSnapshot(), active, "recovery does not write QR, ciphertext, or audit state");
+
+    const activeEnvelope = activeRecord.encrypted_token;
+    const legacyHash = activeRecord.token_hash;
+    const auditBeforeLegacy = active.audit.filter((row) => row.entity_id === employeeA.employeeId);
+    await dbPool.query("update private.employee_qr_tokens set encrypted_token=null where employee_id=$1", [employeeA.employeeId]);
+    try {
+      response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
+      verify.equal(response.status, 409, "legacy hash-only QR requires regeneration once");
+      errorPayload = await response.json();
+      verify.equal(errorPayload.error?.code, "credential_recovery_required");
+      verify.match(errorPayload.error?.message ?? "", /Regénéralo una vez/);
+      const legacyState = (await dbPool.query("select encode(token_hash,'hex') token_hash,encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0];
+      verify.equal(legacyState.token_hash, legacyHash, "legacy read keeps the current token hash unchanged");
+      verify.equal(legacyState.encrypted_token, null);
+      const legacyAudit = (await dbPool.query("select action,entity_id from public.audit_log where company_id=$1 and entity_id=any($2::uuid[]) and entity_table='employees' order by id", [companyA, [employeeA.employeeId, employeeB.employeeId]])).rows;
+      verify.deepEqual(legacyAudit.filter((row) => row.entity_id === employeeA.employeeId), auditBeforeLegacy, "legacy read creates no audit entries");
+    } finally {
+      await dbPool.query("update private.employee_qr_tokens set encrypted_token=$2 where employee_id=$1", [employeeA.employeeId, activeEnvelope]);
+    }
+    verify.deepEqual(await qrSnapshot(), active, "legacy fixture was fully restored");
+
+    response = await request(qrPath, { user: adminA, method: "POST", body: { replace: true } });
+    verify.equal(response.status, 200, "admin can explicitly regenerate QR");
+    const replacement = await response.json();
+    verify.notEqual(replacement.token, issued.token, "regeneration replaces the prior QR token");
+    response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 200);
+    recovered = await response.json();
+    verify.equal(recovered.token, replacement.token, "recovery after regeneration returns the new token");
+    response = await request(qrPath, { user: adminA, method: "DELETE" });
+    verify.equal(response.status, 200, "admin can revoke QR");
+    const revoked = (await dbPool.query("select revoked_at,encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0];
+    verify.ok(revoked.revoked_at);
+    verify.equal(revoked.encrypted_token, null, "revocation clears encrypted recovery data");
+    response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 409, "revoked QR cannot be recovered");
+    process.stdout.write(`PASS isolated employee QR credential HTTP/Auth lifecycle: ${qrAssertions} assertions; no scan, PIN verification, attendance, or remote database\n`);
   } else if (authorizationRacesOnly) {
     // Targeted local-only R10-05 coverage: administrative access route guards,
     // real Next Server Actions, and a row-lock-controlled revoke/accept race.
@@ -995,11 +1104,11 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     verify.equal(response.status, 422, "employee creation rejects an inactive branch");
     response = await request(`/api/employees/${employeeA.employeeId}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { branch_id: branchB } });
     verify.equal(response.status, 422, "employee update rejects cross-company reassignment");
-    response = await request(`/api/employees/${employeeB.employeeId}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { first_name: "Rejected foreign edit" } });
+    response = await request(`/api/employees/${employeeB.employeeId}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { first_name: "Rejected foreign edit", personal_rfc: "SYNX010101ABC" } });
     verify.equal(response.status, 404, "foreign employee update is not found in selected tenant");
     verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "rejected employee writes leave tenant A and audit unchanged");
     verify.deepEqual(await adminApiSnapshot(companyB), apiBeforeB, "rejected employee writes leave tenant B and audit unchanged");
-    response = await request(`/api/employees?companyId=${companyA}`, { user: adminA, method: "POST", body: { employee_number: `R1005-OK-${randomUUID()}`, first_name: "Synthetic", last_name: "Allowed Employee", nss: "12345678901", branch_id: branchA } });
+    response = await request(`/api/employees?companyId=${companyA}`, { user: adminA, method: "POST", body: { employee_number: `R1005-OK-${randomUUID()}`, first_name: "Synthetic", last_name: "Allowed Employee", nss: "12345678901", personal_rfc: "SYNX010101ABC", branch_id: branchA } });
     verify.equal(response.status, 201, "authorized administrator can create a synthetic employee");
     const createdEmployee = (await response.json()).item;
     response = await request(`/api/employees/${createdEmployee.id}?companyId=${companyA}`, { user: adminA });
@@ -1488,7 +1597,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     const qrPath = `/api/employees/${employeeA.employeeId}/qr?companyId=${companyA}`;
     const qrSnapshot = async () => {
       const result = await dbPool.query(`select
-        (select coalesce(jsonb_agg(jsonb_build_object('employee_id',q.employee_id,'issued_at',q.issued_at,'revoked_at',q.revoked_at) order by q.employee_id),'[]'::jsonb) from private.employee_qr_tokens q where q.employee_id=any($1::uuid[])) qr,
+        (select coalesce(jsonb_agg(jsonb_build_object('employee_id',q.employee_id,'issued_at',q.issued_at,'revoked_at',q.revoked_at,'token_hash',encode(q.token_hash,'hex'),'encrypted_token',q.encrypted_token) order by q.employee_id),'[]'::jsonb) from private.employee_qr_tokens q where q.employee_id=any($1::uuid[])) qr,
         (select coalesce(jsonb_agg(jsonb_build_object('action',a.action,'entity_id',a.entity_id) order by a.id),'[]'::jsonb) from public.audit_log a where a.company_id=$2 and a.entity_id=any($1::uuid[]) and a.entity_table='employees') audit`, [[employeeA.employeeId, employeeB.employeeId], companyA]);
       return result.rows[0];
     };
@@ -1501,6 +1610,12 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     verify.equal(response.status, 403, "employee cannot issue an administrative QR credential");
     response = await request(`/api/employees/${employeeB.employeeId}/qr?companyId=${companyA}`, { user: adminA, method: "POST", body: {} });
     verify.equal(response.status, 404, "administrator cannot issue a credential for another tenant employee");
+    response = await request(qrPath, { user: employeeA, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 403, "employee cannot recover an administrative QR credential");
+    response = await request(`/api/employees/${employeeB.employeeId}/qr?companyId=${companyA}`, { user: adminA, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 404, "administrator cannot recover another tenant employee QR");
+    response = await request(`/api/employees/${employeeA.employeeId}/qr?companyId=${companyA}`, { user: adminB, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 403, "administrator from another tenant cannot recover this QR");
     verify.deepEqual(await qrSnapshot(), qrBefore, "rejected QR credential requests leave credential state and audit unchanged");
     verify.deepEqual(await adminApiSnapshot(companyA), apiBeforeA, "rejected QR requests leave tenant A admin state unchanged");
     verify.deepEqual(await adminApiSnapshot(companyB), apiBeforeB, "foreign QR request leaves tenant B unchanged");
@@ -1508,6 +1623,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     if (noEmployeeManageCredential.error) throw new Error("failed preparing synthetic employees.manage denial for QR credential");
     response = await request(qrPath, { user: adminA, method: "POST", body: {} });
     verify.equal(response.status, 403, "revoked employees.manage blocks QR credential issuance");
+    response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 403, "revoked employees.manage also blocks QR recovery");
     verify.deepEqual(await qrSnapshot(), qrBefore, "permission-denied QR issuance has no token or audit side effects");
     verify.equal((await service.from("membership_permission_overrides").delete().eq("company_id", companyA).eq("membership_id", adminA.memberships[0].id).eq("permission_code", "employees.manage")).error, null);
     response = await request(qrPath, { user: adminA, method: "POST", body: {} });
@@ -1519,6 +1636,40 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     const issuedQrHash = createHash("sha256").update(issuedQr.token).digest("hex");
     verify.equal((await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash === issuedQrHash, true, "only the QR token hash is persisted");
     const activeQrSnapshot = await qrSnapshot();
+    response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 200, "authorized administrator can show an existing active QR");
+    verify.equal(response.headers.get("cache-control"), "no-store, private", "recovered raw QR is marked private and non-cacheable");
+    const recoveredQr = await response.json();
+    verify.equal(recoveredQr.token, issuedQr.token, "recovery returns the same active QR without rotation");
+    verify.deepEqual(recoveredQr.credential, { qrStatus: "active", issuedAt: issuedQr.credential.issuedAt }, "recovery returns status metadata without ciphertext or digest");
+    verify.equal(JSON.stringify(recoveredQr).includes("encrypted_token"), false, "HTTP response never includes encrypted storage material");
+    verify.equal(JSON.stringify(recoveredQr).includes("token_hash"), false, "HTTP response never includes the QR digest");
+    response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
+    verify.equal((await response.json()).token, issuedQr.token, "repeated display retrieves the same currently active credential");
+    verify.deepEqual(await qrSnapshot(), activeQrSnapshot, "QR display does not mutate token, encrypted envelope, or audit history");
+
+    // Simulate a legacy, hash-only active QR inside this disposable local DB.
+    // It remains active and is not rotated by a failed recovery request.
+    const activeEnvelope = (await dbPool.query("select encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.encrypted_token;
+    if (!activeEnvelope) throw new Error("new synthetic QR lacks its recovery envelope");
+    const legacyHash = (await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash;
+    const legacyAudit = (await dbPool.query("select count(*)::int count from public.audit_log where company_id=$1 and entity_id=$2 and action like 'EMPLOYEE_QR_%'", [companyA, employeeA.employeeId])).rows[0]?.count;
+    const legacyUpdate = await service.from("employee_qr_tokens").update({ encrypted_token: null }).eq("employee_id", employeeA.employeeId);
+    if (legacyUpdate.error) throw new Error("failed to create the local synthetic legacy QR fixture");
+    try {
+      response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
+      verify.equal(response.status, 409, "legacy hash-only QR asks for one-time regeneration instead of returning a different token");
+      const legacyFailure = await response.json();
+      verify.equal(legacyFailure.error?.code, "credential_recovery_required");
+      verify.match(legacyFailure.error?.message ?? "", /Regénéralo una vez/);
+      verify.equal((await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash, legacyHash, "legacy recovery leaves the active QR hash unchanged");
+      verify.equal((await dbPool.query("select count(*)::int count from public.audit_log where company_id=$1 and entity_id=$2 and action like 'EMPLOYEE_QR_%'", [companyA, employeeA.employeeId])).rows[0]?.count, legacyAudit, "legacy recovery does not issue, replace, or audit a QR");
+    } finally {
+      const restore = await service.from("employee_qr_tokens").update({ encrypted_token: activeEnvelope }).eq("employee_id", employeeA.employeeId);
+      if (restore.error) throw new Error("failed to restore the synthetic QR envelope after legacy compatibility test");
+    }
+    verify.deepEqual(await qrSnapshot(), activeQrSnapshot, "legacy compatibility check restores the local fixture without residual changes");
+
     response = await request(qrPath, { user: adminA, method: "POST", body: {} });
     verify.equal(response.status, 409, "duplicate QR issuance requires explicit replacement");
     verify.deepEqual(await qrSnapshot(), activeQrSnapshot, "duplicate QR issuance has no state or audit effect");
@@ -1526,12 +1677,18 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     verify.equal(response.status, 200, "authorized explicit QR replacement succeeds");
     const replacementQr = await response.json();
     verify.notEqual(replacementQr.token, issuedQr.token, "replacement rotates the raw QR token");
+    response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 200, "replacement QR can be displayed without another rotation");
+    verify.equal((await response.json()).token, replacementQr.token, "display after regeneration returns the replacement token");
     const replacedHash = (await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash;
     verify.equal(replacedHash === createHash("sha256").update(replacementQr.token).digest("hex"), true, "replacement persists only the new token hash");
     verify.equal(replacedHash !== issuedQrHash, true, "previous raw token hash is invalidated by replacement");
     response = await request(qrPath, { user: adminA, method: "DELETE" });
     verify.equal(response.status, 200, "authorized administrator can revoke a QR credential");
     verify.ok((await dbPool.query("select revoked_at from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.revoked_at, "QR revocation timestamp is persisted");
+    verify.equal((await dbPool.query("select encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.encrypted_token, null, "revocation erases the encrypted recovery envelope");
+    response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
+    verify.equal(response.status, 409, "revoked QR cannot be recovered");
     process.stdout.write("PASS QR-004 employee QR credentials HTTP/Auth: tenant/role/permission guards, one-time token hashing, rotation, revocation and snapshots; PIN endpoints untouched\n");
 
     const inactiveApiAdmin = await createHttpUser("r1005-inactive-admin", "admin", companyA);

@@ -4,11 +4,25 @@ La credencial QR activa se persiste en PostgreSQL como SHA-256 para validación 
 
 ## Configuración requerida
 
-`QR_CREDENTIAL_ENCRYPTION_KEY` es un secreto exclusivamente de servidor representado por exactamente 64 caracteres hexadecimales (32 bytes). Puede generarse localmente con `openssl rand -hex 32`. Debe aprovisionarse en cada entorno mediante su almacén de secretos y mantenerse estable mientras existan credenciales cifradas. No añadirlo a `NEXT_PUBLIC_*`, Git, logs o imágenes cliente. Si falta o es inválido, la API rechaza la emisión/recuperación con un error genérico y el código QR no se muestra.
+`QR_CREDENTIAL_ENCRYPTION_KEY` es un secreto exclusivamente de servidor representado por exactamente 64 caracteres hexadecimales (32 bytes). Puede generarse localmente con `openssl rand -hex 32`; guarda la salida directamente en el gestor de secretos aprobado, no en el chat, el repositorio, una captura, un archivo del proyecto ni en `NEXT_PUBLIC_*`.
 
-Las migraciones canónicas separan las responsabilidades: `20261109011259_optional_employee_pin_requirement.sql` hace optativo el PIN con valor predeterminado `false`; `20261107220000_employee_self_service_qr_display.sql` añade el ciphertext y la RPC de estado/recuperación propia. `20261107230000_optional_attendance_pin_and_recoverable_qr.sql` conserva la autorización/auditoría de revocación y borra el ciphertext al revocar una credencial. Deben aplicarse en orden mediante el flujo autorizado de cada entorno; esta tarea no aplica migraciones remotamente.
+### Configurarla en Dokploy
 
-Las credenciales creadas antes de esta migración contienen solo el hash irreversible. No es posible reconstruir su QR. Después de configurar la clave y aplicar la migración, un administrador deberá regenerar cada QR que necesite aparecer en el portal; la regeneración invalida el QR anterior.
+1. Genera una clave nueva en un terminal privado: `openssl rand -hex 32`.
+2. En Dokploy, abre el servicio de la aplicación del entorno correspondiente y entra a su configuración de variables de entorno/secrets del contenedor.
+3. Añade `QR_CREDENTIAL_ENCRYPTION_KEY` con el valor generado. Debe estar disponible solo para el servidor Next.js, sin prefijo `NEXT_PUBLIC_`.
+4. Guarda y reinicia/reconstruye el servicio siguiendo el procedimiento de operación de ese entorno. La aplicación necesita leer la variable en el proceso del servidor.
+5. Comprueba la configuración desde el mensaje de estado de credenciales y una operación autorizada. No imprimas ni copies la clave a logs.
+
+Mantén exactamente la misma clave estable en reinicios y nuevas versiones mientras exista cualquier sobre cifrado. Perderla o cambiarla sin volver a cifrar las credenciales hará irrecuperables los QR cifrados con la clave anterior. No rotes la clave sin un plan explícito de descifrado/re-cifrado. Si la variable falta o no tiene el formato exacto, la API muestra un aviso administrativo claro y bloquea emisión y recuperación para no crear QR que no se puedan volver a mostrar. Esta documentación no confirma que la variable ya esté configurada en ningún entorno.
+
+Las migraciones canónicas separan las responsabilidades: `20261109011259_optional_employee_pin_requirement.sql` hace optativo el PIN con valor predeterminado `false`; `20261107220000_employee_self_service_qr_display.sql` añade el ciphertext y la RPC de estado/recuperación propia; `20261107230000_optional_attendance_pin_and_recoverable_qr.sql` conserva la autorización/auditoría de revocación y borra el ciphertext al revocar; `20261110011000_admin_employee_qr_credential_recovery.sql` añade la lectura administrativa no mutante del sobre activo con autorización de empresa y `employees.manage`. Deben aplicarse en orden mediante el flujo autorizado de cada entorno; esta tarea no aplica migraciones remotamente.
+
+Las credenciales creadas antes de habilitar el almacenamiento cifrado contienen solo el hash irreversible. No es posible reconstruir su QR. Después de configurar la clave y aplicar las migraciones requeridas, un administrador deberá regenerar cada QR antiguo que necesite volver a mostrar; la regeneración invalida el QR anterior.
+
+En el expediente administrativo, **Mostrar QR** consulta la credencial activa existente. No emite ni rota el token; se puede volver a usar después de cerrar la vista. La API obtiene el sobre cifrado, lo descifra en el servidor y entrega el QR con `Cache-Control: no-store, private`. El hash usado para validar el QR nunca se devuelve. Si el QR está revocado, no puede recuperarse; si solo tiene hash y no sobre cifrado, la pantalla indica que hace falta una regeneración única. Revocar una credencial elimina su sobre cifrado.
+
+La emisión y recuperación del QR dependen de la autorización administrativa, de que el expediente esté activo y de una clave de cifrado válida. No dependen de RFC ni NSS.
 
 ## PIN opcional
 
