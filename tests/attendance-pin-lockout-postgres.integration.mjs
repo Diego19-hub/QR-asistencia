@@ -113,7 +113,7 @@ await withClient(async (client) => {
     assert.equal(Number(serverPort), 5432, "connected PostgreSQL must be the isolated local container database");
     await client.query("begin");
     try {
-      await client.query("insert into public.companies(id,name,require_employee_pin) values ($1::uuid,'PIN integration disposable A ' || ($1::uuid)::text,true),($2::uuid,'PIN integration disposable B ' || ($2::uuid)::text,false)", [companyA, companyB]);
+      await client.query("insert into public.companies(id,name,legal_name,require_employee_pin) values ($1::uuid,'PIN integration disposable A ' || ($1::uuid)::text,'PIN QA legal A',true),($2::uuid,'PIN integration disposable B ' || ($2::uuid)::text,'PIN QA legal B',false)", [companyA, companyB]);
       const { rows: defaults } = await client.query("select require_employee_pin from public.companies where id=$1", [companyB]);
       assert.equal(defaults[0]?.require_employee_pin, false, "new company PIN requirement defaults to disabled");
       await client.query("insert into public.branches(id,company_id,name,timezone) values ($1,$3,'PIN test A','UTC'),($2,$4,'PIN test B','UTC')", [branchA, branchB, companyA, companyB]);

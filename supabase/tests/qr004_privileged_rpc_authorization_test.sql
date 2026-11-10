@@ -59,9 +59,9 @@ SELECT ok(NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.re
 SELECT ok(NOT has_function_privilege('anon','public.consume_report_export_quota(uuid)','EXECUTE'),
   'anonymous role cannot call the stateful report-quota RPC');
 
-INSERT INTO public.companies(id,name) VALUES
- ('f8100000-0000-4000-8000-000000000001','QR8 synthetic company A'),
- ('f8100000-0000-4000-8000-000000000002','QR8 synthetic company B');
+INSERT INTO public.companies(id,name,legal_name) VALUES
+ ('f8100000-0000-4000-8000-000000000001','QR8 synthetic company A','QA legal name - QR8 synthetic company A'),
+ ('f8100000-0000-4000-8000-000000000002','QR8 synthetic company B','QA legal name - QR8 synthetic company B');
 INSERT INTO auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,created_at,updated_at) VALUES
  ('f8200000-0000-4000-8000-000000000001','authenticated','authenticated','qr8-admin-a@example.invalid','','now()','now()','now()'),
  ('f8200000-0000-4000-8000-000000000002','authenticated','authenticated','qr8-admin-b@example.invalid','','now()','now()','now()'),

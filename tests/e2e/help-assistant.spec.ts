@@ -1,16 +1,20 @@
 import { expect, test } from "./fixtures/qr005-test";
 
 test("Ayuda solo abre el chat y Reportar un problema abre y envía el formulario directamente", async ({ page }) => {
+  const sentQuestions: string[] = [];
   await page.route("**/api/help/suggestions", async (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({ suggestions: ["¿Cómo inicio sesión?", "¿Dónde consulto mi horario?", "¿Cómo veo mi credencial QR?"] }),
   }));
-  await page.route("**/api/help/answer", async (route) => route.fulfill({
-    status: 200,
-    contentType: "application/json",
-    body: JSON.stringify({ found: true, answer: "Según el manual, sigue estos pasos:\n\nSección: Iniciar sesión\n1. Abre /login.\n2. Escribe tu correo y contraseña.\n3. Pulsa Entrar.", suggestions: ["¿Dónde consulto mi horario?", "¿Cómo veo mi credencial QR?"] }),
-  }));
+  await page.route("**/api/help/answer", async (route) => {
+    sentQuestions.push(route.request().postDataJSON().question);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ found: true, answer: "Según el manual, sigue estos pasos:\n\nSección: Iniciar sesión\n1. Abre /login.\n2. Escribe tu correo y contraseña.\n3. Pulsa Entrar.", suggestions: ["¿Dónde consulto mi horario?", "¿Cómo veo mi credencial QR?"] }),
+    });
+  });
 
   await page.goto("/login");
   const helpButton = page.getByRole("button", { name: "Ayuda" });
@@ -34,6 +38,16 @@ test("Ayuda solo abre el chat y Reportar un problema abre y envía el formulario
   await expect(related.getByRole("button", { name: "¿Dónde consulto mi horario?" })).toBeVisible();
   await related.getByRole("button", { name: "¿Dónde consulto mi horario?" }).click();
   await expect(chat.getByText("Tú")).toHaveCount(2);
+  await chat.getByLabel("Pregunta").fill("administrar horarios");
+  await chat.getByLabel("Pregunta").press("Enter");
+  await expect(chat.getByText("Tú")).toHaveCount(3);
+  expect(sentQuestions).toEqual(["¿Cómo inicio sesión?", "¿Dónde consulto mi horario?", "administrar horarios"]);
+
+  await page.setViewportSize({ width: 360, height: 740 });
+  const chatBounds = await chat.boundingBox();
+  expect(chatBounds).not.toBeNull();
+  expect(chatBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(chatBounds!.x + chatBounds!.width).toBeLessThanOrEqual(360);
   await expect(chat.getByRole("button", { name: "Reportar un problema" })).toHaveCount(0);
 
   await chat.getByRole("button", { name: "Minimizar Chatbot" }).click();
@@ -84,4 +98,93 @@ test("el reporte muestra un error recuperable sin abrir el chat", async ({ page 
   await reportDialog.getByRole("button", { name: "Enviar reporte" }).click();
   await expect(reportDialog.getByRole("alert")).toHaveText("El canal de reportes no está disponible.");
   await expect(page.getByRole("dialog", { name: "Chatbot" })).toHaveCount(0);
+});
+
+test("el chatbot muestra fallo de conexión y permite reintentar con Enter y luego respuesta manual", async ({ page }) => {
+  await page.route("**/api/help/suggestions", async (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ suggestions: ["¿Cómo inicio sesión?", "¿Dónde consulto mi horario?"] }),
+  }));
+  let calls = 0;
+  const submitted: unknown[] = [];
+  await page.route("**/api/help/answer", async (route) => {
+    submitted.push(route.request().postDataJSON());
+    calls += 1;
+    if (calls === 1) {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "La ayuda no está disponible en este momento." }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      answer: "Según el manual, abre Horarios y consulta la asignación vigente.",
+      found: true,
+      source: "manual",
+      providerStatus: "unavailable",
+      suggestions: ["¿Cómo creo y asigno un horario?"],
+    }) });
+  });
+
+  await page.goto("/login");
+  await page.getByRole("button", { name: "Ayuda" }).click();
+  const chat = page.getByRole("dialog", { name: "Chatbot" });
+  const input = chat.getByLabel("Pregunta");
+  await input.fill("administrar horarios");
+  await input.press("Enter");
+  await expect(chat.getByRole("alert")).toContainText("No se pudo obtener una respuesta del servicio");
+  await chat.getByRole("button", { name: "Reintentar pregunta" }).click();
+  await expect(chat.getByText("Según el manual, abre Horarios y consulta la asignación vigente.")).toBeVisible();
+  await expect(chat.getByRole("status")).toContainText("Gemini no respondió");
+  await expect(chat.getByRole("region", { name: "Preguntas relacionadas" }).getByRole("button", { name: "¿Cómo creo y asigno un horario?" })).toBeVisible();
+  expect(submitted).toEqual([{ question: "administrar horarios" }, { question: "administrar horarios" }]);
+});
+
+test("una pregunta fuera del manual muestra temas cercanos y permite probar uno", async ({ page }) => {
+  await page.route("**/api/help/suggestions", async (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ suggestions: ["¿Cómo inicio sesión?", "¿Dónde consulto mi horario?"] }),
+  }));
+  const questions: string[] = [];
+  await page.route("**/api/help/answer", async (route) => {
+    const question = route.request().postDataJSON().question as string;
+    questions.push(question);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(question.includes("nómina")
+        ? { answer: "No encontré una respuesta exacta en el manual. Prueba una pregunta cercana.", found: false, providerStatus: "not_configured", suggestions: ["¿Cómo administro empleados?", "¿Cómo creo y asigno un horario?"] }
+        : { answer: "Según el manual, abre Horarios y revisa la plantilla y su asignación.", found: true, providerStatus: "not_configured", suggestions: ["¿Cómo consulto mi horario?"] }),
+    });
+  });
+
+  await page.goto("/login");
+  await page.getByRole("button", { name: "Ayuda" }).click();
+  const chat = page.getByRole("dialog", { name: "Chatbot" });
+  await chat.getByLabel("Pregunta").fill("¿Cómo configuro la nómina fiscal?");
+  await chat.getByRole("button", { name: "Enviar pregunta" }).click();
+  await expect(chat.getByText("No encontré una respuesta exacta en el manual.")).toBeVisible();
+  await expect(chat.getByRole("status")).toContainText("Gemini no está configurado");
+  await chat.getByRole("region", { name: "Preguntas relacionadas" }).getByRole("button", { name: "¿Cómo creo y asigno un horario?" }).click();
+  await expect(chat.getByText(/abre Horarios y revisa la plantilla/)).toBeVisible();
+  expect(questions).toEqual(["¿Cómo configuro la nómina fiscal?", "¿Cómo creo y asigno un horario?"]);
+});
+
+test("si falla la carga inicial de preguntas, el usuario puede reintentarlo", async ({ page }) => {
+  let attempts = 0;
+  await page.route("**/api/help/suggestions", async (route) => {
+    attempts += 1;
+    if (attempts === 1) {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "No disponible" }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ suggestions: ["¿Cómo inicio sesión?"] }) });
+  });
+
+  await page.goto("/login");
+  await page.getByRole("button", { name: "Ayuda" }).click();
+  const chat = page.getByRole("dialog", { name: "Chatbot" });
+  await expect(chat.getByRole("alert")).toContainText("No se pudieron cargar las preguntas recomendadas");
+  await chat.getByRole("button", { name: "Reintentar preguntas" }).click();
+  await expect(chat.getByRole("region", { name: "Preguntas recomendadas" }).getByRole("button", { name: "¿Cómo inicio sesión?" })).toBeVisible();
+  expect(attempts).toBe(2);
 });

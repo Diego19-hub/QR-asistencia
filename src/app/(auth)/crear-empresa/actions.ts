@@ -14,7 +14,7 @@ import { createClient } from "@/lib/supabase/server";
 
 const invalidState: CompanyRegistrationActionState = {
   status: "error",
-  message: "Revisa los datos obligatorios de la empresa y el formato del RFC de persona moral.",
+  message: "Revisa los datos obligatorios de la empresa, incluida la razón social, y el formato del RFC de persona moral.",
 };
 
 function readCompanyDetails(formData: FormData): CompanyDetails | null {
@@ -44,7 +44,7 @@ async function createFirstCompany(details: CompanyDetails, user: { id: string; e
 
   const { data, error } = await supabase.rpc("create_first_company_for_current_user", {
     p_name: details.companyName,
-    p_legal_name: details.legalName || null,
+    p_legal_name: details.legalName,
     p_rfc: details.rfc,
     p_address: details.address,
     p_employer_registration_number: details.employerRegistrationNumber,

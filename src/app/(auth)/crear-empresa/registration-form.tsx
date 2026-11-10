@@ -28,8 +28,8 @@ function CompanyFields({ pending }: { pending: boolean }) {
     <label className="block text-sm font-medium text-slate-800">Nombre de la empresa
       <input name="companyName" type="text" autoComplete="organization" maxLength={180} required disabled={pending} className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 px-3.5 text-base text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 disabled:bg-slate-100" />
     </label>
-    <label className="block text-sm font-medium text-slate-800">Razón social <span className="font-normal text-slate-500">(opcional)</span>
-      <input name="legalName" type="text" autoComplete="organization-title" maxLength={240} disabled={pending} className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 px-3.5 text-base text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 disabled:bg-slate-100" />
+    <label className="block text-sm font-medium text-slate-800">Razón social *
+      <input name="legalName" type="text" autoComplete="organization-title" maxLength={240} required disabled={pending} className="mt-1.5 h-12 w-full rounded-xl border border-slate-300 px-3.5 text-base text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 disabled:bg-slate-100" />
     </label>
     <label className="block text-sm font-medium text-slate-800">Domicilio de la empresa *
       <textarea name="address" autoComplete="street-address" maxLength={500} required disabled={pending} className="mt-1.5 min-h-24 w-full rounded-xl border border-slate-300 px-3.5 py-3 text-base text-slate-950 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 disabled:bg-slate-100" />

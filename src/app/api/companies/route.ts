@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { setActiveMembershipCookie } from "@/lib/access/active-membership-cookie";
+import { requiredCompanyLegalNameSchema } from "@/lib/company/legal-name";
 
 const schema = z.object({
   name: z.string().trim().min(1).max(180),
-  legalName: z.string().trim().max(240).nullable().optional(),
+  legalName: requiredCompanyLegalNameSchema,
   address: z.string().trim().min(1).max(500),
   employerRegistrationNumber: z.string().trim().min(1).max(64),
   rfc: z.string().trim().toUpperCase().length(12),
@@ -22,14 +23,14 @@ export async function POST(request: Request) {
   let body: unknown;
   try { body = await request.json(); } catch { return error("invalid_json", "La solicitud no contiene datos válidos.", 400); }
   const parsed = schema.safeParse(body);
-  if (!parsed.success) return Response.json({ error: { code: "validation_failed", message: "Completa el nombre, domicilio, RFC de persona moral y registro patronal.", fields: parsed.error.flatten().fieldErrors } }, { status: 422, headers: { "Cache-Control": "no-store, private" } });
+  if (!parsed.success) return Response.json({ error: { code: "validation_failed", message: "Completa nombre, razón social, domicilio, RFC de persona moral y registro patronal.", fields: parsed.error.flatten().fieldErrors } }, { status: 422, headers: { "Cache-Control": "no-store, private" } });
 
   const supabase = await createClient();
   const { data: auth, error: authError } = await supabase.auth.getUser();
   if (authError || !auth.user) return error("unauthenticated", "Inicia sesión para crear una empresa.", 401);
   const { data, error: rpcError } = await supabase.rpc("create_company_for_current_owner", {
     p_name: parsed.data.name,
-    p_legal_name: parsed.data.legalName || null,
+    p_legal_name: parsed.data.legalName,
     p_rfc: parsed.data.rfc,
     p_address: parsed.data.address,
     p_employer_registration_number: parsed.data.employerRegistrationNumber,

@@ -1,10 +1,11 @@
 import { z } from "zod";
+import { requiredCompanyLegalNameSchema } from "@/lib/company/legal-name";
 
 import { apiError, checkAdminCompanyPermission, permissionCheckError, resolveAdminScope, scopeError } from "@/lib/admin/scope";
 
 const companySchema = z.object({
   name: z.string().trim().min(1).max(180).optional(),
-  legalName: z.string().trim().max(240).nullable().optional(),
+  legalName: requiredCompanyLegalNameSchema.optional(),
   address: z.string().trim().min(1).max(500).optional(),
   employerRegistrationNumber: z.string().trim().min(1).max(64).optional(),
   rfc: z.string().trim().toUpperCase().length(12).optional(),
@@ -13,10 +14,10 @@ const companySchema = z.object({
   if (!Object.keys(value).length) {
     context.addIssue({ code: "custom", message: "Incluye al menos un ajuste." });
   }
-  const profileFields = ["name", "address", "rfc", "employerRegistrationNumber"];
+  const profileFields = ["name", "legalName", "address", "rfc", "employerRegistrationNumber"];
   if ((profileFields.some((field) => Object.hasOwn(value, field)) || Object.hasOwn(value, "legalName"))
       && !profileFields.every((field) => Object.hasOwn(value, field))) {
-    context.addIssue({ code: "custom", message: "Para guardar la empresa, completa nombre, domicilio, RFC y registro patronal." });
+    context.addIssue({ code: "custom", message: "Para guardar la empresa, completa nombre, razón social, domicilio, RFC y registro patronal." });
   }
   if (value.rfc && !/^[A-Z&Ñ]{3}\d{6}[A-Z0-9]{3}$/.test(value.rfc)) {
     context.addIssue({ code: "custom", path: ["rfc"], message: "Revisa el formato del RFC." });
@@ -72,7 +73,7 @@ export async function PATCH(request: Request) {
   let payload: unknown;
   try { payload = await request.json(); } catch { return apiError("invalid_json", "El cuerpo de la solicitud no es JSON válido.", 400); }
   const parsed = companySchema.safeParse(payload);
-  if (!parsed.success) return Response.json({ error: { code: "validation_failed", message: "Completa los datos obligatorios de la empresa y revisa su formato.", fields: parsed.error.flatten().fieldErrors } }, { status: 422, headers: { "Cache-Control": "no-store" } });
+  if (!parsed.success) return Response.json({ error: { code: "validation_failed", message: "Completa los datos obligatorios de la empresa, incluida la razón social, y revisa su formato.", fields: parsed.error.flatten().fieldErrors } }, { status: 422, headers: { "Cache-Control": "no-store" } });
 
   const permissionError = permissionCheckError(await checkAdminCompanyPermission(scope, "company.manage"), "Tu membresía no tiene el permiso company.manage para modificar esta empresa.");
   if (permissionError) return permissionError;
@@ -80,7 +81,7 @@ export async function PATCH(request: Request) {
   const profileProvided = ["name", "legalName", "address", "rfc", "employerRegistrationNumber"].some((field) => Object.hasOwn(parsed.data, field));
   const { data, error } = await scope.supabase.rpc("update_company_settings", {
     p_company_id: scope.company.companyId,
-    p_profile: profileProvided ? { name: parsed.data.name, legalName: parsed.data.legalName ?? null, address: parsed.data.address, rfc: parsed.data.rfc, employerRegistrationNumber: parsed.data.employerRegistrationNumber } : null,
+    p_profile: profileProvided ? { name: parsed.data.name, legalName: parsed.data.legalName, address: parsed.data.address, rfc: parsed.data.rfc, employerRegistrationNumber: parsed.data.employerRegistrationNumber } : null,
     p_require_employee_pin: parsed.data.requireEmployeePin ?? null,
   });
   if (error?.code === "42501") return apiError("company_manage_required", "Tu membresía no tiene permiso para modificar esta empresa.", 403);

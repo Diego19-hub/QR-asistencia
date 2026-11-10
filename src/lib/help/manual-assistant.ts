@@ -2,17 +2,69 @@ const stopWords = new Set([
   "para", "como", "donde", "cuando", "desde", "puedo", "puede", "quiero", "tengo",
   "esta", "este", "esto", "del", "las", "los", "una", "uno", "por", "con", "que",
   "hay", "mi", "mis", "me", "el", "la", "un", "y", "o", "en", "no", "si", "al",
-  "se", "su", "sus", "the", "and", "how", "where", "what", "when",
+  "se", "su", "sus", "the", "and", "how", "where", "what", "when", "ver", "veo", "mostrar", "muestra",
 ]);
 
 function normalize(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es-MX");
 }
 
-function words(value: string) {
-  return normalize(value).match(/[a-z0-9]{3,}/g)?.filter((word) => !stopWords.has(word)).map((word) =>
+function rawWords(value: string) {
+  const searchable = value.replace(/(?:https?:\/\/\S+|(?<!\w)\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*)/gu, " ");
+  return normalize(searchable).match(/[a-z0-9]{2,}/g)?.filter((word) => !stopWords.has(word)).map((word) =>
     word.replace(/(?:ando|iendo|aciones|acion|mente|ados|adas|idos|idas|es|os|as|s|ar|er|ir|o|a)$/u, ""),
   ) ?? [];
+}
+
+function words(value: string) {
+  return rawWords(value).map((word) => {
+    if (/^(horari|turn|jornad|calendar)/u.test(word)) return "horario";
+    if (/^(credencial|qr|codigo|gafet)/u.test(word)) return "credencial";
+    if (/^(emplead|trabajador|personal)/u.test(word)) return "empleado";
+    if (/^(administr|administra|gestion|gestiona|maneja)/u.test(word)) return "administrar";
+    if (/^(inici|logue|autentic|acced|ingres|sesion|login|acceso|entrar)/u.test(word)) return "sesion";
+    if (/^(asisten|movimient|registr|entrada|salida)/u.test(word)) return "asistencia";
+    if (/^(configur|ajust)/u.test(word)) return "configuracion";
+    if (differsByAtMostOneCharacter(word, "horari")) return "horario";
+    if (differsByAtMostOneCharacter(word, "administr")) return "administrar";
+    return word;
+  }) ?? [];
+}
+
+function differsByAtMostOneCharacter(left: string, right: string) {
+  if (left.length < 5 || right.length < 5 || Math.abs(left.length - right.length) > 1) return false;
+  let leftIndex = 0;
+  let rightIndex = 0;
+  let edits = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    if (left[leftIndex] === right[rightIndex]) {
+      leftIndex += 1;
+      rightIndex += 1;
+      continue;
+    }
+    edits += 1;
+    if (edits > 1) return false;
+    if (left.length > right.length) leftIndex += 1;
+    else if (right.length > left.length) rightIndex += 1;
+    else { leftIndex += 1; rightIndex += 1; }
+  }
+  return edits + (leftIndex < left.length || rightIndex < right.length ? 1 : 0) <= 1;
+}
+
+function relevanceThreshold(termCount: number) {
+  return termCount <= 1 ? 1 : 2;
+}
+
+function termMatchStats(terms: string[], content: string) {
+  const contentTerms = words(content);
+  const exact = terms.reduce((total, term) => total + (contentTerms.includes(term) ? 1 : 0), 0);
+  const approximate = terms.reduce((total, term) => total + (contentTerms.includes(term) || !contentTerms.some((candidate) => differsByAtMostOneCharacter(candidate, term)) ? 0 : 1), 0);
+  return { exact, approximate };
+}
+
+function exactMatchedTerms(terms: string[], content: string) {
+  const contentTerms = words(content);
+  return terms.filter((term) => contentTerms.includes(term));
 }
 
 type ManualParagraph = { heading: string; text: string };
@@ -55,11 +107,20 @@ function manualParagraphs(markdown: string): ManualParagraph[] {
 function rankedManualParagraphs(markdown: string, question: string) {
   const terms = [...new Set(words(question))];
   if (!terms.length) return [];
+  const asksForOwnCredential = /\b(mi|mio|mia|propio|propia)\b/u.test(normalize(question));
   return manualParagraphs(markdown).map((paragraph) => {
-    const content = normalize(`${paragraph.heading} ${paragraph.text}`);
-    const score = terms.reduce((total, term) => total + (content.includes(term) ? 1 : 0), 0);
-    return { ...paragraph, score };
-  }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score);
+    const contentStats = termMatchStats(terms, paragraph.text);
+    const headingTerms = words(paragraph.heading);
+    const headingStats = headingTerms.length <= 3 ? termMatchStats(terms, paragraph.heading) : { exact: 0, approximate: 0 };
+    const specificHeadingMatch = headingTerms.some((term) => terms.includes(term) && !["configuracion", "administrar"].includes(term));
+    const ownCredentialMatch = asksForOwnCredential && /^\d*\.?\s*empleado\b/iu.test(paragraph.heading) && /mi credencial\s*\/\s*mi qr/i.test(paragraph.text);
+    const score = contentStats.exact + contentStats.approximate * 0.25 + headingStats.exact * 3 + headingStats.approximate * 2 + (ownCredentialMatch ? 5 : 0);
+    const strongMatches = new Set([
+      ...exactMatchedTerms(terms, paragraph.text),
+      ...(headingTerms.length <= 3 ? exactMatchedTerms(terms, paragraph.heading) : []),
+    ]).size;
+    return { ...paragraph, score, strongMatches, headingMatches: specificHeadingMatch ? headingStats.exact : 0, approximateHeadingMatches: headingStats.approximate, ownCredentialMatch };
+  }).filter((item) => item.score > 0 && (item.strongMatches > 0 || item.headingMatches > 0 || item.ownCredentialMatch)).sort((a, b) => b.score - a.score);
 }
 
 type ManualQuestionSuggestion = { question: string; heading: string; evidence: string[]; initial?: boolean };
@@ -71,8 +132,12 @@ const manualQuestionCatalog: ManualQuestionSuggestion[] = [
   { question: "¿Cómo veo mi credencial QR?", heading: "Empleado:", evidence: ["Mi credencial / Mi QR", "muestra el QR propio"], initial: true },
   { question: "¿Cómo registro un movimiento de asistencia?", heading: "Registrar un movimiento", evidence: ["Escanea la credencial QR activa del empleado", "Confirma el movimiento"], initial: true },
   { question: "¿Cómo administro empleados?", heading: "Empleados", evidence: ["Nuevo empleado", "Ver expediente"], initial: true },
+  { question: "¿Qué hago si no puedo iniciar sesión?", heading: "Problemas comunes", evidence: ["No puedo iniciar sesión", "No compartas tu contraseña"] },
+  { question: "¿Cómo invito a un usuario a la empresa?", heading: "Invitaciones y roles", evidence: ["para un Empleado", "elige un rol permitido", "Envía la invitación"] },
+  { question: "¿Cómo abro o edito un expediente?", heading: "Empleados", evidence: ["Ver expediente", "completar o editar esos datos"] },
   { question: "¿Cómo cambio de empresa?", heading: "Elegir empresa y rol", evidence: ["más de una membresía activa", "Pulsa Continuar"], initial: true },
   { question: "¿Cómo creo y asigno un horario?", heading: "Horarios", evidence: ["crea una plantilla", "opción de asignación"] },
+  { question: "¿Cómo asigno un horario a empleados?", heading: "Horarios", evidence: ["uno o varios empleados", "fechas de vigencia"] },
   { question: "¿Cómo consulto y filtro asistencias?", heading: "Consultar y filtrar asistencias", evidence: ["Selecciona fechas", "Pulsa Consultar"] },
   { question: "¿Cómo consulto o exporto reportes?", heading: "Reportes y exportación", evidence: ["Descargar Excel", "PDF"] },
   { question: "¿Cómo activo o desactivo el requisito de PIN?", heading: "Configuración del PIN", evidence: ["Requerir PIN del empleado", "desactivado por defecto"] },
@@ -107,13 +172,13 @@ export function relatedManualSuggestions(markdown: string, question: string): st
     const questionTerms = new Set(words(item.question));
     const shared = [...terms].filter((term) => questionTerms.has(term)).length;
     const similarity = shared / Math.max(1, new Set([...terms, ...questionTerms]).size);
-    return { ...item, index, score, similarity };
+    return { ...item, index, score, duplicate: terms.length > 0 && similarity >= 0.8 };
   });
-  const notDuplicate = candidates.filter((item) => item.similarity < 0.8);
-  if (!rankedByOverlap(notDuplicate.length ? notDuplicate : candidates).some((item) => item.score > 0)) {
-    return supportedQuestionSuggestions(markdown).filter((item) => item.initial).slice(0, 3).map((item) => item.question);
+  const notDuplicate = candidates.filter((item) => !item.duplicate);
+  if (!rankedByOverlap(notDuplicate).some((item) => item.score > 0)) {
+    return supportedQuestionSuggestions(markdown).filter((item) => item.initial && !candidates.find((candidate) => candidate.question === item.question)?.duplicate).slice(0, 3).map((item) => item.question);
   }
-  const ranked = rankedByOverlap(notDuplicate.length ? notDuplicate : candidates);
+  const ranked = rankedByOverlap(notDuplicate);
   return ranked.slice(0, 3).map((item) => item.question);
 }
 
@@ -125,9 +190,13 @@ function rankedByOverlap<T extends { score: number; index: number }>(items: T[])
 export function retrieveManualContext(markdown: string, question: string): { context: string; found: boolean } {
   const scored = rankedManualParagraphs(markdown, question);
   const terms = new Set(words(question));
-  if (!scored.length || scored[0].score < Math.min(2, terms.size)) return { context: "", found: false };
+  if (!scored.length || (scored[0].strongMatches < relevanceThreshold(terms.size) && !scored[0].headingMatches && !(terms.size <= 2 && scored[0].approximateHeadingMatches > 0) && !scored[0].ownCredentialMatch)) return { context: "", found: false };
   const bestScore = scored[0].score;
-  const matches = scored.filter((item) => item.score >= Math.max(1, bestScore - 1)).slice(0, 3);
+  const matches = scored[0].ownCredentialMatch
+    ? manualParagraphs(markdown).filter((item) => item.heading === scored[0].heading && /mi credencial\s*\/\s*mi qr|mostrar el qr/i.test(item.text))
+    : scored[0].headingMatches
+    ? manualParagraphs(markdown).filter((item) => item.heading === scored[0].heading)
+    : scored.filter((item) => item.score >= Math.max(1, bestScore - 1)).slice(0, 3);
   const context = matches.map(({ heading, text }) => `Sección: ${heading}\n${text.slice(0, 1_200).trimEnd()}`).join("\n\n");
   return { context: context.slice(0, 3_600), found: true };
 }
@@ -140,17 +209,21 @@ export function answerFromManual(markdown: string, question: string): { answer: 
 
   const scored = rankedManualParagraphs(markdown, question);
 
-  if (!scored.length || scored[0].score < Math.min(2, terms.length)) {
+  if (!scored.length || (scored[0].strongMatches < relevanceThreshold(terms.length) && !scored[0].headingMatches && !(terms.length <= 2 && scored[0].approximateHeadingMatches > 0) && !scored[0].ownCredentialMatch)) {
     return { answer: notFound, found: false };
   }
 
   const bestScore = scored[0].score;
-  const matches = scored.filter((item) => item.score >= Math.max(1, bestScore - 1)).slice(0, 3);
+  const matches = scored[0].ownCredentialMatch
+    ? manualParagraphs(markdown).filter((item) => item.heading === scored[0].heading && /mi credencial\s*\/\s*mi qr|mostrar el qr/i.test(item.text))
+    : scored[0].headingMatches
+      ? manualParagraphs(markdown).filter((item) => item.heading === scored[0].heading)
+      : scored.filter((item) => item.score >= Math.max(1, bestScore - 1)).slice(0, 3);
   const passages = matches.map(({ heading, text }) => {
     const boundedText = text.length > 1_200 ? `${text.slice(0, 1_200).trimEnd()}…` : text;
     return `Sección: ${heading}\n${boundedText}`;
   });
-  return { answer: `Según el manual, sigue estos pasos y revisa las condiciones indicadas:\n\n${passages.join("\n\n")}`, found: true };
+  return { answer: `Según el manual, sigue estos pasos y revisa las condiciones indicadas:\n\n${passages.join("\n\n")}`.slice(0, 3_600), found: true };
 }
 
 const chatSensitivePatterns: RegExp[] = [
@@ -248,19 +321,33 @@ export async function answerHelpQuestion(
   question: string,
   env: NodeJS.ProcessEnv = process.env,
   fetcher: typeof fetch = fetch,
-): Promise<{ answer: string; found: boolean; source: "manual" | "gemini"; suggestions: string[] }> {
+): Promise<{
+  answer: string;
+  found: boolean;
+  source: "manual" | "gemini";
+  suggestions: string[];
+  providerStatus: "not_configured" | "manual_only" | "used" | "unavailable" | "insufficient_context";
+}> {
   const safeQuestion = redactChatQuestion(question).question;
   const suggestions = relatedManualSuggestions(markdown, safeQuestion);
-  const notFound = { answer: manualNotFoundAnswer, found: false, source: "manual" as const, suggestions };
+  const config = geminiConfig(env);
+  const notFound = {
+    answer: manualNotFoundAnswer,
+    found: false,
+    source: "manual" as const,
+    suggestions,
+    providerStatus: config ? "manual_only" as const : "not_configured" as const,
+  };
   if (safeQuestion.replace(/\[dato omitido\]/g, "").trim().length < 2) return notFound;
   const fallback = answerFromManual(markdown, safeQuestion);
-  if (!fallback.found) return { ...fallback, source: "manual", suggestions };
-  const config = geminiConfig(env);
+  if (!fallback.found) return { ...notFound, providerStatus: config ? "manual_only" as const : "not_configured" as const };
+  if (!config) return { ...fallback, source: "manual", suggestions, providerStatus: "not_configured" };
   const context = retrieveManualContext(markdown, safeQuestion);
-  if (!config || !context.found) return { ...fallback, source: "manual", suggestions };
+  if (!context.found) return { ...fallback, source: "manual", suggestions, providerStatus: "manual_only" };
   const generated = await generateGroundedManualAnswer(config, safeQuestion, context.context, fetcher);
-  if (generated === "insufficient") return notFound;
-  return { answer: generated ?? fallback.answer, found: true, source: generated ? "gemini" : "manual", suggestions };
+  if (generated === "insufficient") return { ...fallback, source: "manual", suggestions, providerStatus: "insufficient_context" };
+  if (generated === null) return { ...fallback, source: "manual", suggestions, providerStatus: "unavailable" };
+  return { answer: generated, found: true, source: "gemini", suggestions, providerStatus: "used" };
 }
 
 export const reportablePages = [

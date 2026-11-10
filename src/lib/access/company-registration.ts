@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { requiredCompanyLegalNameSchema } from "../company/legal-name.ts";
 
 import {
   INVITATION_FULL_NAME_MAX_LENGTH,
@@ -8,14 +9,9 @@ import {
   normalizeInvitationFullName,
 } from "./invitation-password.ts";
 
-const optionalText = (max: number) => z.preprocess(
-  (value) => typeof value === "string" && !value.trim() ? null : value,
-  z.string().trim().max(max).nullable().optional(),
-);
-
 export const companyDetailsSchema = z.object({
   companyName: z.string().trim().min(1).max(180),
-  legalName: optionalText(240),
+  legalName: requiredCompanyLegalNameSchema,
   address: z.string().trim().min(1, "El domicilio es obligatorio.").max(500),
   employerRegistrationNumber: z.string().trim().min(1, "El registro patronal es obligatorio.").max(64),
   rfc: z.preprocess((value) => typeof value === "string" ? value.trim().toUpperCase() : value, z.string().min(12).max(12)),

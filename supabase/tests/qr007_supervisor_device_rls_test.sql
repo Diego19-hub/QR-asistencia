@@ -7,9 +7,9 @@ SELECT ok((SELECT relrowsecurity FROM pg_class WHERE oid='public.authorized_devi
 SELECT ok(NOT has_table_privilege('authenticated','private.device_authorization_requests','SELECT'), 'authenticated cannot directly read private device requests');
 SELECT ok(has_table_privilege('authenticated','public.supervisor_branches','INSERT'), 'branch table DML grant is constrained by RLS policies');
 
-INSERT INTO public.companies(id,name) VALUES
- ('f7000000-0000-4000-8000-000000000001','QR7 synthetic A'),
- ('f7000000-0000-4000-8000-000000000002','QR7 synthetic B');
+INSERT INTO public.companies(id,name,legal_name) VALUES
+ ('f7000000-0000-4000-8000-000000000001','QR7 synthetic A','QA legal name - QR7 synthetic A'),
+ ('f7000000-0000-4000-8000-000000000002','QR7 synthetic B','QA legal name - QR7 synthetic B');
 INSERT INTO public.branches(id,company_id,name,timezone) VALUES
  ('f7100000-0000-4000-8000-000000000001','f7000000-0000-4000-8000-000000000001','QR7 A branch','America/Mexico_City'),
  ('f7100000-0000-4000-8000-000000000002','f7000000-0000-4000-8000-000000000002','QR7 B branch','America/Mexico_City'),

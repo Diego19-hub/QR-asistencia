@@ -47,9 +47,9 @@ SELECT is((SELECT count(*)::integer FROM public.companies),1,'rejected bootstrap
 SELECT is((SELECT count(*)::integer FROM private.bootstrap_requests),1,'rejected bootstrap retries leave request ledger unchanged');
 
 -- Isolated multi-company fixtures; privileged setup is not used to impersonate an API user.
-INSERT INTO public.companies(id,name) VALUES
- ('a3000000-0000-4000-8000-000000000001','Synthetic Company A'),
- ('a3000000-0000-4000-8000-000000000002','Synthetic Company B');
+INSERT INTO public.companies(id,name,legal_name) VALUES
+ ('a3000000-0000-4000-8000-000000000001','Synthetic Company A','QA legal name - Synthetic Company A'),
+ ('a3000000-0000-4000-8000-000000000002','Synthetic Company B','QA legal name - Synthetic Company B');
 INSERT INTO public.branches(id,company_id,name,timezone) VALUES
  ('a4000000-0000-4000-8000-000000000001','a3000000-0000-4000-8000-000000000001','A Branch One','America/Mexico_City'),
  ('a4000000-0000-4000-8000-000000000002','a3000000-0000-4000-8000-000000000001','A Branch Two','America/Mexico_City'),

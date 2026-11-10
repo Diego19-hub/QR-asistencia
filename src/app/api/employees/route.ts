@@ -98,7 +98,7 @@ export async function POST(request: Request) {
       branch_id: parsed.data.branch_id ?? null,
       hired_on: parsed.data.hired_on ?? null,
       nss: parsed.data.nss,
-      personal_rfc: parsed.data.personal_rfc ?? null,
+      personal_rfc: parsed.data.personal_rfc,
     },
   });
   if (error?.code === "23505") return apiError("employee_number_conflict", "Ese identificador ya está registrado en la empresa.", 409);

@@ -1,5 +1,5 @@
 begin;
-select plan(21);
+select plan(22);
 
 select ok(to_regprocedure('public.create_first_company_for_current_user(text,text,text)') is not null,
   'legacy first-company signature remains present as a rejecting shim');
@@ -16,7 +16,7 @@ insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,c
  ('f2100000-0000-4000-8000-000000000001','authenticated','authenticated','first-owner@synthetic.invalid','x',now(),now(),now()),
  ('f2100000-0000-4000-8000-000000000002','authenticated','authenticated','tenant-b-admin@synthetic.invalid','x',now(),now(),now()),
  ('f2100000-0000-4000-8000-000000000003','authenticated','authenticated','unconfirmed-owner@synthetic.invalid','x',null,now(),now());
-insert into public.companies(id,name) values ('f2100000-0000-4000-8000-000000000102','Synthetic company B');
+insert into public.companies(id,name,legal_name) values ('f2100000-0000-4000-8000-000000000102','Synthetic company B','QA legal name - Synthetic company B');
 insert into public.company_memberships(company_id,user_id,role,active)
  values('f2100000-0000-4000-8000-000000000102','f2100000-0000-4000-8000-000000000002','admin',true);
 
@@ -35,6 +35,8 @@ select is((select count(*)::integer from public.companies where id=current_setti
 select is((select count(*)::integer from public.company_memberships m
   where m.company_id=current_setting('qr_test.first_company')::uuid and m.user_id=(select auth.uid())
     and m.role='owner' and m.active),1,'the Auth identity receives exactly one active Owner membership');
+select is((select legal_name from public.companies where id=current_setting('qr_test.first_company')::uuid),
+  'Synthetic legal name','first-company registration persists the required legal name');
 select ok(exists(select 1 from public.audit_log where company_id=current_setting('qr_test.first_company')::uuid
   and actor_user_id=(select auth.uid()) and entity_table='companies' and action='INSERT'),
   'company creation is audited with the authenticated actor');

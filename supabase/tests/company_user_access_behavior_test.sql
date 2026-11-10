@@ -19,9 +19,9 @@ insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,c
 update auth.users set raw_app_meta_data=coalesce(raw_app_meta_data,'{}'::jsonb)
   || jsonb_build_object('access_setup_completed_at','2026-01-01T00:00:00Z')
  where id <> '81000000-0000-4000-8000-000000000010';
-insert into public.companies(id,name) values
- ('82000000-0000-4000-8000-000000000001','Access synthetic A'),
- ('82000000-0000-4000-8000-000000000002','Access synthetic B');
+insert into public.companies(id,name,legal_name) values
+ ('82000000-0000-4000-8000-000000000001','Access synthetic A','QA legal name - Access synthetic A'),
+ ('82000000-0000-4000-8000-000000000002','Access synthetic B','QA legal name - Access synthetic B');
 insert into public.branches(id,company_id,name,timezone) values
  ('83000000-0000-4000-8000-000000000001','82000000-0000-4000-8000-000000000001','Access branch A','America/Mexico_City'),
  ('83000000-0000-4000-8000-000000000002','82000000-0000-4000-8000-000000000002','Access branch B','America/Mexico_City');

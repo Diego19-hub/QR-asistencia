@@ -1,5 +1,5 @@
 begin;
-select plan(14);
+select plan(19);
 
 select ok(to_regprocedure('public.create_company_for_current_owner(text,text,text,text,text)') is not null,
   'owner company creation RPC exists');
@@ -15,9 +15,9 @@ insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,c
  ('f1100000-0000-4000-8000-000000000002','authenticated','authenticated','member-b@synthetic.invalid','x',now(),now(),now());
 select set_config('request.jwt.claims','{"role":"service_role"}',true);
 select set_config('request.jwt.claim.role','service_role',true);
-insert into public.companies(id,name) values
- ('f1100000-0000-4000-8000-000000000101','Synthetic existing owner company'),
- ('f1100000-0000-4000-8000-000000000102','Synthetic unrelated company');
+insert into public.companies(id,name,legal_name) values
+ ('f1100000-0000-4000-8000-000000000101','Synthetic existing owner company','QA legal name - Synthetic existing owner company'),
+ ('f1100000-0000-4000-8000-000000000102','Synthetic unrelated company','QA legal name - Synthetic unrelated company');
 insert into public.company_memberships(company_id,user_id,role,active) values
  ('f1100000-0000-4000-8000-000000000101','f1100000-0000-4000-8000-000000000001','owner',true),
  ('f1100000-0000-4000-8000-000000000102','f1100000-0000-4000-8000-000000000002','admin',true);
@@ -37,11 +37,21 @@ select is((select count(*)::integer from public.company_memberships m
   where m.company_id=current_setting('qr_test.created_company')::uuid
     and m.user_id=(select auth.uid()) and m.role='owner' and m.active),1,
   'the authenticated owner receives exactly one active owner membership');
+select is((select legal_name from public.companies where id=current_setting('qr_test.created_company')::uuid),
+  'Synthetic legal name','the required legal name is persisted with the new company');
 select is((select require_employee_pin from public.companies where id=current_setting('qr_test.created_company')::uuid),false,
   'new company inherits PIN disabled by default');
 select ok(exists(select 1 from public.audit_log where company_id=current_setting('qr_test.created_company')::uuid
   and actor_user_id=(select auth.uid()) and entity_table='companies' and action='INSERT'),
   'company creation is recorded in the audit log');
+select throws_ok($$select * from public.create_company_for_current_owner('Missing legal QA',null,'MNL010101ABC','123 QA Street','RP-QA-124')$$,
+  '23514',null,'owner creation rejects a missing legal name at the database boundary');
+select is((select count(*)::integer from public.companies where name='Missing legal QA'),0,
+  'rejected missing legal name leaves no company row');
+select throws_ok($$select * from public.create_company_for_current_owner('Whitespace legal QA','   ','WHS010101ABC','123 QA Street','RP-QA-125')$$,
+  '23514',null,'owner creation rejects a whitespace-only legal name at the database boundary');
+select is((select count(*)::integer from public.companies where name='Whitespace legal QA'),0,
+  'rejected whitespace legal name leaves no company row');
 select is((select count(*)::integer from public.companies where id='f1100000-0000-4000-8000-000000000102'),0,
   'owner cannot read an unrelated tenant through company RLS');
 select is((select rfc from public.get_company_sensitive_profile(current_setting('qr_test.created_company')::uuid)),'SYN010101ABC',

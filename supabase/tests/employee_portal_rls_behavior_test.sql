@@ -12,9 +12,9 @@ INSERT INTO auth.users (id, aud, role, email, encrypted_password, email_confirme
  ('11000000-0000-4000-8000-000000000006','authenticated','authenticated','portal-employee-inactive@example.invalid','','now()','now()','now()'),
  ('11000000-0000-4000-8000-000000000007','authenticated','authenticated','portal-unlinked@example.invalid','','now()','now()','now()');
 
-INSERT INTO public.companies (id,name) VALUES
- ('21000000-0000-4000-8000-000000000001','Portal synthetic A'),
- ('21000000-0000-4000-8000-000000000002','Portal synthetic B');
+INSERT INTO public.companies (id,name,legal_name) VALUES
+ ('21000000-0000-4000-8000-000000000001','Portal synthetic A','QA legal name - Portal synthetic A'),
+ ('21000000-0000-4000-8000-000000000002','Portal synthetic B','QA legal name - Portal synthetic B');
 INSERT INTO public.branches (id,company_id,name,timezone) VALUES
  ('31000000-0000-4000-8000-000000000001','21000000-0000-4000-8000-000000000001','Portal branch A','America/Mexico_City'),
  ('31000000-0000-4000-8000-000000000002','21000000-0000-4000-8000-000000000002','Portal branch B','America/Mexico_City');

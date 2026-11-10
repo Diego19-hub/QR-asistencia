@@ -2,14 +2,14 @@
 BEGIN;
 SELECT plan(49);
 
-INSERT INTO public.companies(id,name) VALUES
- ('92000000-0000-4000-8000-000000000001','PIN lockout synthetic A'),
- ('92000000-0000-4000-8000-000000000002','PIN lockout synthetic B');
+INSERT INTO public.companies(id,name,legal_name) VALUES
+ ('92000000-0000-4000-8000-000000000001','PIN lockout synthetic A','QA legal name - PIN lockout synthetic A'),
+ ('92000000-0000-4000-8000-000000000002','PIN lockout synthetic B','QA legal name - PIN lockout synthetic B');
 SELECT is((SELECT require_employee_pin FROM public.companies WHERE id='92000000-0000-4000-8000-000000000001'),false,'existing and newly created companies default to optional PIN');
 SELECT is((SELECT require_employee_pin FROM public.companies WHERE id='92000000-0000-4000-8000-000000000002'),false,'another existing synthetic company also defaults to optional PIN');
 UPDATE public.companies SET require_employee_pin=true WHERE id IN ('92000000-0000-4000-8000-000000000001','92000000-0000-4000-8000-000000000002');
 SELECT is((SELECT bool_and(require_employee_pin) FROM public.companies WHERE id IN ('92000000-0000-4000-8000-000000000001','92000000-0000-4000-8000-000000000002')),true,'the PIN requirement can be enabled per company');
-INSERT INTO public.companies(id,name) VALUES ('92000000-0000-4000-8000-000000000003','PIN optional synthetic C');
+INSERT INTO public.companies(id,name,legal_name) VALUES ('92000000-0000-4000-8000-000000000003','PIN optional synthetic C','QA legal name - PIN optional synthetic C');
 INSERT INTO public.branches(id,company_id,name,timezone) VALUES ('93000000-0000-4000-8000-000000000003','92000000-0000-4000-8000-000000000003','PIN branch C','America/Mexico_City');
 INSERT INTO public.employees(id,company_id,branch_id,employee_number,first_name,last_name) VALUES
  ('94000000-0000-4000-8000-000000000003','92000000-0000-4000-8000-000000000003','93000000-0000-4000-8000-000000000003','PIN-C','Prueba','C');

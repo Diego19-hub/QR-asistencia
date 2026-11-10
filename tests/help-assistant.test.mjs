@@ -40,6 +40,20 @@ test("la ayuda reconoce la ausencia de contenido suficiente", () => {
   assert.match(result.answer, /preguntas relacionadas/);
 });
 
+test("regresión: administrar horarios encuentra instrucciones y tolera sinónimos y una falta menor", () => {
+  for (const question of ["administrar horarios", "gestionar turnos", "administar horaios"]) {
+    const result = answerFromManual(manual, question);
+    assert.equal(result.found, true, question);
+    assert.match(result.answer, /Sección: Horarios/, question);
+    assert.match(result.answer, /Abre Horarios|plantilla/i, question);
+    assert.match(result.answer, /4\. Usa la opción de asignación/);
+    assert.match(result.answer, /5\. Revisa el historial/);
+  }
+  const qr = answerFromManual(manual, "ver mi QR");
+  assert.equal(qr.found, true);
+  assert.match(qr.answer, /Mi credencial|Mi QR/);
+});
+
 test("las preguntas iniciales se limitan a temas documentados en el manual", () => {
   const suggestions = initialManualSuggestions(manual);
   assert.deepEqual(suggestions, [
@@ -62,6 +76,8 @@ test("las preguntas relacionadas usan temas del manual y nunca exceden tres", ()
   assert.ok(unrelated.length <= 3);
   assert.ok(unrelated.every((item) => initialManualSuggestions(manual).includes(item) || /horario|asistencia|empresa|empleados|QR|PIN|sesión/i.test(item)));
   assert.deepEqual(relatedManualSuggestions(manual, "¿Qué hago con qzxw987?").slice(0, 3), initialManualSuggestions(manual).slice(0, 3));
+  assert.ok(!relatedManualSuggestions(manual, "¿Cómo inicio sesión?").includes("¿Cómo inicio sesión?"));
+  assert.ok(relatedManualSuggestions(manual, "¿Cómo administro empleados?").includes("¿Cómo abro o edito un expediente?"));
 });
 
 test("las respuestas conservan pasos completos del manual en lugar de fragmentos aislados", () => {
@@ -107,7 +123,7 @@ test("Gemini recibe pregunta redactada y solo contexto del manual, usando respue
     payload = JSON.parse(init.body);
     return Response.json({ candidates: [{ content: { parts: [{ text: "Abre Horarios y consulta el calendario semanal." }] } }] });
   });
-  assert.deepEqual(result, { answer: "Abre Horarios y consulta el calendario semanal.", found: true, source: "gemini", suggestions: [] });
+  assert.deepEqual(result, { answer: "Abre Horarios y consulta el calendario semanal.", found: true, source: "gemini", suggestions: [], providerStatus: "used" });
   assert.equal(url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent");
   assert.equal(headers["x-goog-api-key"], "fake-test-key");
   assert.doesNotMatch(url, /fake-test-key/);
@@ -123,6 +139,7 @@ test("sin clave, con cuota agotada o error del proveedor usa la respuesta segura
   let calls = 0;
   const noKey = await answerHelpQuestion(source, "¿Cómo consulto horarios?", {}, async () => { calls += 1; throw new Error("no se esperaba red"); });
   assert.equal(noKey.source, "manual");
+  assert.equal(noKey.providerStatus, "not_configured");
   assert.equal(calls, 0);
 
   const logs = [];
@@ -134,8 +151,13 @@ test("sin clave, con cuota agotada o error del proveedor usa la respuesta segura
       return new Response("quota error", { status: 429 });
     });
     assert.equal(quota.source, "manual");
+    assert.equal(quota.providerStatus, "unavailable");
     const networkFailure = await answerHelpQuestion(source, "¿Cómo consulto horarios?", { GEMINI_API_KEY: "private-test-key" }, async () => { throw new TypeError("request includes private-test-key and user text"); });
     assert.equal(networkFailure.source, "manual");
+    assert.equal(networkFailure.providerStatus, "unavailable");
+    const empty = await answerHelpQuestion(source, "¿Cómo consulto horarios?", { GEMINI_API_KEY: "private-test-key" }, async () => Response.json({ candidates: [{ content: { parts: [{ text: "   " }] } }] }));
+    assert.equal(empty.answer, noKey.answer);
+    assert.equal(empty.providerStatus, "unavailable");
   } finally {
     console.error = originalError;
   }
@@ -144,13 +166,22 @@ test("sin clave, con cuota agotada o error del proveedor usa la respuesta segura
   assert.doesNotMatch(JSON.stringify(logs), /qa@example\.test|private-test-key|consulto horarios|user text/);
 });
 
-test("si Gemini determina que el manual no basta, dirige al reporte separado", async () => {
+test("si Gemini determina que el contexto no basta, conserva el fallback del manual", async () => {
   const source = "# Horarios\n\nAbre Horarios para consultar el calendario semanal.";
   const result = await answerHelpQuestion(source, "¿Cómo consulto horarios?", { GEMINI_API_KEY: "fake-key" }, async () => Response.json({ candidates: [{ content: { parts: [{ text: "INSUFFICIENT_MANUAL_CONTEXT" }] } }] }));
-  assert.equal(result.found, false);
+  assert.equal(result.found, true);
   assert.equal(result.source, "manual");
-  assert.match(result.answer, /Reportar un problema/);
+  assert.match(result.answer, /calendario semanal/);
+  assert.equal(result.providerStatus, "insufficient_context");
   assert.ok(result.suggestions.length <= 3);
+});
+
+test("si la pregunta queda fuera del manual, mantiene alternativas sin inventar respuesta", async () => {
+  const result = await answerHelpQuestion(manual, "¿Cómo configuro la nómina fiscal externa?");
+  assert.equal(result.found, false);
+  assert.match(result.answer, /No encontré una respuesta exacta/);
+  assert.ok(result.suggestions.length > 0 && result.suggestions.length <= 3);
+  assert.ok(result.suggestions.every((item) => initialManualSuggestions(manual).includes(item) || /horario|asistencia|empresa|empleados|QR|PIN|sesión/i.test(item)));
 });
 
 test("la respuesta basada en el manual adjunta opciones relacionadas disponibles", async () => {
@@ -173,6 +204,15 @@ test("la ruta inicial entrega preguntas derivadas del manual sin llamar a Gemini
   assert.doesNotMatch(route, /generateGroundedManualAnswer|GEMINI_API_KEY/);
   assert.match(route, /isAllowedRequestOrigin/);
   assert.match(route, /Cache-Control.*no-store/);
+});
+
+test("el envío de texto conserva el flujo de formulario para Enter y el botón", () => {
+  assert.match(widget, /<form onSubmit=\{\(event\) => void ask\(event\)\}/);
+  assert.match(widget, /type="submit" disabled=\{asking \|\| !question\.trim\(\)\}/);
+  assert.match(widget, /Reintentar pregunta/);
+  assert.match(widget, /Gemini no está configurado; esta respuesta usa el manual/);
+  assert.match(widget, /Gemini no respondió; se muestra la respuesta de respaldo del manual/);
+  assert.match(widget, /Reintentar preguntas/);
 });
 
 test("limita preguntas por clave anonimizada en una ventana de quince minutos", () => {

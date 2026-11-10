@@ -11,9 +11,9 @@ VALUES
  ('10000000-0000-4000-8000-000000000001', 'authenticated', 'authenticated', 'etapa7-a@example.invalid', '', clock_timestamp(), clock_timestamp(), clock_timestamp()),
  ('10000000-0000-4000-8000-000000000002', 'authenticated', 'authenticated', 'etapa7-b@example.invalid', '', clock_timestamp(), clock_timestamp(), clock_timestamp());
 
-INSERT INTO public.companies (id, name) VALUES
- ('20000000-0000-4000-8000-000000000001', 'Etapa 7 test tenant A'),
- ('20000000-0000-4000-8000-000000000002', 'Etapa 7 test tenant B');
+INSERT INTO public.companies (id, name, legal_name) VALUES
+ ('20000000-0000-4000-8000-000000000001','Etapa 7 test tenant A','QA legal name - Etapa 7 test tenant A'),
+ ('20000000-0000-4000-8000-000000000002','Etapa 7 test tenant B','QA legal name - Etapa 7 test tenant B');
 INSERT INTO public.branches (id, company_id, name, timezone) VALUES
  ('30000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000001', 'Test A', 'America/Mexico_City'),
  ('30000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000002', 'Test B', 'America/Mexico_City');

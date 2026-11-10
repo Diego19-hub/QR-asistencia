@@ -6,7 +6,7 @@ import { createEmployeeSchema, employeeRfcSchema, employeeNssSchema, patchEmploy
 
 const root = new URL("../", import.meta.url);
 
-test("worker creation requires a name, 11 digit NSS, and accepts only a valid normalized optional personal RFC", () => {
+test("worker creation requires a name, 11 digit NSS, and a valid normalized personal RFC", () => {
   const valid = {
     employee_number: "QA-001",
     first_name: "Ana",
@@ -23,16 +23,22 @@ test("worker creation requires a name, 11 digit NSS, and accepts only a valid no
   assert.equal(createEmployeeSchema.safeParse({ ...valid, personal_rfc: "BAD" }).success, false);
   assert.equal(createEmployeeSchema.safeParse({ ...valid, first_name: "" }).success, false);
   assert.equal(createEmployeeSchema.safeParse({ ...valid, last_name: "x".repeat(121) }).success, false);
-  assert.equal(createEmployeeSchema.safeParse({ ...valid, personal_rfc: "" }).success, true);
+  assert.equal(createEmployeeSchema.safeParse({ ...valid, personal_rfc: "" }).success, false);
+  assert.equal(createEmployeeSchema.safeParse({ ...valid, personal_rfc: "   " }).success, false);
+  const withoutRfc = { ...valid };
+  delete withoutRfc.personal_rfc;
+  assert.equal(createEmployeeSchema.safeParse(withoutRfc).success, false);
   assert.equal(employeeNssSchema.safeParse("12345678901").success, true);
   assert.equal(employeeRfcSchema.parse("abcd010203xyz"), "ABCD010203XYZ");
 });
 
-test("legacy status-only edits remain possible while supplied sensitive values are validated", () => {
+test("patches validate an RFC when supplied while allowing status-only edits to preserve it in the database", () => {
   assert.deepEqual(patchEmployeeSchema.parse({ active: false }), { active: false });
+  assert.equal(patchEmployeeSchema.safeParse({ first_name: "Nuevo nombre" }).success, false);
   assert.equal(patchEmployeeSchema.safeParse({ nss: "123" }).success, false);
   assert.equal(patchEmployeeSchema.safeParse({ personal_rfc: "BAD" }).success, false);
-  assert.equal(patchEmployeeSchema.parse({ personal_rfc: "" }).personal_rfc, null);
+  assert.equal(patchEmployeeSchema.safeParse({ personal_rfc: "" }).success, false);
+  assert.equal(patchEmployeeSchema.parse({ personal_rfc: "abcd010203xyz" }).personal_rfc, "ABCD010203XYZ");
 });
 
 test("company and worker forms expose required fields with responsive layouts and avoid full PII in lists", async () => {
@@ -51,8 +57,11 @@ test("company and worker forms expose required fields with responsive layouts an
   assert.match(companyRegistration, /w-full/);
   assert.match(workerList, /(?:name="nss"[^>]*required|required[^>]*name="nss")/);
   assert.match(workerList, /name="personal_rfc"/);
+  assert.match(workerList, /(?:name="personal_rfc"[^>]*required|required[^>]*name="personal_rfc")/);
   assert.match(workerList, /sm:grid-cols-2/);
   assert.match(workerDetail, /(?:name="nss"[^>]*required|required[^>]*name="nss")/);
+  assert.match(workerDetail, /(?:name="personal_rfc"[^>]*required|required[^>]*name="personal_rfc")/);
+  assert.match(workerDetail, /Falta completar el RFC personal/);
   assert.match(workerDetail, /employee\.nss\.slice\(-4\)/);
   assert.match(workerDetail, /employee\.personal_rfc\.slice\(0, 3\)/);
 });
@@ -75,4 +84,13 @@ test("private data is returned only by the protected detail flow and never selec
   assert.match(migration, /create unique index company_sensitive_data_rfc_unique/);
   assert.match(migration, /jsonb_build_object\('nss',true,'personal_rfc',rfc_value is not null\)/);
   assert.match(migration, /jsonb_build_object\('nss',true\)/);
+  const corrective = await readFile(new URL("supabase/migrations/20261110003205_require_employee_personal_rfc.sql", root), "utf8");
+  assert.ok(corrective.includes("rfc_value is null or rfc_value !~ '^[A-Z&Ñ]{4}[0-9]{6}[A-Z0-9]{3}$'"));
+  assert.match(corrective, /create or replace function public\.create_employee_with_sensitive_data/);
+  assert.match(corrective, /create or replace function public\.update_employee_with_sensitive_data/);
+  assert.match(corrective, /personal_rfc/);
+  assert.match(listRoute, /personal_rfc: parsed\.data\.personal_rfc/);
+  const updateRoute = await readFile(new URL("src/app/api/employees/[id]/route.ts", root), "utf8");
+  assert.match(updateRoute, /rpc\("update_employee_with_sensitive_data"/);
+  assert.doesNotMatch(updateRoute, /from\("employees"\)\.update\(parsed\.data\)/);
 });

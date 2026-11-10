@@ -16,7 +16,9 @@ test("QR tokens encrypt and decrypt with an authenticated AES-256-GCM envelope",
   assert.equal(decryptQrToken(encrypted, companyA, employeeA), token);
   assert.throws(() => decryptQrToken(encrypted, "d1000000-0000-4000-8000-000000000002", employeeA), /could not be decrypted/);
   assert.throws(() => decryptQrToken(encrypted, companyA, "d2000000-0000-4000-8000-000000000002"), /could not be decrypted/);
-  assert.throws(() => decryptQrToken(`${encrypted.slice(0, -1)}x`, companyA, employeeA));
+  const [version, iv, tag, ciphertext] = encrypted.split(".");
+  const alteredTag = `${tag.slice(0, -1)}${tag.endsWith("A") ? "B" : "A"}`;
+  assert.throws(() => decryptQrToken([version, iv, alteredTag, ciphertext].join("."), companyA, employeeA));
 });
 
 test("QR encryption fails closed when the server key is absent or has the wrong size", () => {

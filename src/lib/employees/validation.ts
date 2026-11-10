@@ -16,10 +16,12 @@ const optionalDate = z.preprocess(
 );
 
 export const employeeNssSchema = z.string().trim().regex(/^\d{11}$/, "El NSS debe contener exactamente 11 dígitos.");
-export const employeeRfcSchema = z.preprocess(
-  (value) => typeof value === "string" && !value.trim() ? null : typeof value === "string" ? value.trim().toUpperCase() : value,
-  z.string().length(13, "El RFC personal debe tener 13 caracteres.").regex(/^[A-Z&Ñ]{4}\d{6}[A-Z0-9]{3}$/, "Revisa el formato del RFC personal.").nullable().optional(),
-);
+export const employeeRfcSchema = z.string().trim()
+  .min(1, "El RFC personal es obligatorio.")
+  .max(13, "El RFC personal debe tener 13 caracteres.")
+  .toUpperCase()
+  .length(13, "El RFC personal debe tener 13 caracteres.")
+  .regex(/^[A-Z&Ñ]{4}\d{6}[A-Z0-9]{3}$/, "Revisa el formato del RFC personal.");
 
 export const employeeFields = {
   employee_number: z.string().trim().min(1, "El identificador es obligatorio.").max(64),
@@ -47,12 +49,19 @@ export const patchEmployeeSchema = z.object({
   first_name: employeeFields.first_name.optional(),
   last_name: employeeFields.last_name.optional(),
   nss: employeeNssSchema.optional(),
-  personal_rfc: employeeRfcSchema,
+  personal_rfc: employeeRfcSchema.optional(),
   email: optionalEmail,
   branch_id: optionalUuid,
   hired_on: optionalDate,
   active: employeeFields.active.optional(),
-}).strict().refine((value) => Object.keys(value).length > 0, "Incluye al menos un campo para actualizar.");
+}).strict()
+  .refine((value) => Object.keys(value).length > 0, "Incluye al menos un campo para actualizar.")
+  .superRefine((value, context) => {
+    const updatesProfile = Object.keys(value).some((field) => field !== "active");
+    if (updatesProfile && !value.personal_rfc) {
+      context.addIssue({ code: "custom", path: ["personal_rfc"], message: "El RFC personal es obligatorio para guardar cambios." });
+    }
+  });
 
 export const employeeIdSchema = z.string().uuid();
 

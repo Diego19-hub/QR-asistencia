@@ -11,9 +11,9 @@ SELECT ok(NOT has_function_privilege('anon','public.get_employee_credential_stat
 SELECT ok(NOT has_function_privilege('anon','public.get_own_employee_credential_status(uuid,uuid)','EXECUTE'), 'anonymous role has no EXECUTE on self credential status RPC');
 SELECT ok(NOT has_function_privilege('anon','public.list_authorized_supervisor_devices(uuid)','EXECUTE'), 'anonymous role has no EXECUTE on authorized device list RPC');
 
-INSERT INTO public.companies(id,name) VALUES
- ('f9100000-0000-4000-8000-000000000001','QR9.1 synthetic company A'),
- ('f9100000-0000-4000-8000-000000000002','QR9.1 synthetic company B');
+INSERT INTO public.companies(id,name,legal_name) VALUES
+ ('f9100000-0000-4000-8000-000000000001','QR9.1 synthetic company A','QA legal name - QR9.1 synthetic company A'),
+ ('f9100000-0000-4000-8000-000000000002','QR9.1 synthetic company B','QA legal name - QR9.1 synthetic company B');
 INSERT INTO public.branches(id,company_id,name,timezone) VALUES
  ('f9110000-0000-4000-8000-000000000001','f9100000-0000-4000-8000-000000000001','QR9.1 A branch 1','America/Mexico_City'),
  ('f9110000-0000-4000-8000-000000000002','f9100000-0000-4000-8000-000000000001','QR9.1 A branch 2','America/Mexico_City'),
