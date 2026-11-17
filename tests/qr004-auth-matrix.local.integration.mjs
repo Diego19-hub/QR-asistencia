@@ -2755,7 +2755,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const beforeEmployeeDenialsA = await snapshot(companyA), beforeEmployeeDenialsB = await snapshot(companyB);
   response = await request("/api/employees", { user: adminA, method: "POST", body: { employee_number: `CROSS-${randomUUID()}`, first_name: "Synthetic", last_name: "Rejected", nss: "12345678901", branch_id: branchB } });
   assert.equal(response.status, 422, "employee creation rejects a branch from another company");
-  response = await request(`/api/employees/${employeeB.employeeId}`, { user: adminA, method: "PATCH", body: { first_name: "Cross Tenant Mutation" } }); assert.equal(response.status, 404);
+  response = await request(`/api/employees/${employeeB.employeeId}`, { user: adminA, method: "PATCH", body: { first_name: "Cross Tenant Mutation", personal_rfc: "SYNX010101ABC" } }); assert.equal(response.status, 404);
   response = await request(`/api/employees/${employeeA.employeeId}`, { user: adminA, method: "PATCH", body: { branch_id: branchB } }); assert.equal(response.status, 422);
   assert.deepEqual(await snapshot(companyA), beforeEmployeeDenialsA, "rejected employee requests leave tenant A unchanged");
   assert.deepEqual(await snapshot(companyB), beforeEmployeeDenialsB, "rejected employee requests leave tenant B unchanged");
@@ -2843,7 +2843,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(qrPath, { user: adminA }); assert.equal(response.status, 200);
   const qrStatus = await response.json();
   assert.deepEqual(qrStatus.credential, { employeeActive: true, qrStatus: "not_issued", issuedAt: null, revokedAt: null, pinConfigured: false });
-  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("cache-control"), "no-store, private");
   assert.equal(JSON.stringify(qrStatus).includes("token_hash"), false);
   const issuedQrResponse = await request(qrPath, { user: adminA, method: "POST", body: {} }); assert.equal(issuedQrResponse.status, 200);
   assert.equal(issuedQrResponse.headers.get("cache-control"), "no-store, private");
@@ -3886,10 +3886,10 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   // Keep owner company creation last: it adds another owner membership and
   // would otherwise change single-company selection assumptions above.
   const beforeAdditionalCompanyB = await companyAndDataSnapshot(companyB);
-  const validNewCompanyPayload = { name: "Synthetic denied company", legalName: "Synthetic legal name", address: "123 Synthetic QA Avenue", employerRegistrationNumber: "RP-QA-456", rfc: "QAQ010101ABC" };
+  const validNewCompanyPayload = { taxpayerType: "legal_entity", name: "Synthetic denied company", legalName: "Synthetic legal name", address: "123 Synthetic QA Avenue", employerRegistrationNumber: "RP-QA-456", rfc: "QAQ010101ABC" };
   response = await request("/api/companies", { method: "POST", body: validNewCompanyPayload }); assert.equal(response.status, 401);
   response = await request("/api/companies", { user: adminA, method: "POST", body: validNewCompanyPayload }); assert.equal(response.status, 403);
-  response = await request("/api/companies", { user: ownerA, method: "POST", body: { name: `Synthetic second company ${randomUUID()}`, legalName: "Synthetic legal name", address: "123 Synthetic QA Avenue", employerRegistrationNumber: "RP-QA-456", rfc: "QAQ010101ABC" } }); assert.equal(response.status, 201);
+  response = await request("/api/companies", { user: ownerA, method: "POST", body: { taxpayerType: "legal_entity", name: `Synthetic second company ${randomUUID()}`, legalName: "Synthetic legal name", address: "123 Synthetic QA Avenue", employerRegistrationNumber: "RP-QA-456", rfc: "QAQ010101ABC" } }); assert.equal(response.status, 201);
   const newlyCreatedCompany = (await response.json()).item;
   assert.ok(newlyCreatedCompany.id && newlyCreatedCompany.name.startsWith("Synthetic second company"));
   response = await request(`/api/company?companyId=${newlyCreatedCompany.id}`, { user: ownerA }); assert.equal(response.status, 200);
