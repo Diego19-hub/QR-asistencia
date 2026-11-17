@@ -82,7 +82,7 @@ async function makeUser(label, role, companyName) {
   if (created.error || !created.data.user) throw new Error(`Auth fixture creation failed for ${label}`);
   const userId = created.data.user.id;
   fixtures.users.push(userId);
-  const companyResult = await service.from("companies").insert({ name: companyName }).select("id").single();
+  const companyResult = await service.from("companies").insert({ name: companyName, legal_name: `${companyName} - QA legal name` }).select("id").single();
   if (companyResult.error || !companyResult.data) throw new Error(`company fixture creation failed for ${label}`);
   const companyId = companyResult.data.id;
   fixtures.companies.push(companyId);
