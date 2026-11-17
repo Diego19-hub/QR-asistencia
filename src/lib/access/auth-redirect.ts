@@ -1,11 +1,13 @@
 import { isIP } from "node:net";
 
-export type AuthRedirectTarget = "confirm" | "callback-invitation" | "invitation" | "login-invite-error" | "login-auth-error" | "login-confirmed";
+export type AuthRedirectTarget = "confirm" | "callback-invitation" | "callback-registration" | "invitation" | "first-company" | "login-invite-error" | "login-auth-error" | "login-confirmed";
 
 const targetPaths: Record<AuthRedirectTarget, string> = {
   confirm: "/auth/confirm",
   "callback-invitation": "/auth/callback?next=%2Finvitacion",
+  "callback-registration": "/auth/callback?next=%2Fcrear-empresa",
   invitation: "/invitacion",
+  "first-company": "/crear-empresa",
   "login-invite-error": "/login?error=invite",
   "login-auth-error": "/login?error=auth",
   "login-confirmed": "/login?confirmed=1",

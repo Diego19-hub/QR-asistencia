@@ -63,11 +63,12 @@ test("login links to first-company registration and no-membership login continue
 });
 
 test("Auth account creation is separate from company persistence until a session is verified", async () => {
-  const [actions, form, adminShell, companySettings] = await Promise.all([
+  const [actions, form, adminShell, companySettings, loginPage] = await Promise.all([
     readFile(new URL("src/app/(auth)/crear-empresa/actions.ts", root), "utf8"),
     readFile(new URL("src/app/(auth)/crear-empresa/registration-form.tsx", root), "utf8"),
     readFile(new URL("src/components/admin/admin-shell.tsx", root), "utf8"),
     readFile(new URL("src/components/admin/company-settings.tsx", root), "utf8"),
+    readFile(new URL("src/app/(auth)/login/page.tsx", root), "utf8"),
   ]);
   assert.match(actions, /supabase\.auth\.signUp\(\{[\s\S]*?email: parsed\.data\.email,[\s\S]*?password: parsed\.data\.password/);
   assert.match(actions, /data: \{ full_name: parsed\.data\.fullName \}/);
@@ -78,6 +79,12 @@ test("Auth account creation is separate from company persistence until a session
   assert.match(actions, /p_employer_registration_number: details\.employerRegistrationNumber/);
   assert.doesNotMatch(actions, /user_id\s*:\s*parsed|p_user_id|role\s*:\s*["']owner["']/);
   assert.doesNotMatch(actions, /console\.(?:log|warn|error)|JSON\.stringify\(formData/);
+  assert.match(actions, /resendOwnerConfirmation/);
+  assert.match(actions, /auth\.resend\(\{ type: "signup", email \}\)/);
+  assert.match(actions, /Si el correo puede recibir una confirmación pendiente/);
+  assert.doesNotMatch(actions, /Ese correo ya tiene una cuenta/);
+  assert.match(form, /Reenviar confirmación/);
+  assert.match(loginPage, /Si acabas de registrarte, confirma primero tu correo/);
   assert.match(form, /Razón social \*[\s\S]*?<input name="legalName"[^>]*required/);
   assert.match(adminShell, /Razón social \*<input name="legalName" required/);
   assert.match(companySettings, /Razón social \*<input name="legalName" required/);

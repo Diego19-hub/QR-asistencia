@@ -10,7 +10,7 @@ import {
   COMPANY_REGISTRATION_PASSWORD_MIN_LENGTH,
   type CompanyRegistrationActionState,
 } from "@/lib/access/company-registration";
-import { completeFirstCompany, registerOwner } from "./actions";
+import { completeFirstCompany, registerOwner, resendOwnerConfirmation } from "./actions";
 
 const initialState: CompanyRegistrationActionState = { status: "idle" };
 
@@ -21,6 +21,17 @@ function Message({ state }: { state: CompanyRegistrationActionState }) {
     <p>{state.message}</p>
     {state.status === "email-registered" ? <Link href="/login" className="mt-2 inline-block font-semibold underline underline-offset-2">Ir a iniciar sesión</Link> : null}
   </div>;
+}
+
+function ResendConfirmation({ email }: { email?: string }) {
+  const [state, action, pending] = useActionState(resendOwnerConfirmation, initialState);
+  return <form action={action} className="space-y-2">
+    {state.message ? <p role="status" className="text-sm leading-6 text-emerald-900">{state.message}</p> : null}
+    <label className="block text-sm font-medium text-slate-800">Correo para enviar confirmación
+      <input name="email" type="email" autoComplete="email" maxLength={254} defaultValue={email ?? ""} required disabled={pending} className="mt-1.5 h-11 w-full rounded-xl border border-slate-300 px-3 text-base text-slate-950" />
+    </label>
+    <button type="submit" disabled={pending} className="min-h-10 rounded-lg border border-blue-700 px-4 text-sm font-semibold text-blue-800 disabled:opacity-60">{pending ? "Solicitando…" : "Reenviar confirmación"}</button>
+  </form>;
 }
 
 function CompanyFields({ pending }: { pending: boolean }) {
@@ -46,7 +57,10 @@ function CompanyFields({ pending }: { pending: boolean }) {
 export function OwnerRegistrationForm({ fullName = "" }: { fullName?: string }) {
   const [state, action, pending] = useActionState(registerOwner, initialState);
   if (state.status === "verification-pending") {
-    return <div className="space-y-4"><Message state={state} /><Link href="/login" className="inline-flex min-h-11 items-center rounded-xl bg-blue-700 px-5 text-sm font-semibold text-white hover:bg-blue-800 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-600/30">Volver a iniciar sesión</Link></div>;
+    return <div className="space-y-4"><Message state={state} /><ResendConfirmation email={state.email} /><Link href="/login" className="inline-flex min-h-11 items-center rounded-xl bg-blue-700 px-5 text-sm font-semibold text-white hover:bg-blue-800 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-600/30">Volver a iniciar sesión</Link></div>;
+  }
+  if (state.email && state.status !== "idle") {
+    return <div className="space-y-4"><Message state={state} /><ResendConfirmation email={state.email} /><Link href="/login" className="inline-flex min-h-11 items-center rounded-xl bg-blue-700 px-5 text-sm font-semibold text-white">Ir a iniciar sesión</Link></div>;
   }
   return <form action={action} className="space-y-4">
     <Message state={state} />

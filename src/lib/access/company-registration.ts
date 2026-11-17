@@ -42,6 +42,7 @@ export type OwnerRegistration = z.infer<typeof ownerRegistrationSchema>;
 export type CompanyRegistrationActionState = {
   status: "idle" | "error" | "verification-pending" | "email-registered" | "account-has-company";
   message?: string;
+  email?: string;
 };
 
 export const COMPANY_REGISTRATION_PASSWORD_MIN_LENGTH = INVITATION_PASSWORD_MIN_LENGTH;

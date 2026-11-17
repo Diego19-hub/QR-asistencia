@@ -16,6 +16,7 @@ import { launchServerActionBrowser } from "./qr004-server-actions.browser.mjs";
 const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "node_modules/.bin/supabase");
 const e2eOnly = process.argv.includes("--e2e-only");
+const e2eConfirmationsDisabled = process.argv.includes("--e2e-confirmations-disabled");
 const performanceOnly = process.argv.includes("--performance-only");
 const supervisorDeviceRlsOnly = process.argv.includes("--supervisor-device-rls-only");
 const privilegedRpcAuditOnly = process.argv.includes("--privileged-rpc-audit-only");
@@ -179,6 +180,7 @@ async function waitForNext(url) {
 async function runPlaywrightLocal(env, secrets) {
   const playwrightArgs = [join(root, "node_modules/@playwright/test/cli.js"), "test", "--config", join(root, "playwright.config.ts")];
   if (performanceOnly) playwrightArgs.push("tests/performance/web-performance.spec.ts");
+  if (e2eConfirmationsDisabled) playwrightArgs.push("tests/e2e/company-registration.spec.ts", "--grep", "registro confirma identidad");
   if (process.argv.includes("--ui")) playwrightArgs.push("--ui");
   const child = spawn(process.execPath, playwrightArgs, {
     cwd: root,
@@ -428,7 +430,7 @@ try {
   mailpitUrl = `http://127.0.0.1:${base + 4}`;
   localUrl(mailpitUrl, "Mailpit URL");
   assert.match(config, new RegExp(`^project_id = "${projectId}"$`, "m"));
-  if (e2eOnly) {
+  if (e2eOnly && !e2eConfirmationsDisabled) {
     const emailAuthStart = config.indexOf("[auth.email]");
     const smsAuthStart = config.indexOf("[auth.sms]", emailAuthStart);
     assert.ok(emailAuthStart >= 0 && smsAuthStart > emailAuthStart, "temporary email Auth section is present");
@@ -816,6 +818,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       QR005_SUPABASE_URL: apiUrl,
       QR005_MAILPIT_URL: mailpitUrl,
       QR005_RESULTS_DIR: join(temp, "playwright-results"),
+      QR005_AUTH_CONFIRMATIONS: e2eConfirmationsDisabled ? "disabled" : "enabled",
       QR005_ADMIN_EMAIL: adminA.email,
       QR005_ADMIN_PASSWORD: adminA.password,
       QR005_ADMIN_B_EMAIL: adminB.email,
@@ -935,6 +938,8 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     const activeRecord = active.qr.find((row) => row.employee_id === employeeA.employeeId);
     verify.equal(activeRecord?.token_hash, createHash("sha256").update(issued.token).digest("hex"));
     verify.ok(/^v1\./.test(activeRecord?.encrypted_token ?? ""));
+    verify.equal((await dbPool.query("select company_id from public.employees where id=$1", [employeeA.employeeId])).rows[0]?.company_id, companyA,
+      "the QR is stored against the same company scope as the employee's authenticated profile");
     response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
     verify.equal(response.status, 200, "admin can repeatedly show active QR");
     verify.equal(response.headers.get("cache-control"), "no-store, private");
@@ -944,6 +949,44 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
     verify.equal((await response.json()).token, issued.token, "second recovery returns the same token");
     verify.deepEqual(await qrSnapshot(), active, "recovery does not write QR, ciphertext, or audit state");
+
+    response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`, { user: employeeA });
+    verify.equal(response.status, 200, "the linked employee can load their own QR through the portal API");
+    verify.equal(response.headers.get("cache-control"), "no-store, private");
+    verify.match(response.headers.get("vary") ?? "", /(?:^|,\s*)Cookie(?:,|$)/i,
+      "portal response varies by cookie even when Next.js adds its own router variation headers");
+    const employeeCredentialBeforeRotation = await response.json();
+    verify.equal(employeeCredentialBeforeRotation.token, issued.token);
+    verify.equal(JSON.stringify(employeeCredentialBeforeRotation).includes(activeRecord?.token_hash ?? "hash-not-present"), false,
+      "portal response excludes the stored digest and encrypted envelope");
+    response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`, { user: employeeB });
+    verify.equal(response.status, 403, "another employee cannot read the QR");
+    response = await request(`/api/employee/credential?employeeId=${employeeB.employeeId}`, { user: employeeA });
+    verify.equal(response.status, 403, "employee cannot read an expediente in another company");
+
+    // Exercise the rendered portal itself. The QR data URL is kept only in
+    // memory and is never included in output or diagnostics.
+    actionBrowser = await launchServerActionBrowser(appUrl);
+    await actionBrowser.navigate("/login");
+    await actionBrowser.runForm("form", { email: employeeA.email, password: employeeA.password });
+    await actionBrowser.waitForPath("/mi-qr");
+    const portalReadyDeadline = Date.now() + 15_000;
+    while (Date.now() < portalReadyDeadline) {
+      const ready = await actionBrowser.evaluate("document.body.innerText.includes('Hola,') && [...document.querySelectorAll('button')].some(button => button.innerText.includes('Credencial'))");
+      if (ready) break;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    }
+    await actionBrowser.clickButtonText("Credencial");
+    const waitForRenderedQr = async (previous, timeoutMs = 15_000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const current = await actionBrowser.evaluate("document.querySelector('img[alt=\\\"Tu credencial QR activa\\\"]')?.getAttribute('src') ?? null");
+        if (current?.startsWith("data:image/png;base64,") && current !== previous) return current;
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+      }
+      throw new Error("employee portal did not render the active QR image within the bounded local wait");
+    };
+    const renderedQrBeforeRotation = await waitForRenderedQr(null);
 
     const activeEnvelope = activeRecord.encrypted_token;
     const legacyHash = activeRecord.token_hash;
@@ -973,6 +1016,30 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     verify.equal(response.status, 200);
     recovered = await response.json();
     verify.equal(recovered.token, replacement.token, "recovery after regeneration returns the new token");
+    response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`, { user: employeeA });
+    verify.equal(response.status, 200);
+    const employeeCredentialAfterRotation = await response.json();
+    verify.equal(employeeCredentialAfterRotation.token, replacement.token, "portal API returns the replacement for the same employee and company");
+    verify.notEqual(employeeCredentialAfterRotation.token, employeeCredentialBeforeRotation.token);
+    await actionBrowser.click('button[aria-label="Actualizar"]');
+    const renderedQrAfterRotation = await waitForRenderedQr(renderedQrBeforeRotation);
+    verify.notEqual(renderedQrAfterRotation, renderedQrBeforeRotation,
+      "the rendered employee portal refreshes to show the replacement QR");
+    const afterPortalRefresh = await qrSnapshot();
+    response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`, { user: employeeA });
+    verify.equal(response.status, 200);
+    verify.equal((await response.json()).token, replacement.token, "repeated portal reads return the same active QR");
+    verify.deepEqual(await qrSnapshot(), afterPortalRefresh, "employee reads do not reissue, revoke, or create audit entries");
+
+    await stopNext();
+    await startNext(serviceKey, null);
+    response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`, { user: employeeA });
+    verify.equal(response.status, 503, "missing encryption key fails closed for an existing active QR");
+    verify.equal((await response.json()).error?.code, "credential_recovery_unavailable");
+    verify.deepEqual(await qrSnapshot(), afterPortalRefresh, "missing-key reads preserve credential and audit state");
+    await stopNext();
+    await startNext();
+
     response = await request(qrPath, { user: adminA, method: "DELETE" });
     verify.equal(response.status, 200, "admin can revoke QR");
     const revoked = (await dbPool.query("select revoked_at,encrypted_token from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0];
@@ -980,6 +1047,11 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     verify.equal(revoked.encrypted_token, null, "revocation clears encrypted recovery data");
     response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
     verify.equal(response.status, 409, "revoked QR cannot be recovered");
+    response = await request(`/api/employee/credential?employeeId=${employeeA.employeeId}`, { user: employeeA });
+    verify.equal(response.status, 200);
+    const revokedPortalCredential = await response.json();
+    verify.equal(revokedPortalCredential.status, "revoked");
+    verify.equal("token" in revokedPortalCredential, false, "revoked QR is not exposed by the employee portal");
     process.stdout.write(`PASS isolated employee QR credential HTTP/Auth lifecycle: ${qrAssertions} assertions; no scan, PIN verification, attendance, or remote database\n`);
   } else if (authorizationRacesOnly) {
     // Targeted local-only R10-05 coverage: administrative access route guards,

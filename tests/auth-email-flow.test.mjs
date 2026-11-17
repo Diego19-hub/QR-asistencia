@@ -46,6 +46,7 @@ test("Invitation setup validates the configured password bounds and a presentati
 test("Auth redirects use APP_BASE_URL and a closed set of paths", () => {
   assert.equal(redirect.getAuthRedirectUrl("confirm", appUrl, "production").href, `${appUrl}/auth/confirm`);
   assert.equal(redirect.getAuthRedirectUrl("callback-invitation", appUrl, "production").href, `${appUrl}/auth/callback?next=%2Finvitacion`);
+  assert.equal(redirect.getAuthRedirectUrl("callback-registration", appUrl, "production").href, `${appUrl}/auth/callback?next=%2Fcrear-empresa`);
   assert.equal(redirect.getAuthRedirectUrl("../evil", appUrl, "production"), null);
   assert.equal(redirect.getAuthRedirectUrl("confirm", "https://user:pass@asistencia-test.duob.tech", "production"), null);
   assert.equal(redirect.getAuthRedirectUrl("confirm", "https://asistencia-test.duob.tech/other", "production"), null);
@@ -91,6 +92,9 @@ test("Auth routes verify server-side and never redirect using request.url or tok
   ]);
   assert.match(callback, /exchangeCodeForSession\(code\)/);
   assert.match(callback, /getAuthRedirectLocation/);
+  assert.match(callback, /requestedNext === "\/crear-empresa"/);
+  assert.match(callback, /data\.user\?\.email_confirmed_at/);
+  assert.match(callback, /redirectAuth\("first-company"\)/);
   assert.match(confirm, /verifyOtp\(\{ token_hash: tokenHash, type \}\)/);
   assert.match(confirm, /form method="post" action="\/auth\/confirm"/);
   assert.match(confirm, /export async function POST\(request: NextRequest\)/);
@@ -128,7 +132,7 @@ test("first-company registration exposes a safe Auth confirmation target without
   assert.doesNotMatch(migration, /p_user_id|p_owner_user_id|p_role/);
   assert.match(migration, /pg_advisory_xact_lock/);
 });
-  assert.match(confirm, /if \(error\) return redirectAuth\("login-invite-error"\)/);
+  assert.match(confirm, /type === "signup" \? "callback-registration" : "invitation"/);
 });
 
 test("Invitation setup revalidates Auth identity and pending recipient before changing password or profile", async () => {

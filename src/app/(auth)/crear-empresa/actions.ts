@@ -106,26 +106,50 @@ export async function registerOwner(
       });
       if (error) {
         if (error.code === "weak_password") return { status: "error", message: "La contraseña no cumple la política configurada en Supabase Auth." };
-        if (error.code === "email_exists" || error.code === "user_already_exists") return { status: "email-registered", message: "Ese correo ya tiene una cuenta. Inicia sesión para continuar; si ya tiene empresa, usa “Crear otra empresa” desde el panel Owner." };
-        return { status: "error", message: "No fue posible iniciar el registro. Revisa el correo e inténtalo de nuevo." };
+        if (error.code === "email_exists" || error.code === "user_already_exists") return { status: "email-registered", email: parsed.data.email, message: "No fue posible completar el registro con esos datos. Si ya habías iniciado el alta, inicia sesión o solicita un nuevo correo de confirmación." };
+        return { status: "error", email: parsed.data.email, message: "No fue posible iniciar el registro. Si se alcanzó a crear una cuenta, puedes solicitar un nuevo correo de confirmación." };
       }
-      if (!data.user) return { status: "error", message: "No se pudo iniciar el registro. Inténtalo de nuevo." };
+      if (!data.user) return { status: "error", email: parsed.data.email, message: "No se pudo iniciar el registro. Si se alcanzó a crear una cuenta, puedes solicitar un nuevo correo de confirmación." };
       if (data.user.identities?.length === 0) {
-        return { status: "email-registered", message: "Ese correo ya tiene una cuenta. Inicia sesión para continuar; si ya tiene empresa, usa “Crear otra empresa” desde el panel Owner." };
+        return { status: "email-registered", email: parsed.data.email, message: "No fue posible completar el registro con esos datos. Si ya habías iniciado el alta, inicia sesión o solicita un nuevo correo de confirmación." };
       }
       if (!data.session) {
-        return { status: "verification-pending", message: "Te enviamos un correo para confirmar tu identidad. Abre el enlace; después inicia sesión y termina la creación de tu empresa. Por seguridad, la empresa no se crea antes de confirmar el correo." };
+        return { status: "verification-pending", email: parsed.data.email, message: "Primero confirma tu correo desde el enlace que te enviamos. Después inicia sesión para terminar de crear tu empresa; la empresa y Owner se guardan juntos al completar el alta." };
       }
       const result = await createFirstCompany(parsed.data, data.user);
       redirectTo = result.redirectTo;
       resultState = result.state;
     }
   } catch {
-    return { status: "error", message: "No fue posible completar el registro. Vuelve a intentarlo; no compartas tu contraseña por otros medios." };
+    return { status: "error", email: parsed.data.email, message: "No fue posible completar el registro. Si se alcanzó a crear una cuenta, puedes solicitar un nuevo correo de confirmación. No compartas tu contraseña por otros medios." };
   }
 
   if (redirectTo) redirect(redirectTo);
   return resultState ?? { status: "error", message: "No fue posible completar el alta. Inténtalo de nuevo." };
+}
+
+export async function resendOwnerConfirmation(
+  _previous: CompanyRegistrationActionState,
+  formData: FormData,
+): Promise<CompanyRegistrationActionState> {
+  const rawEmail = formData.get("email");
+  const parsedEmail = typeof rawEmail === "string"
+    ? ownerRegistrationSchema.shape.email.safeParse(rawEmail)
+    : null;
+  const email = parsedEmail?.success ? parsedEmail.data : null;
+  if (email) {
+    try {
+      const supabase = await createClient();
+      await supabase.auth.resend({ type: "signup", email });
+    } catch {
+      // Keep the response identical for unknown addresses, delivery failures, and throttling.
+    }
+  }
+  return {
+    status: "verification-pending",
+    email: email ?? undefined,
+    message: "Si el correo puede recibir una confirmación pendiente, enviaremos un enlace. Revisa tu bandeja y correo no deseado; después confirma e inicia sesión para completar el alta.",
+  };
 }
 
 export async function completeFirstCompany(

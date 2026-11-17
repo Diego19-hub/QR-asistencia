@@ -14,8 +14,8 @@ async function confirmationUrl(mailpitUrl: URL, email: string, appOrigin: string
   const messages = Array.isArray(payload) ? payload : payload.messages ?? [];
   const matching = messages.filter((message) => (message.To ?? message.to ?? [])
     .some((recipient) => (recipient.Address ?? recipient.address ?? "").toLowerCase() === email.toLowerCase()));
-  expect(matching).toHaveLength(1);
-  const id = matching[0].ID ?? matching[0].id;
+  expect(matching.length).toBeGreaterThan(0);
+  const id = matching[matching.length - 1].ID ?? matching[matching.length - 1].id;
   expect(typeof id).toBe("string");
   const detailResponse = await fetch(new URL(`/api/v1/message/${encodeURIComponent(id!)}`, mailpitUrl));
   expect(detailResponse.status).toBe(200);
@@ -46,18 +46,39 @@ test("registro confirma identidad antes de crear la empresa y asigna Owner a la 
   await page.getByLabel("Confirmar contraseña").fill(password);
   await page.getByLabel("Nombre de la empresa").fill(companyName);
   await page.getByRole("button", { name: "Crear cuenta y empresa" }).click();
-  await expect(page.getByRole("status")).toContainText("Te enviamos un correo para confirmar tu identidad");
+  if (process.env.QR005_AUTH_CONFIRMATIONS !== "disabled") {
+    await expect(page.getByRole("status")).toContainText("Primero confirma tu correo");
+    await expect(page.getByRole("button", { name: "Reenviar confirmación" })).toBeVisible();
+    // Re-sending is safe and has the same generic success message.
+    await page.getByRole("button", { name: "Reenviar confirmación" }).click();
+    await expect(page.getByText("Si el correo puede recibir una confirmación pendiente")).toBeVisible();
+    const link = await confirmationUrl(qr.mailpitUrl, email, qr.baseUrl.origin);
+    await page.goto(link.href);
+    await expect(page.getByRole("button", { name: "Confirmar correo" })).toBeVisible();
+    const callbackNavigation = page.waitForURL((url) => url.pathname === "/auth/callback" && url.searchParams.get("next") === "/crear-empresa");
+    await page.getByRole("button", { name: "Confirmar correo" }).click();
+    await callbackNavigation;
+    await expect(page).toHaveURL(/\/crear-empresa(?:\?|$)/);
+    await expect(page.getByRole("heading", { name: "Completar alta de empresa" })).toBeVisible();
+    await page.context().clearCookies();
+    await page.goto("/login");
+    await page.getByLabel("Correo electrónico").fill(email.toUpperCase());
+    await page.getByLabel("Contraseña").fill(password);
+    await page.getByRole("button", { name: "Entrar" }).click();
+    await expect(page).toHaveURL(/\/crear-empresa(?:\?|$)/);
+    await expect(page.getByRole("heading", { name: "Completar alta de empresa" })).toBeVisible();
 
-  const link = await confirmationUrl(qr.mailpitUrl, email, qr.baseUrl.origin);
-  await page.goto(link.href);
-  await expect(page.getByRole("button", { name: "Confirmar correo" })).toBeVisible();
-  await page.getByRole("button", { name: "Confirmar correo" }).click();
-  await expect(page).toHaveURL(/\/crear-empresa(?:\?|$)/);
-  await expect(page.getByRole("heading", { name: "Completar alta de empresa" })).toBeVisible();
-
-  // No company exists until email confirmation and an authenticated completion.
-  await page.getByLabel("Nombre de la empresa").fill(companyName);
-  await page.getByRole("button", { name: "Crear empresa como Owner" }).click();
+    // No company exists until email confirmation and an authenticated completion.
+    await page.getByLabel("Nombre de la empresa").fill(companyName);
+    await page.getByRole("button", { name: "Crear empresa como Owner" }).click();
+  } else {
+    // With confirmation disabled, signUp returns a session and the same atomic completion runs immediately.
+    await expect(page).toHaveURL(/\/admin(?:\?|$)/);
+    await page.getByRole("button", { name: "Cerrar sesión" }).click();
+    await page.getByLabel("Correo electrónico").fill(email.toUpperCase());
+    await page.getByLabel("Contraseña").fill(password);
+    await page.getByRole("button", { name: "Entrar" }).click();
+  }
   await expect(page).toHaveURL(/\/admin(?:\?|$)/);
   await expect(page.getByRole("main").getByText(companyName, { exact: true })).toBeVisible();
   const identity = await page.evaluate(async () => {
@@ -97,7 +118,12 @@ test("correo ya registrado recibe una salida útil sin exponer detalles Auth", a
   await page.getByLabel("Confirmar contraseña").fill("synthetic-known-password");
   await page.getByLabel("Nombre de la empresa").fill("No debe duplicarse");
   await page.getByRole("button", { name: "Crear cuenta y empresa" }).click();
-  await expect(page.getByText("Ese correo ya tiene una cuenta", { exact: false })).toBeVisible();
+  await expect(page.getByText("No fue posible completar el registro con esos datos", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reenviar confirmación" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Ir a iniciar sesión" })).toBeVisible();
   await expect(page.getByText("User already registered", { exact: false })).toHaveCount(0);
+  await page.getByRole("button", { name: "Reenviar confirmación" }).click();
+  await expect(page.getByText("Si el correo puede recibir una confirmación pendiente")).toBeVisible();
+  await qr.signIn(page, qr.fixture("ADMIN_EMAIL"), qr.fixture("ADMIN_PASSWORD"));
+  await expect(page).toHaveURL(/\/admin(?:\?|$)/);
 });
