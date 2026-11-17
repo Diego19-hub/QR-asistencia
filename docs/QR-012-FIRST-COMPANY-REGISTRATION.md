@@ -36,6 +36,7 @@ El SAT documenta RFC de 12 posiciones para persona moral y 13 para persona físi
 | `npm run lint` | PASS |
 | `npm run test:company-registration:e2e` | PASS, 2/2; Supabase local desechable, identidades sintéticas |
 | `npm run test:company-registration:db` | PASS, 31/31 pgTAP; PostgreSQL local desechable |
+| `npm run test:company-sensitive-data:db` | PASS, 91/91 pgTAP, incluida creación tipada de empresa adicional; PostgreSQL local desechable |
 
 Para la validación integral se usaron únicamente stacks locales desechables, con IDs aleatorios y datos sintéticos. El E2E cubrió registro de persona física sin correo, sesión/cookies de 30 días, creación de empresa y Owner, redirección al dashboard y reintento con correo existente/contraseña distinta seguido de login con la contraseña original. pgTAP cubrió RFC físico de 13 caracteres, moral de 12, tipo/longitud incompatibles, normalización, persistencia e idempotencia. Los runners confirmaron limpieza de sus stacks y preservación de recursos Docker preexistentes.
 
