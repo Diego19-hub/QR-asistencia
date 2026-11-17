@@ -17,6 +17,8 @@ const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "node_modules/.bin/supabase");
 const e2eOnly = process.argv.includes("--e2e-only");
 const e2eConfirmationsDisabled = process.argv.includes("--e2e-confirmations-disabled");
+const e2eGrepIndex = process.argv.indexOf("--e2e-grep");
+const e2eGrep = e2eGrepIndex >= 0 ? process.argv[e2eGrepIndex + 1] : undefined;
 const performanceOnly = process.argv.includes("--performance-only");
 const supervisorDeviceRlsOnly = process.argv.includes("--supervisor-device-rls-only");
 const privilegedRpcAuditOnly = process.argv.includes("--privileged-rpc-audit-only");
@@ -181,6 +183,7 @@ async function runPlaywrightLocal(env, secrets) {
   const playwrightArgs = [join(root, "node_modules/@playwright/test/cli.js"), "test", "--config", join(root, "playwright.config.ts")];
   if (performanceOnly) playwrightArgs.push("tests/performance/web-performance.spec.ts");
   if (e2eConfirmationsDisabled) playwrightArgs.push("tests/e2e/company-registration.spec.ts", "--grep", "registro|reintentar un correo existente");
+  if (e2eGrep) playwrightArgs.push("--grep", e2eGrep);
   if (process.argv.includes("--ui")) playwrightArgs.push("--ui");
   const child = spawn(process.execPath, playwrightArgs, {
     cwd: root,
