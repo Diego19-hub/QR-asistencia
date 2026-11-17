@@ -48,7 +48,7 @@ export async function GET(request: Request) {
   if (!result.ok) return scopeError(result);
   const { scope } = result;
   const { data, error } = await scope.supabase.from("companies")
-    .select("id,name,legal_name,require_employee_pin,updated_at")
+    .select("id,name,legal_name,taxpayer_type,require_employee_pin,updated_at")
     .eq("id", scope.company.companyId).maybeSingle();
   if (error) return companyLookupError(error);
   if (!data) return apiError("company_not_found", "No se encontró la empresa activa.", 404);

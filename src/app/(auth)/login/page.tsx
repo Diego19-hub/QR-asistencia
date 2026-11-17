@@ -150,9 +150,6 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         <p className="mt-3 text-center text-xs leading-5 text-slate-500">
           Si ya perteneces a una empresa, solicita acceso a su administrador.
         </p>
-        <p className="mt-2 text-center text-xs leading-5 text-slate-500">
-          Si acabas de registrarte, confirma primero tu correo. Puedes volver a <Link href="/crear-empresa" className="font-semibold underline underline-offset-2">Crear empresa</Link> para solicitar otro enlace de confirmación.
-        </p>
       </section>
     </main>
   );

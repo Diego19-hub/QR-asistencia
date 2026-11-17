@@ -180,7 +180,7 @@ async function waitForNext(url) {
 async function runPlaywrightLocal(env, secrets) {
   const playwrightArgs = [join(root, "node_modules/@playwright/test/cli.js"), "test", "--config", join(root, "playwright.config.ts")];
   if (performanceOnly) playwrightArgs.push("tests/performance/web-performance.spec.ts");
-  if (e2eConfirmationsDisabled) playwrightArgs.push("tests/e2e/company-registration.spec.ts", "--grep", "registro confirma identidad");
+  if (e2eConfirmationsDisabled) playwrightArgs.push("tests/e2e/company-registration.spec.ts", "--grep", "registro|reintentar un correo existente");
   if (process.argv.includes("--ui")) playwrightArgs.push("--ui");
   const child = spawn(process.execPath, playwrightArgs, {
     cwd: root,
@@ -430,13 +430,13 @@ try {
   mailpitUrl = `http://127.0.0.1:${base + 4}`;
   localUrl(mailpitUrl, "Mailpit URL");
   assert.match(config, new RegExp(`^project_id = "${projectId}"$`, "m"));
-  if (e2eOnly && !e2eConfirmationsDisabled) {
+  if (e2eOnly) {
     const emailAuthStart = config.indexOf("[auth.email]");
     const smsAuthStart = config.indexOf("[auth.sms]", emailAuthStart);
     assert.ok(emailAuthStart >= 0 && smsAuthStart > emailAuthStart, "temporary email Auth section is present");
     const emailAuthConfig = config.slice(emailAuthStart, smsAuthStart);
     assert.match(emailAuthConfig, /^enable_confirmations = false$/m, "repository default local Auth confirmation setting is documented");
-    config = `${config.slice(0, emailAuthStart)}${emailAuthConfig.replace(/^enable_confirmations = false$/m, "enable_confirmations = true")}${config.slice(smsAuthStart)}`;
+    assert.match(emailAuthConfig, /^enable_confirmations = false$/m, "local registration must create an Auth session without email confirmation");
   }
   await writeFile(join(workdir, "supabase/config.toml"), config, { mode: 0o600 });
   for (const kind of Object.keys(before)) {
@@ -818,7 +818,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       QR005_SUPABASE_URL: apiUrl,
       QR005_MAILPIT_URL: mailpitUrl,
       QR005_RESULTS_DIR: join(temp, "playwright-results"),
-      QR005_AUTH_CONFIRMATIONS: e2eConfirmationsDisabled ? "disabled" : "enabled",
+      QR005_AUTH_CONFIRMATIONS: "disabled",
       QR005_ADMIN_EMAIL: adminA.email,
       QR005_ADMIN_PASSWORD: adminA.password,
       QR005_ADMIN_B_EMAIL: adminB.email,

@@ -1,32 +1,44 @@
 # QR-012 — Registro de primera empresa y Owner
 
-## Diagnóstico
+## Resultado esperado
 
-El error que ve la persona no demuestra que la contraseña sea incorrecta. En `src/app/(auth)/login/actions.ts`, el rechazo de Auth por correo aún no confirmado seguía la misma rama que cualquier error 4xx y terminaba en `credentials`; el formulario traduce ese código al texto “No se pudo iniciar sesión. Revisa tus datos e inténtalo de nuevo”. El alta comunicaba que debía confirmar, pero no ofrecía reenvío. Un fallo de entrega después de que Auth aceptara el alta podía dejar el correo sin confirmación y sin una acción visible para recuperarlo.
+Crear cuenta con email/contraseña no requiere correo de confirmación. Supabase Auth devuelve la sesión, el servidor crea empresa y membresía Owner de forma atómica e idempotente, persiste las cookies de sesión por 30 días y redirige a `/admin`. La vigencia JWT se conserva en una hora. El alta solicita si opera una persona física con actividad empresarial o una persona moral, valida estructura y longitud RFC (13/12) y guarda la opción en la empresa.
 
-La identidad, empresa y Owner se crean en etapas distintas cuando Auth exige confirmación. La RPC `create_first_company_for_current_user` ya protege la segunda etapa: exige `auth.uid()` confirmado, serializa reintentos por identidad y crea empresa, datos sensibles, auditoría y membresía Owner en la misma transacción. Si la cuenta ya tiene una membresía Owner única, devuelve la empresa existente. La política de contraseñas no debe modificarse para resolver este flujo.
+## Cambios locales
 
-## Cambio
+- `supabase/config.toml` conserva `auth.email.enable_confirmations = false`. El runner E2E ya no la cambia a `true` y exige el valor desactivado para el registro local.
+- `registerOwner` no configura `emailRedirectTo` ni ofrece reenvío de confirmación. Si Auth no devuelve sesión, explica que debe desactivarse la confirmación y no crea empresa.
+- Antes de crear el cliente que ejecuta `signUp`, la acción marca la preferencia de sesión persistente. `src/lib/supabase/server.ts` aplica 30 días a las cookies SSR de Supabase. No cambia el JWT.
+- Con sesión, `create_first_company_for_current_user` crea empresa, datos sensibles, auditoría y Owner en una transacción; reintentos de la RPC devuelven la misma empresa.
+- La pantalla de registro y “Crear otra empresa” preguntan el tipo de contribuyente. El RFC se normaliza a mayúsculas; la aplicación comunica que valida formato, no vigencia ante el SAT. Los RPC validan nuevamente formato/tipo en servidor.
+- `20261117090000_add_company_taxpayer_type.sql` agrega `companies.taxpayer_type` nullable y restringido a los dos valores conocidos. Los registros existentes conservan `NULL`; no se deduce tipo desde RFC histórico. RPCs tipados asignan el tipo solo si está vacío, por lo que un reintento no cambia el tipo existente. Los clientes dejan de poder llamar las firmas internas sin tipo.
+- `20261117120000_allow_company_rfc_by_taxpayer_type.sql` amplía los validadores internos para aceptar ambas estructuras. Los RPC públicos validan primero que tipo y RFC coincidan (persona física: 13; persona moral: 12).
+- El E2E sintético verifica que no se envía correo de confirmación, que el alta entra al dashboard y que la sesión/cookies duran aproximadamente 30 días. Otro caso intenta registrar un correo existente con una contraseña distinta y después inicia sesión con la contraseña original.
+- La configuración de invitaciones, enlaces Auth y confirmación de cambios de correo se conserva; el correo de recuperación de contraseña no se desactiva. No se cambió configuración alojada.
 
-- El login mantiene una respuesta de credenciales genérica y añade una instrucción que sirve para cualquier cuenta: confirmar primero y volver a “Crear empresa” para pedir otro enlace. No revela el estado de una cuenta.
-- El alta ofrece reenvío mediante `supabase.auth.resend({ type: "signup", email })`. La acción normaliza el correo con el mismo esquema y devuelve el mismo mensaje para correo desconocido, cuenta confirmada, limitación de frecuencia, error de Auth o éxito. No registra credenciales ni tokens.
-- Los errores de registro que pueden ocurrir después de que Auth haya aceptado la identidad conservan el correo enviado por la persona y ofrecen reenvío; una repetición con correo usado no confirma ni niega que exista una cuenta.
-- La confirmación OTP del servidor redirige a un callback de destino cerrado. El callback solo continúa a `/crear-empresa` con una sesión validada por `getUser()` y correo confirmado. El callback de invitación conserva su ruta y requisito de código.
-- La contraseña se pasa literalmente a `signUp`. El reenvío y una repetición de alta no llaman a `updateUser` ni establecen una contraseña nueva.
-- El E2E de confirmación activa ahora verifica el mensaje, reenvío, OTP, callback, login, creación como Owner y aislamiento entre empresas. Una segunda ejecución dirigida usa Auth local con confirmación desactivada y comprueba creación inmediata, logout y login. También se comprueba una repetición con contraseña distinta y posterior login usando la contraseña original.
+## Supabase alojado
+
+En cada proyecto que deba usar este flujo, desactiva **Confirm email** en Auth → Providers → Email antes de habilitar el registro. Supabase documenta que esa verificación está activada por defecto en proyectos alojados y se controla en Auth Providers; localmente se configura en `supabase/config.toml` ([documentación de Supabase](https://supabase.com/docs/guides/auth/passwords)). No es una migración y debe aplicarse por separado en el proyecto Supabase correspondiente. El cambio conserva las plantillas de invitación y los correos de recuperación. No inspeccioné ni modifiqué proyectos alojados.
+
+## Formato del RFC
+
+El SAT documenta RFC de 12 posiciones para persona moral y 13 para persona física, y ofrece por separado herramientas para verificar registro/existencia; por ello la validación local se limita a longitud y estructura sintáctica ([estructura del RFC](https://www.sat.gob.mx/cs/Satellite?blobcol=urldata&blobkey=id&blobtable=MungoBlobs&blobwhere=1461176322651&ssbinary=true), [verificación de inscripción al RFC](https://wwwmat.sat.gob.mx/aplicacion/29073/verifica-si-estas-registrado-en-el-rfc)). El CFF contempla personas físicas y morales como sujetos de obligaciones fiscales y su artículo 27 regula inscripción/avisos del RFC ([CFF, Cámara de Diputados](https://www.diputados.gob.mx/LeyesBiblio/pdf/CFF.pdf)); el artículo 100 de la LISR regula ingresos de personas físicas por actividades empresariales y profesionales ([LISR, Cámara de Diputados](https://www.diputados.gob.mx/LeyesBiblio/pdf/LISR.pdf)). La app no determina régimen fiscal ni acredita vigencia ante el SAT.
 
 ## Verificación
 
 | Comando | Resultado |
 |---|---|
-| `npm run test:auth-flow` | PASS, 14 pruebas |
-| `npm run test:company-registration` | PASS, 4 pruebas |
+| `npm run test:auth-flow` | PASS, 14/14 |
+| `npm run test:company-registration` | PASS, 4/4 |
+| `npm run test:company-creation` | PASS, 4/4 |
+| `node --experimental-strip-types --test tests/deployment-readiness.test.mjs` | PASS, 8/8 |
 | `npm run typecheck` | PASS |
 | `npm run lint` | PASS |
-| `npm run test:company-registration:e2e` | No inició: el cliente Docker respondió `Cannot connect to the Docker daemon`. No hubo stack local ni cambios de datos. |
+| `npm run test:company-registration:e2e` | PASS, 2/2; Supabase local desechable, identidades sintéticas |
+| `npm run test:company-registration:db` | PASS, 31/31 pgTAP; PostgreSQL local desechable |
 
-Las pruebas unitarias mostraron advertencias preexistentes de Node `MODULE_TYPELESS_PACKAGE_JSON`. La prueba SQL `supabase/tests/first_company_registration_test.sql` ya verifica sesión confirmada, empresa y Owner únicos, reintento idempotente, denegación sin confirmación y protección multiempresa. No se ejecutó pgTAP porque requiere el stack local desechable y Docker no está disponible.
+Para la validación integral se usaron únicamente stacks locales desechables, con IDs aleatorios y datos sintéticos. El E2E cubrió registro de persona física sin correo, sesión/cookies de 30 días, creación de empresa y Owner, redirección al dashboard y reintento con correo existente/contraseña distinta seguido de login con la contraseña original. pgTAP cubrió RFC físico de 13 caracteres, moral de 12, tipo/longitud incompatibles, normalización, persistencia e idempotencia. Los runners confirmaron limpieza de sus stacks y preservación de recursos Docker preexistentes.
 
-## Estado
+El primer E2E reveló que las RPC internas aún rechazaban RFC físicos de 13 caracteres aunque el RPC tipado los aceptaba; se corrigió en `20261117120000_allow_company_rfc_by_taxpayer_type.sql`. También se ajustó el selector del mensaje genérico y se completaron los campos obligatorios del escenario de reintento.
 
-El cambio está implementado y las validaciones estáticas/unitarias pasaron. QR-012 permanece **En curso** hasta ejecutar `npm run test:company-registration:e2e` con Docker iniciado, que ejecuta ambos modos de confirmación en Supabase local desechable. No se consultó ni modificó Testing o Producción.
+No se consultó ni modificó Testing, Producción, la cuenta o la empresa Juvenal. No hubo cambios de contraseña ni migraciones remotas.

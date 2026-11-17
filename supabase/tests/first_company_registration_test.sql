@@ -1,21 +1,24 @@
 begin;
-select plan(22);
+select plan(31);
 
 select ok(to_regprocedure('public.create_first_company_for_current_user(text,text,text)') is not null,
   'legacy first-company signature remains present as a rejecting shim');
 select ok(to_regprocedure('public.create_first_company_for_current_user(text,text,text,text,text)') is not null,
-  'complete first-company registration RPC exists');
-select ok((select prosecdef from pg_proc where oid='public.create_first_company_for_current_user(text,text,text,text,text)'::regprocedure),
+  'legacy first-company implementation remains available internally');
+select ok(to_regprocedure('public.create_first_company_for_current_user(text,text,text,text,text,text)') is not null,
+  'typed first-company registration RPC exists');
+select ok((select prosecdef from pg_proc where oid='public.create_first_company_for_current_user(text,text,text,text,text,text)'::regprocedure),
   'first-company creation is atomic inside a SECURITY DEFINER function');
-select ok(has_function_privilege('authenticated','public.create_first_company_for_current_user(text,text,text,text,text)','EXECUTE'),
+select ok(has_function_privilege('authenticated','public.create_first_company_for_current_user(text,text,text,text,text,text)','EXECUTE'),
   'authenticated identities may invoke first-company creation');
-select ok(not has_function_privilege('anon','public.create_first_company_for_current_user(text,text,text,text,text)','EXECUTE'),
+select ok(not has_function_privilege('anon','public.create_first_company_for_current_user(text,text,text,text,text,text)','EXECUTE'),
   'anonymous identities cannot invoke first-company creation');
 
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,created_at,updated_at) values
  ('f2100000-0000-4000-8000-000000000001','authenticated','authenticated','first-owner@synthetic.invalid','x',now(),now(),now()),
  ('f2100000-0000-4000-8000-000000000002','authenticated','authenticated','tenant-b-admin@synthetic.invalid','x',now(),now(),now()),
- ('f2100000-0000-4000-8000-000000000003','authenticated','authenticated','unconfirmed-owner@synthetic.invalid','x',null,now(),now());
+ ('f2100000-0000-4000-8000-000000000003','authenticated','authenticated','unconfirmed-owner@synthetic.invalid','x',null,now(),now()),
+ ('f2100000-0000-4000-8000-000000000004','authenticated','authenticated','physical-owner@synthetic.invalid','x',now(),now(),now());
 insert into public.companies(id,name,legal_name) values ('f2100000-0000-4000-8000-000000000102','Synthetic company B','QA legal name - Synthetic company B');
 insert into public.company_memberships(company_id,user_id,role,active)
  values('f2100000-0000-4000-8000-000000000102','f2100000-0000-4000-8000-000000000002','admin',true);
@@ -29,7 +32,7 @@ select throws_ok($$select * from public.create_first_company_for_current_user('U
 select set_config('request.jwt.claims','{"role":"authenticated","sub":"f2100000-0000-4000-8000-000000000001"}',true);
 select set_config('request.jwt.claim.sub','f2100000-0000-4000-8000-000000000001',true);
 select set_config('qr_test.first_company',
-  (select company_id::text from public.create_first_company_for_current_user('Synthetic first company','Synthetic legal name','SYN010101ABC','123 QA Street','RP-QA-001')),true);
+  (select company_id::text from public.create_first_company_for_current_user('legal_entity','Synthetic first company','Synthetic legal name','SYN010101ABC','123 QA Street','RP-QA-001')),true);
 select is((select count(*)::integer from public.companies where id=current_setting('qr_test.first_company')::uuid),1,
   'confirmed authenticated user creates one company');
 select is((select count(*)::integer from public.company_memberships m
@@ -37,12 +40,14 @@ select is((select count(*)::integer from public.company_memberships m
     and m.role='owner' and m.active),1,'the Auth identity receives exactly one active Owner membership');
 select is((select legal_name from public.companies where id=current_setting('qr_test.first_company')::uuid),
   'Synthetic legal name','first-company registration persists the required legal name');
+select is((select taxpayer_type from public.companies where id=current_setting('qr_test.first_company')::uuid),
+  'legal_entity','first-company registration persists its taxpayer type');
 select ok(exists(select 1 from public.audit_log where company_id=current_setting('qr_test.first_company')::uuid
   and actor_user_id=(select auth.uid()) and entity_table='companies' and action='INSERT'),
   'company creation is audited with the authenticated actor');
 select is((select require_employee_pin from public.companies where id=current_setting('qr_test.first_company')::uuid),false,
   'first company retains the default optional PIN policy');
-select is((select company_id::text from public.create_first_company_for_current_user('Synthetic first company','Synthetic legal name','SYN010101ABC','123 QA Street','RP-QA-001')),
+select is((select company_id::text from public.create_first_company_for_current_user('legal_entity','Synthetic first company','Synthetic legal name','SYN010101ABC','123 QA Street','RP-QA-001')),
   current_setting('qr_test.first_company'),'retry returns the same company');
 select is((select count(*)::integer from public.company_memberships where user_id=(select auth.uid())),1,
   'retry does not create another company membership');
@@ -50,7 +55,7 @@ select throws_ok($$select public.create_first_company_for_current_user('Wrong si
   '42883',null,'client cannot pass an arbitrary Owner user_id');
 select is((select count(*)::integer from public.companies where id='f2100000-0000-4000-8000-000000000102'),0,
   'the new Owner cannot read the unrelated tenant through company RLS');
-select throws_ok($$select * from public.create_first_company_for_current_user('Bad RFC',null,'INVALID','123 QA Street','RP-QA-002')$$,
+select throws_ok($$select * from public.create_first_company_for_current_user('legal_entity','Bad RFC',null,'INVALID','123 QA Street','RP-QA-002')$$,
   '22023',null,'invalid company details are rejected');
 reset role;
 select is((select count(*)::integer from public.companies where name='Bad RFC'),0,
@@ -59,7 +64,7 @@ select is((select count(*)::integer from public.companies where name='Bad RFC'),
 select set_config('request.jwt.claims','{"role":"authenticated","sub":"f2100000-0000-4000-8000-000000000003"}',true);
 select set_config('request.jwt.claim.sub','f2100000-0000-4000-8000-000000000003',true);
 set local role authenticated;
-select throws_ok($$select * from public.create_first_company_for_current_user('Unconfirmed company',null,'UNC010101ABC','123 QA Street','RP-QA-003')$$,
+select throws_ok($$select * from public.create_first_company_for_current_user('legal_entity','Unconfirmed company',null,'UNC010101ABC','123 QA Street','RP-QA-003')$$,
   '42501',null,'unconfirmed Auth identity cannot create a company');
 reset role;
 select is((select count(*)::integer from public.companies where name='Unconfirmed company'),0,
@@ -68,7 +73,7 @@ select is((select count(*)::integer from public.companies where name='Unconfirme
 select set_config('request.jwt.claims','{"role":"authenticated","sub":"f2100000-0000-4000-8000-000000000002"}',true);
 select set_config('request.jwt.claim.sub','f2100000-0000-4000-8000-000000000002',true);
 set local role authenticated;
-select throws_ok($$select * from public.create_first_company_for_current_user('Tenant B duplicate',null,'TEN010101ABC','123 QA Street','RP-QA-004')$$,
+select throws_ok($$select * from public.create_first_company_for_current_user('legal_entity','Tenant B duplicate',null,'TEN010101ABC','123 QA Street','RP-QA-004')$$,
   '42501',null,'an existing tenant member cannot use first-company registration');
 reset role;
 select is((select count(*)::integer from public.companies where name='Tenant B duplicate'),0,
@@ -76,6 +81,25 @@ select is((select count(*)::integer from public.companies where name='Tenant B d
 set local role authenticated;
 select is((select count(*)::integer from public.companies where id=current_setting('qr_test.first_company')::uuid),0,
   'an administrator in tenant B cannot read the Owner company created in tenant A');
+
+select set_config('request.jwt.claims','{"role":"authenticated","sub":"f2100000-0000-4000-8000-000000000004"}',true);
+select set_config('request.jwt.claim.sub','f2100000-0000-4000-8000-000000000004',true);
+select throws_ok($$select * from public.create_first_company_for_current_user('legal_entity','Mismatched RFC type','Synthetic legal name','ABCD010203XYZ','123 QA Street','RP-QA-005')$$,
+  '22023',null,'a 13-character personal RFC is rejected when taxpayer_type is legal_entity');
+select is((select count(*)::integer from public.companies where name='Mismatched RFC type'),0,
+  'RFC/type mismatch does not leave a company row');
+select set_config('qr_test.physical_company',
+  (select company_id::text from public.create_first_company_for_current_user('physical_person_business','Synthetic physical company','Synthetic physical person','abcd010203xyz','123 QA Street','RP-QA-006')),true);
+select is((select count(*)::integer from public.companies where id=current_setting('qr_test.physical_company')::uuid),1,
+  'a 13-character RFC creates one company for persona física');
+select is((select taxpayer_type from public.companies where id=current_setting('qr_test.physical_company')::uuid),
+  'physical_person_business','physical-person taxpayer type is persisted');
+select is((select rfc from public.get_company_sensitive_profile(current_setting('qr_test.physical_company')::uuid)),
+  'ABCD010203XYZ','physical-person RFC is normalized and stored in the protected profile');
+select is((select company_id::text from public.create_first_company_for_current_user('physical_person_business','Synthetic physical company','Synthetic physical person','ABCD010203XYZ','123 QA Street','RP-QA-006')),
+  current_setting('qr_test.physical_company'),'physical-person retry returns the same company');
+select is((select count(*)::integer from public.company_memberships where user_id=(select auth.uid())),1,
+  'physical-person retry does not create another Owner membership');
 
 select * from finish();
 rollback;

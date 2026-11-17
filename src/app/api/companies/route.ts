@@ -4,13 +4,18 @@ import { setActiveMembershipCookie } from "@/lib/access/active-membership-cookie
 import { requiredCompanyLegalNameSchema } from "@/lib/company/legal-name";
 
 const schema = z.object({
+  taxpayerType: z.enum(["physical_person_business", "legal_entity"]),
   name: z.string().trim().min(1).max(180),
   legalName: requiredCompanyLegalNameSchema,
   address: z.string().trim().min(1).max(500),
   employerRegistrationNumber: z.string().trim().min(1).max(64),
-  rfc: z.string().trim().toUpperCase().length(12),
+  rfc: z.string().trim().toUpperCase(),
 }).strict().superRefine((value, context) => {
-  if (!/^[A-Z&Ñ]{3}\d{6}[A-Z0-9]{3}$/.test(value.rfc)) {
+  const physical = value.taxpayerType === "physical_person_business";
+  const valid = physical
+    ? value.rfc.length === 13 && /^[A-Z&Ñ]{4}\d{6}[A-Z0-9]{3}$/.test(value.rfc)
+    : value.rfc.length === 12 && /^[A-Z&Ñ]{3}\d{6}[A-Z0-9]{3}$/.test(value.rfc);
+  if (!valid) {
     context.addIssue({ code: "custom", path: ["rfc"], message: "Revisa el formato del RFC." });
   }
 });
@@ -23,12 +28,13 @@ export async function POST(request: Request) {
   let body: unknown;
   try { body = await request.json(); } catch { return error("invalid_json", "La solicitud no contiene datos válidos.", 400); }
   const parsed = schema.safeParse(body);
-  if (!parsed.success) return Response.json({ error: { code: "validation_failed", message: "Completa nombre, razón social, domicilio, RFC de persona moral y registro patronal.", fields: parsed.error.flatten().fieldErrors } }, { status: 422, headers: { "Cache-Control": "no-store, private" } });
+  if (!parsed.success) return Response.json({ error: { code: "validation_failed", message: "Completa el tipo de contribuyente, nombre, razón social, domicilio, RFC y registro patronal.", fields: parsed.error.flatten().fieldErrors } }, { status: 422, headers: { "Cache-Control": "no-store, private" } });
 
   const supabase = await createClient();
   const { data: auth, error: authError } = await supabase.auth.getUser();
   if (authError || !auth.user) return error("unauthenticated", "Inicia sesión para crear una empresa.", 401);
   const { data, error: rpcError } = await supabase.rpc("create_company_for_current_owner", {
+    p_taxpayer_type: parsed.data.taxpayerType,
     p_name: parsed.data.name,
     p_legal_name: parsed.data.legalName,
     p_rfc: parsed.data.rfc,
