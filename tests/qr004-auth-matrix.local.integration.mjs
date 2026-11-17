@@ -1058,7 +1058,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     // real Next Server Actions, and a row-lock-controlled revoke/accept race.
     // This mode deliberately does not seed or touch attendance rows or PIN state.
     let targetedAssertions = 0;
-    const verify = Object.fromEntries(["equal", "notEqual", "deepEqual", "notDeepEqual", "ok"].map((method) => [method, (...args) => {
+    const verify = Object.fromEntries(["equal", "notEqual", "deepEqual", "notDeepEqual", "ok", "match"].map((method) => [method, (...args) => {
       targetedAssertions += 1;
       return assert[method](...args);
     }]));
@@ -1186,14 +1186,14 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     response = await request(`/api/employees/${createdEmployee.id}?companyId=${companyA}`, { user: adminA });
     verify.equal(response.status, 200, "authorized administrator can read a same-tenant employee record");
   const sensitiveEmployeeDetails = (await response.json()).item;
-  verify.equal(sensitiveEmployeeDetails.nss, "23456789012", "authorized employee detail returns the submitted synthetic NSS");
-  verify.equal(sensitiveEmployeeDetails.personal_rfc, "ABCD010101XYZ", "personal RFC is normalized to uppercase in the protected detail view");
+  verify.equal(sensitiveEmployeeDetails.nss, "12345678901", "authorized employee detail returns the submitted synthetic NSS");
+  verify.equal(sensitiveEmployeeDetails.personal_rfc, "SYNX010101ABC", "personal RFC is normalized to uppercase in the protected detail view");
   response = await request(`/api/employees?companyId=${companyA}&pageSize=100`, { user: adminA });
   const employeeDirectory = await response.json();
   const directoryEmployee = employeeDirectory.items.find((item) => item.id === createdEmployee.id);
   verify.ok(directoryEmployee, "created employee appears in the same-tenant directory");
   verify.equal(Object.hasOwn(directoryEmployee, "nss") || Object.hasOwn(directoryEmployee, "personal_rfc"), false, "employee listing does not expose NSS or personal RFC");
-    response = await request(`/api/employees/${createdEmployee.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { first_name: "Synthetic Edited" } });
+    response = await request(`/api/employees/${createdEmployee.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { first_name: "Synthetic Edited", personal_rfc: sensitiveEmployeeDetails.personal_rfc } });
     verify.equal(response.status, 200, "authorized administrator can edit a same-tenant employee");
     verify.equal((await response.json()).item.first_name, "Synthetic Edited", "authorized employee update persists");
 
@@ -1726,8 +1726,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     if (!activeEnvelope) throw new Error("new synthetic QR lacks its recovery envelope");
     const legacyHash = (await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash;
     const legacyAudit = (await dbPool.query("select count(*)::int count from public.audit_log where company_id=$1 and entity_id=$2 and action like 'EMPLOYEE_QR_%'", [companyA, employeeA.employeeId])).rows[0]?.count;
-    const legacyUpdate = await service.from("employee_qr_tokens").update({ encrypted_token: null }).eq("employee_id", employeeA.employeeId);
-    if (legacyUpdate.error) throw new Error("failed to create the local synthetic legacy QR fixture");
+    await dbPool.query("update private.employee_qr_tokens set encrypted_token=null where employee_id=$1", [employeeA.employeeId]);
     try {
       response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
       verify.equal(response.status, 409, "legacy hash-only QR asks for one-time regeneration instead of returning a different token");
@@ -1737,8 +1736,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       verify.equal((await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash, legacyHash, "legacy recovery leaves the active QR hash unchanged");
       verify.equal((await dbPool.query("select count(*)::int count from public.audit_log where company_id=$1 and entity_id=$2 and action like 'EMPLOYEE_QR_%'", [companyA, employeeA.employeeId])).rows[0]?.count, legacyAudit, "legacy recovery does not issue, replace, or audit a QR");
     } finally {
-      const restore = await service.from("employee_qr_tokens").update({ encrypted_token: activeEnvelope }).eq("employee_id", employeeA.employeeId);
-      if (restore.error) throw new Error("failed to restore the synthetic QR envelope after legacy compatibility test");
+      await dbPool.query("update private.employee_qr_tokens set encrypted_token=$2 where employee_id=$1", [employeeA.employeeId, activeEnvelope]);
     }
     verify.deepEqual(await qrSnapshot(), activeQrSnapshot, "legacy compatibility check restores the local fixture without residual changes");
 
