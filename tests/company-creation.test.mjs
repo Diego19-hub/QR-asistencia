@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const [route, profileRoute, migration, legalNameMigration, shell] = await Promise.all([
+const [route, profileRoute, migration, taxpayerMigration, rfcValidatorMigration, legalNameMigration, shell] = await Promise.all([
   readFile(new URL("../src/app/api/companies/route.ts", import.meta.url), "utf8"),
   readFile(new URL("../src/app/api/company/route.ts", import.meta.url), "utf8"),
   readFile(new URL("../supabase/migrations/20261109150000_required_company_and_employee_sensitive_data.sql", import.meta.url), "utf8"),
+  readFile(new URL("../supabase/migrations/20261117090000_add_company_taxpayer_type.sql", import.meta.url), "utf8"),
+  readFile(new URL("../supabase/migrations/20261117120000_allow_company_rfc_by_taxpayer_type.sql", import.meta.url), "utf8"),
   readFile(new URL("../supabase/migrations/20261109045525_require_company_legal_name.sql", import.meta.url), "utf8"),
   readFile(new URL("../src/components/admin/admin-shell.tsx", import.meta.url), "utf8"),
 ]);
@@ -18,6 +20,8 @@ test("company creation API derives the actor from Supabase Auth and maps safe va
   assert.match(route, /p_legal_name: parsed\.data\.legalName/);
   assert.match(route, /p_address: parsed\.data\.address/);
   assert.match(route, /p_employer_registration_number: parsed\.data\.employerRegistrationNumber/);
+  assert.match(route, /taxpayerType: z\.enum/);
+  assert.match(route, /p_taxpayer_type: parsed\.data\.taxpayerType/);
   assert.match(route, /owner_required.*403/s);
   assert.match(route, /validation_failed.*422/s);
   assert.match(route, /Cache-Control.*no-store, private/);
@@ -41,6 +45,12 @@ test("database creation is owner-only, atomic, audited and does not grant cross-
   assert.match(migration, /private\.company_sensitive_data/);
   assert.match(migration, /create unique index company_sensitive_data_rfc_unique/);
   assert.match(migration, /complete company details required/);
+  assert.match(taxpayerMigration, /add column taxpayer_type text/);
+  assert.match(taxpayerMigration, /taxpayer_type is null or taxpayer_type in/);
+  assert.match(taxpayerMigration, /create_first_company_for_current_user\(\s*p_taxpayer_type text/);
+  assert.match(taxpayerMigration, /where id=created\.company_id and taxpayer_type is null/);
+  assert.match(taxpayerMigration, /create_company_for_current_owner\(\s*p_taxpayer_type text/);
+  assert.equal((rfcValidatorMigration.match(/\^\(\[A-Z&Ñ\]\{3\}\|\[A-Z&Ñ\]\{4\}\)\[0-9\]\{6\}\[A-Z0-9\]\{3\}\$/g) ?? []).length, 2);
   assert.doesNotMatch(migration, /grant (?:insert|all).*public\.companies to authenticated/i);
   assert.match(legalNameMigration, /before insert or update of legal_name on public\.companies/i);
   assert.match(legalNameMigration, /btrim\(new\.legal_name\) = ''/);

@@ -33,7 +33,7 @@
     "test:security:invitation-onboarding:local": "node tests/qr004-auth-matrix.local.integration.mjs --invitation-flow-only",
     "test:e2e": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only",
     "test:e2e:local": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only",
-    "test:company-registration:e2e": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only && node tests/qr004-auth-matrix.local.integration.mjs --e2e-only --e2e-confirmations-disabled",
+    "test:company-registration:e2e": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only --e2e-confirmations-disabled",
     "test:e2e:ui": "node tests/qr004-auth-matrix.local.integration.mjs --e2e-only --ui",
     "benchmark:qr009:local": "node tests/qr004-auth-matrix.local.integration.mjs --performance-only",
     "lint": "eslint .",

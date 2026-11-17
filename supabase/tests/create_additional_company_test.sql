@@ -1,14 +1,16 @@
 begin;
-select plan(19);
+select plan(20);
 
-select ok(to_regprocedure('public.create_company_for_current_owner(text,text,text,text,text)') is not null,
-  'owner company creation RPC exists');
-select ok((select prosecdef from pg_proc where oid='public.create_company_for_current_owner(text,text,text,text,text)'::regprocedure),
+select ok(to_regprocedure('public.create_company_for_current_owner(text,text,text,text,text,text)') is not null,
+  'typed owner company creation RPC exists');
+select ok((select prosecdef from pg_proc where oid='public.create_company_for_current_owner(text,text,text,text,text,text)'::regprocedure),
   'company creation is checked by a SECURITY DEFINER RPC');
-select ok(has_function_privilege('authenticated','public.create_company_for_current_owner(text,text,text,text,text)','EXECUTE'),
-  'authenticated users can request owner-checked company creation');
-select ok(not has_function_privilege('anon','public.create_company_for_current_owner(text,text,text,text,text)','EXECUTE'),
+select ok(has_function_privilege('authenticated','public.create_company_for_current_owner(text,text,text,text,text,text)','EXECUTE'),
+  'authenticated users can request typed owner-checked company creation');
+select ok(not has_function_privilege('anon','public.create_company_for_current_owner(text,text,text,text,text,text)','EXECUTE'),
   'anonymous users cannot invoke company creation');
+select ok(not has_function_privilege('authenticated','public.create_company_for_current_owner(text,text,text,text,text)','EXECUTE'),
+  'authenticated users cannot bypass the required taxpayer type through the internal signature');
 
 insert into auth.users(id,aud,role,email,encrypted_password,email_confirmed_at,created_at,updated_at) values
  ('f1100000-0000-4000-8000-000000000001','authenticated','authenticated','owner-a@synthetic.invalid','x',now(),now(),now()),
@@ -32,7 +34,7 @@ select set_config('request.jwt.claims','{"role":"authenticated","sub":"f1100000-
 select set_config('request.jwt.claim.role','authenticated',true);
 select set_config('request.jwt.claim.sub','f1100000-0000-4000-8000-000000000001',true);
 select set_config('qr_test.created_company',
-  (select company_id::text from public.create_company_for_current_owner('Synthetic second company','Synthetic legal name','SYN010101ABC','123 QA Street','RP-123')),true);
+  (select company_id::text from public.create_company_for_current_owner('legal_entity','Synthetic second company','Synthetic legal name','SYN010101ABC','123 QA Street','RP-123')),true);
 select is((select count(*)::integer from public.company_memberships m
   where m.company_id=current_setting('qr_test.created_company')::uuid
     and m.user_id=(select auth.uid()) and m.role='owner' and m.active),1,
@@ -44,11 +46,11 @@ select is((select require_employee_pin from public.companies where id=current_se
 select ok(exists(select 1 from public.audit_log where company_id=current_setting('qr_test.created_company')::uuid
   and actor_user_id=(select auth.uid()) and entity_table='companies' and action='INSERT'),
   'company creation is recorded in the audit log');
-select throws_ok($$select * from public.create_company_for_current_owner('Missing legal QA',null,'MNL010101ABC','123 QA Street','RP-QA-124')$$,
+select throws_ok($$select * from public.create_company_for_current_owner('legal_entity','Missing legal QA',null,'MNL010101ABC','123 QA Street','RP-QA-124')$$,
   '23514',null,'owner creation rejects a missing legal name at the database boundary');
 select is((select count(*)::integer from public.companies where name='Missing legal QA'),0,
   'rejected missing legal name leaves no company row');
-select throws_ok($$select * from public.create_company_for_current_owner('Whitespace legal QA','   ','WHS010101ABC','123 QA Street','RP-QA-125')$$,
+select throws_ok($$select * from public.create_company_for_current_owner('legal_entity','Whitespace legal QA','   ','WHS010101ABC','123 QA Street','RP-QA-125')$$,
   '23514',null,'owner creation rejects a whitespace-only legal name at the database boundary');
 select is((select count(*)::integer from public.companies where name='Whitespace legal QA'),0,
   'rejected whitespace legal name leaves no company row');
@@ -56,14 +58,14 @@ select is((select count(*)::integer from public.companies where id='f1100000-000
   'owner cannot read an unrelated tenant through company RLS');
 select is((select rfc from public.get_company_sensitive_profile(current_setting('qr_test.created_company')::uuid)),'SYN010101ABC',
   'owner retrieves the company RFC through the permission-checked profile RPC');
-select throws_ok($$select * from public.create_company_for_current_owner('Bad RFC',null,'INVALID','Address','RP-123')$$,
+select throws_ok($$select * from public.create_company_for_current_owner('legal_entity','Bad RFC',null,'INVALID','Address','RP-123')$$,
   '22023',null,'owner cannot create a company with an invalid RFC');
 select is((select count(*)::integer from public.companies where name='Bad RFC'),0,
   'invalid owner payload leaves no company row');
 
 select set_config('request.jwt.claims','{"role":"authenticated","sub":"f1100000-0000-4000-8000-000000000002"}',true);
 select set_config('request.jwt.claim.sub','f1100000-0000-4000-8000-000000000002',true);
-select throws_ok($$select * from public.create_company_for_current_owner('Unauthorized company',null,'SYN010101ABC','Address','RP-123')$$,
+select throws_ok($$select * from public.create_company_for_current_owner('legal_entity','Unauthorized company',null,'SYN010101ABC','Address','RP-123')$$,
   '42501',null,'non-owner cannot create a company');
 select is((select count(*)::integer from public.companies where name='Unauthorized company'),0,
   'denied creation leaves no company row');

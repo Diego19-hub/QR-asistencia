@@ -17,6 +17,8 @@ const root = resolve(import.meta.dirname, "..");
 const cli = join(root, "node_modules/.bin/supabase");
 const e2eOnly = process.argv.includes("--e2e-only");
 const e2eConfirmationsDisabled = process.argv.includes("--e2e-confirmations-disabled");
+const e2eGrepIndex = process.argv.indexOf("--e2e-grep");
+const e2eGrep = e2eGrepIndex >= 0 ? process.argv[e2eGrepIndex + 1] : undefined;
 const performanceOnly = process.argv.includes("--performance-only");
 const supervisorDeviceRlsOnly = process.argv.includes("--supervisor-device-rls-only");
 const privilegedRpcAuditOnly = process.argv.includes("--privileged-rpc-audit-only");
@@ -180,7 +182,8 @@ async function waitForNext(url) {
 async function runPlaywrightLocal(env, secrets) {
   const playwrightArgs = [join(root, "node_modules/@playwright/test/cli.js"), "test", "--config", join(root, "playwright.config.ts")];
   if (performanceOnly) playwrightArgs.push("tests/performance/web-performance.spec.ts");
-  if (e2eConfirmationsDisabled) playwrightArgs.push("tests/e2e/company-registration.spec.ts", "--grep", "registro confirma identidad");
+  if (e2eConfirmationsDisabled) playwrightArgs.push("tests/e2e/company-registration.spec.ts", "--grep", "registro|reintentar un correo existente");
+  if (e2eGrep) playwrightArgs.push("--grep", e2eGrep);
   if (process.argv.includes("--ui")) playwrightArgs.push("--ui");
   const child = spawn(process.execPath, playwrightArgs, {
     cwd: root,
@@ -430,13 +433,13 @@ try {
   mailpitUrl = `http://127.0.0.1:${base + 4}`;
   localUrl(mailpitUrl, "Mailpit URL");
   assert.match(config, new RegExp(`^project_id = "${projectId}"$`, "m"));
-  if (e2eOnly && !e2eConfirmationsDisabled) {
+  if (e2eOnly) {
     const emailAuthStart = config.indexOf("[auth.email]");
     const smsAuthStart = config.indexOf("[auth.sms]", emailAuthStart);
     assert.ok(emailAuthStart >= 0 && smsAuthStart > emailAuthStart, "temporary email Auth section is present");
     const emailAuthConfig = config.slice(emailAuthStart, smsAuthStart);
     assert.match(emailAuthConfig, /^enable_confirmations = false$/m, "repository default local Auth confirmation setting is documented");
-    config = `${config.slice(0, emailAuthStart)}${emailAuthConfig.replace(/^enable_confirmations = false$/m, "enable_confirmations = true")}${config.slice(smsAuthStart)}`;
+    assert.match(emailAuthConfig, /^enable_confirmations = false$/m, "local registration must create an Auth session without email confirmation");
   }
   await writeFile(join(workdir, "supabase/config.toml"), config, { mode: 0o600 });
   for (const kind of Object.keys(before)) {
@@ -818,7 +821,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       QR005_SUPABASE_URL: apiUrl,
       QR005_MAILPIT_URL: mailpitUrl,
       QR005_RESULTS_DIR: join(temp, "playwright-results"),
-      QR005_AUTH_CONFIRMATIONS: e2eConfirmationsDisabled ? "disabled" : "enabled",
+      QR005_AUTH_CONFIRMATIONS: "disabled",
       QR005_ADMIN_EMAIL: adminA.email,
       QR005_ADMIN_PASSWORD: adminA.password,
       QR005_ADMIN_B_EMAIL: adminB.email,
@@ -1058,7 +1061,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     // real Next Server Actions, and a row-lock-controlled revoke/accept race.
     // This mode deliberately does not seed or touch attendance rows or PIN state.
     let targetedAssertions = 0;
-    const verify = Object.fromEntries(["equal", "notEqual", "deepEqual", "notDeepEqual", "ok"].map((method) => [method, (...args) => {
+    const verify = Object.fromEntries(["equal", "notEqual", "deepEqual", "notDeepEqual", "ok", "match"].map((method) => [method, (...args) => {
       targetedAssertions += 1;
       return assert[method](...args);
     }]));
@@ -1186,14 +1189,14 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     response = await request(`/api/employees/${createdEmployee.id}?companyId=${companyA}`, { user: adminA });
     verify.equal(response.status, 200, "authorized administrator can read a same-tenant employee record");
   const sensitiveEmployeeDetails = (await response.json()).item;
-  verify.equal(sensitiveEmployeeDetails.nss, "23456789012", "authorized employee detail returns the submitted synthetic NSS");
-  verify.equal(sensitiveEmployeeDetails.personal_rfc, "ABCD010101XYZ", "personal RFC is normalized to uppercase in the protected detail view");
+  verify.equal(sensitiveEmployeeDetails.nss, "12345678901", "authorized employee detail returns the submitted synthetic NSS");
+  verify.equal(sensitiveEmployeeDetails.personal_rfc, "SYNX010101ABC", "personal RFC is normalized to uppercase in the protected detail view");
   response = await request(`/api/employees?companyId=${companyA}&pageSize=100`, { user: adminA });
   const employeeDirectory = await response.json();
   const directoryEmployee = employeeDirectory.items.find((item) => item.id === createdEmployee.id);
   verify.ok(directoryEmployee, "created employee appears in the same-tenant directory");
   verify.equal(Object.hasOwn(directoryEmployee, "nss") || Object.hasOwn(directoryEmployee, "personal_rfc"), false, "employee listing does not expose NSS or personal RFC");
-    response = await request(`/api/employees/${createdEmployee.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { first_name: "Synthetic Edited" } });
+    response = await request(`/api/employees/${createdEmployee.id}?companyId=${companyA}`, { user: adminA, method: "PATCH", body: { first_name: "Synthetic Edited", personal_rfc: sensitiveEmployeeDetails.personal_rfc } });
     verify.equal(response.status, 200, "authorized administrator can edit a same-tenant employee");
     verify.equal((await response.json()).item.first_name, "Synthetic Edited", "authorized employee update persists");
 
@@ -1726,8 +1729,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
     if (!activeEnvelope) throw new Error("new synthetic QR lacks its recovery envelope");
     const legacyHash = (await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash;
     const legacyAudit = (await dbPool.query("select count(*)::int count from public.audit_log where company_id=$1 and entity_id=$2 and action like 'EMPLOYEE_QR_%'", [companyA, employeeA.employeeId])).rows[0]?.count;
-    const legacyUpdate = await service.from("employee_qr_tokens").update({ encrypted_token: null }).eq("employee_id", employeeA.employeeId);
-    if (legacyUpdate.error) throw new Error("failed to create the local synthetic legacy QR fixture");
+    await dbPool.query("update private.employee_qr_tokens set encrypted_token=null where employee_id=$1", [employeeA.employeeId]);
     try {
       response = await request(qrPath, { user: adminA, method: "POST", body: { action: "recover" } });
       verify.equal(response.status, 409, "legacy hash-only QR asks for one-time regeneration instead of returning a different token");
@@ -1737,8 +1739,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
       verify.equal((await dbPool.query("select encode(token_hash,'hex') hash from private.employee_qr_tokens where employee_id=$1", [employeeA.employeeId])).rows[0]?.hash, legacyHash, "legacy recovery leaves the active QR hash unchanged");
       verify.equal((await dbPool.query("select count(*)::int count from public.audit_log where company_id=$1 and entity_id=$2 and action like 'EMPLOYEE_QR_%'", [companyA, employeeA.employeeId])).rows[0]?.count, legacyAudit, "legacy recovery does not issue, replace, or audit a QR");
     } finally {
-      const restore = await service.from("employee_qr_tokens").update({ encrypted_token: activeEnvelope }).eq("employee_id", employeeA.employeeId);
-      if (restore.error) throw new Error("failed to restore the synthetic QR envelope after legacy compatibility test");
+      await dbPool.query("update private.employee_qr_tokens set encrypted_token=$2 where employee_id=$1", [employeeA.employeeId, activeEnvelope]);
     }
     verify.deepEqual(await qrSnapshot(), activeQrSnapshot, "legacy compatibility check restores the local fixture without residual changes");
 
@@ -2755,7 +2756,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   const beforeEmployeeDenialsA = await snapshot(companyA), beforeEmployeeDenialsB = await snapshot(companyB);
   response = await request("/api/employees", { user: adminA, method: "POST", body: { employee_number: `CROSS-${randomUUID()}`, first_name: "Synthetic", last_name: "Rejected", nss: "12345678901", branch_id: branchB } });
   assert.equal(response.status, 422, "employee creation rejects a branch from another company");
-  response = await request(`/api/employees/${employeeB.employeeId}`, { user: adminA, method: "PATCH", body: { first_name: "Cross Tenant Mutation" } }); assert.equal(response.status, 404);
+  response = await request(`/api/employees/${employeeB.employeeId}`, { user: adminA, method: "PATCH", body: { first_name: "Cross Tenant Mutation", personal_rfc: "SYNX010101ABC" } }); assert.equal(response.status, 404);
   response = await request(`/api/employees/${employeeA.employeeId}`, { user: adminA, method: "PATCH", body: { branch_id: branchB } }); assert.equal(response.status, 422);
   assert.deepEqual(await snapshot(companyA), beforeEmployeeDenialsA, "rejected employee requests leave tenant A unchanged");
   assert.deepEqual(await snapshot(companyB), beforeEmployeeDenialsB, "rejected employee requests leave tenant B unchanged");
@@ -2843,7 +2844,7 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   response = await request(qrPath, { user: adminA }); assert.equal(response.status, 200);
   const qrStatus = await response.json();
   assert.deepEqual(qrStatus.credential, { employeeActive: true, qrStatus: "not_issued", issuedAt: null, revokedAt: null, pinConfigured: false });
-  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("cache-control"), "no-store, private");
   assert.equal(JSON.stringify(qrStatus).includes("token_hash"), false);
   const issuedQrResponse = await request(qrPath, { user: adminA, method: "POST", body: {} }); assert.equal(issuedQrResponse.status, 200);
   assert.equal(issuedQrResponse.headers.get("cache-control"), "no-store, private");
@@ -3886,10 +3887,10 @@ export default async function ServerActionHarness({ searchParams }: { searchPara
   // Keep owner company creation last: it adds another owner membership and
   // would otherwise change single-company selection assumptions above.
   const beforeAdditionalCompanyB = await companyAndDataSnapshot(companyB);
-  const validNewCompanyPayload = { name: "Synthetic denied company", legalName: "Synthetic legal name", address: "123 Synthetic QA Avenue", employerRegistrationNumber: "RP-QA-456", rfc: "QAQ010101ABC" };
+  const validNewCompanyPayload = { taxpayerType: "legal_entity", name: "Synthetic denied company", legalName: "Synthetic legal name", address: "123 Synthetic QA Avenue", employerRegistrationNumber: "RP-QA-456", rfc: "QAQ010101ABC" };
   response = await request("/api/companies", { method: "POST", body: validNewCompanyPayload }); assert.equal(response.status, 401);
   response = await request("/api/companies", { user: adminA, method: "POST", body: validNewCompanyPayload }); assert.equal(response.status, 403);
-  response = await request("/api/companies", { user: ownerA, method: "POST", body: { name: `Synthetic second company ${randomUUID()}`, legalName: "Synthetic legal name", address: "123 Synthetic QA Avenue", employerRegistrationNumber: "RP-QA-456", rfc: "QAQ010101ABC" } }); assert.equal(response.status, 201);
+  response = await request("/api/companies", { user: ownerA, method: "POST", body: { taxpayerType: "legal_entity", name: `Synthetic second company ${randomUUID()}`, legalName: "Synthetic legal name", address: "123 Synthetic QA Avenue", employerRegistrationNumber: "RP-QA-456", rfc: "QAQ010101ABC" } }); assert.equal(response.status, 201);
   const newlyCreatedCompany = (await response.json()).item;
   assert.ok(newlyCreatedCompany.id && newlyCreatedCompany.name.startsWith("Synthetic second company"));
   response = await request(`/api/company?companyId=${newlyCreatedCompany.id}`, { user: ownerA }); assert.equal(response.status, 200);

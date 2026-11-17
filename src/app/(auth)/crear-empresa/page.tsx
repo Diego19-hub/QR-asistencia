@@ -51,9 +51,9 @@ export default async function CreateCompanyPage({ searchParams }: PageProps) {
 
   if (!auth.user.email_confirmed_at) {
     return <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-10"><section className="w-full max-w-xl space-y-4 rounded-2xl border border-slate-200 bg-white p-8 shadow-xl">
-      <h1 className="text-2xl font-semibold text-slate-950">Confirma tu correo</h1>
-      <p role="status" className="text-sm leading-6 text-slate-700">Abre el enlace de confirmación que enviamos. La empresa se creará cuando regreses con una sesión autenticada y el correo confirmado.</p>
-      <Link href="/login" className="inline-flex min-h-11 items-center rounded-xl bg-blue-700 px-5 text-sm font-semibold text-white">Iniciar sesión después de confirmar</Link>
+      <h1 className="text-2xl font-semibold text-slate-950">No se pudo iniciar la sesión de registro</h1>
+      <p role="alert" className="text-sm leading-6 text-slate-700">El alta de primera empresa requiere que Supabase Auth permita registrarse sin confirmar el correo. Contacta al administrador para revisar esa configuración; no se creó una empresa incompleta.</p>
+      <Link href="/login" className="inline-flex min-h-11 items-center rounded-xl bg-blue-700 px-5 text-sm font-semibold text-white">Volver al inicio de sesión</Link>
     </section></main>;
   }
 

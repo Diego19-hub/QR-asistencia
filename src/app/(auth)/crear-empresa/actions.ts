@@ -2,7 +2,6 @@
 
 import { redirect } from "next/navigation";
 
-import { getAuthRedirectUrl } from "@/lib/access/auth-redirect";
 import {
   companyDetailsSchema,
   ownerRegistrationSchema,
@@ -10,15 +9,17 @@ import {
   type CompanyRegistrationActionState,
 } from "@/lib/access/company-registration";
 import { setActiveMembershipCookie } from "@/lib/access/active-membership-cookie";
+import { clearRememberSessionPreference, setRememberSessionPreference } from "@/lib/supabase/session-cookie-preference";
 import { createClient } from "@/lib/supabase/server";
 
 const invalidState: CompanyRegistrationActionState = {
   status: "error",
-  message: "Revisa los datos obligatorios de la empresa, incluida la razón social, y el formato del RFC de persona moral.",
+  message: "Revisa los datos obligatorios, el tipo de contribuyente y el formato del RFC.",
 };
 
 function readCompanyDetails(formData: FormData): CompanyDetails | null {
   const parsed = companyDetailsSchema.safeParse({
+    taxpayerType: formData.get("taxpayerType"),
     companyName: formData.get("companyName"),
     legalName: formData.get("legalName"),
     address: formData.get("address"),
@@ -30,7 +31,7 @@ function readCompanyDetails(formData: FormData): CompanyDetails | null {
 
 async function createFirstCompany(details: CompanyDetails, user: { id: string; email_confirmed_at?: string | null }) {
   if (!user.email_confirmed_at) {
-    return { state: { status: "verification-pending", message: "Confirma tu correo antes de crear la empresa. Después inicia sesión y termina el alta." } satisfies CompanyRegistrationActionState };
+    return { state: { status: "error", message: "La autenticación no inició una sesión lista para el registro. Contacta al administrador; este flujo no requiere confirmar el correo." } satisfies CompanyRegistrationActionState };
   }
 
   const supabase = await createClient();
@@ -43,6 +44,7 @@ async function createFirstCompany(details: CompanyDetails, user: { id: string; e
   }
 
   const { data, error } = await supabase.rpc("create_first_company_for_current_user", {
+    p_taxpayer_type: details.taxpayerType,
     p_name: details.companyName,
     p_legal_name: details.legalName,
     p_rfc: details.rfc,
@@ -78,6 +80,7 @@ export async function registerOwner(
     address: formData.get("address"),
     employerRegistrationNumber: formData.get("employerRegistrationNumber"),
     rfc: formData.get("rfc"),
+    taxpayerType: formData.get("taxpayerType"),
   });
   if (!parsed.success) {
     const confirmationIssue = parsed.error.issues.some((issue) => issue.path[0] === "confirmation");
@@ -90,66 +93,45 @@ export async function registerOwner(
     const supabase = await createClient();
     const { data: current } = await supabase.auth.getUser();
     if (current.user) {
+      await setRememberSessionPreference(true);
       const result = await createFirstCompany(parsed.data, current.user);
       redirectTo = result.redirectTo;
       resultState = result.state;
     } else {
-      const emailRedirectTo = getAuthRedirectUrl("confirm");
-      if (!emailRedirectTo) return { status: "error", message: "La dirección segura de confirmación no está configurada. Contacta al administrador." };
-      const { data, error } = await supabase.auth.signUp({
+      await setRememberSessionPreference(true);
+      const signupClient = await createClient();
+      const { data, error } = await signupClient.auth.signUp({
         email: parsed.data.email,
         password: parsed.data.password,
-        options: {
-          emailRedirectTo: emailRedirectTo.href,
-          data: { full_name: parsed.data.fullName },
-        },
+        options: { data: { full_name: parsed.data.fullName } },
       });
       if (error) {
+        await clearRememberSessionPreference();
         if (error.code === "weak_password") return { status: "error", message: "La contraseña no cumple la política configurada en Supabase Auth." };
-        if (error.code === "email_exists" || error.code === "user_already_exists") return { status: "email-registered", email: parsed.data.email, message: "No fue posible completar el registro con esos datos. Si ya habías iniciado el alta, inicia sesión o solicita un nuevo correo de confirmación." };
-        return { status: "error", email: parsed.data.email, message: "No fue posible iniciar el registro. Si se alcanzó a crear una cuenta, puedes solicitar un nuevo correo de confirmación." };
+        return { status: "error", message: "No fue posible completar el registro. Revisa los datos o, si ya tienes cuenta, inicia sesión." };
       }
-      if (!data.user) return { status: "error", email: parsed.data.email, message: "No se pudo iniciar el registro. Si se alcanzó a crear una cuenta, puedes solicitar un nuevo correo de confirmación." };
+      if (!data.user) {
+        await clearRememberSessionPreference();
+        return { status: "error", message: "No fue posible completar el registro. Revisa los datos o, si ya tienes cuenta, inicia sesión." };
+      }
       if (data.user.identities?.length === 0) {
-        return { status: "email-registered", email: parsed.data.email, message: "No fue posible completar el registro con esos datos. Si ya habías iniciado el alta, inicia sesión o solicita un nuevo correo de confirmación." };
+        await clearRememberSessionPreference();
+        return { status: "error", message: "No fue posible completar el registro. Revisa los datos o, si ya tienes cuenta, inicia sesión." };
       }
       if (!data.session) {
-        return { status: "verification-pending", email: parsed.data.email, message: "Primero confirma tu correo desde el enlace que te enviamos. Después inicia sesión para terminar de crear tu empresa; la empresa y Owner se guardan juntos al completar el alta." };
+        await clearRememberSessionPreference();
+        return { status: "error", message: "Supabase Auth no inició sesión. Desactiva la confirmación de correo para el registro y vuelve a intentarlo; no se creó la empresa." };
       }
       const result = await createFirstCompany(parsed.data, data.user);
       redirectTo = result.redirectTo;
       resultState = result.state;
     }
   } catch {
-    return { status: "error", email: parsed.data.email, message: "No fue posible completar el registro. Si se alcanzó a crear una cuenta, puedes solicitar un nuevo correo de confirmación. No compartas tu contraseña por otros medios." };
+    return { status: "error", message: "No fue posible completar el registro. Inicia sesión para reintentar el alta o contacta al administrador." };
   }
 
   if (redirectTo) redirect(redirectTo);
   return resultState ?? { status: "error", message: "No fue posible completar el alta. Inténtalo de nuevo." };
-}
-
-export async function resendOwnerConfirmation(
-  _previous: CompanyRegistrationActionState,
-  formData: FormData,
-): Promise<CompanyRegistrationActionState> {
-  const rawEmail = formData.get("email");
-  const parsedEmail = typeof rawEmail === "string"
-    ? ownerRegistrationSchema.shape.email.safeParse(rawEmail)
-    : null;
-  const email = parsedEmail?.success ? parsedEmail.data : null;
-  if (email) {
-    try {
-      const supabase = await createClient();
-      await supabase.auth.resend({ type: "signup", email });
-    } catch {
-      // Keep the response identical for unknown addresses, delivery failures, and throttling.
-    }
-  }
-  return {
-    status: "verification-pending",
-    email: email ?? undefined,
-    message: "Si el correo puede recibir una confirmación pendiente, enviaremos un enlace. Revisa tu bandeja y correo no deseado; después confirma e inicia sesión para completar el alta.",
-  };
 }
 
 export async function completeFirstCompany(

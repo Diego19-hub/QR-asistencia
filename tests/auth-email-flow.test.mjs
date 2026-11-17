@@ -108,22 +108,27 @@ test("Auth routes verify server-side and never redirect using request.url or tok
     assert.doesNotMatch(source, /access_token|refresh_token/);
   }
 
-test("first-company registration exposes a safe Auth confirmation target without changing email confirmation policy", async () => {
-  const [config, signupTemplate, companyPage, companyActions, migration] = await Promise.all([
+test("first-company signup creates a session without confirmation and retains invitation email handling", async () => {
+  const [config, inviteTemplate, companyPage, companyActions, migration] = await Promise.all([
     readFile(new URL("../supabase/config.toml", import.meta.url), "utf8"),
-    readFile(new URL("../supabase/templates/confirmation.html", import.meta.url), "utf8"),
+    readFile(new URL("../supabase/templates/invite.html", import.meta.url), "utf8"),
     readFile(new URL("../src/app/(auth)/crear-empresa/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/app/(auth)/crear-empresa/actions.ts", import.meta.url), "utf8"),
     readFile(new URL("../supabase/migrations/20261109021111_authenticated_first_company_registration.sql", import.meta.url), "utf8"),
   ]);
   assert.match(config, /^enable_signup = true$/m);
-  assert.match(config, /\[auth\.email\.template\.confirmation\][\s\S]*?content_path = "\.\/supabase\/templates\/confirmation\.html"/);
-  assert.match(signupTemplate, /\/auth\/confirm\?token_hash=\{\{ \.TokenHash \}\}&amp;type=signup/);
+  assert.match(config, /\[auth\.email\][\s\S]*?enable_confirmations = false/);
+  assert.match(config, /\[auth\.email\.template\.invite\][\s\S]*?content_path = "\.\/supabase\/templates\/invite\.html"/);
+  assert.match(config, /\[auth\.email\.template\.magic_link\][\s\S]*?content_path = "\.\/supabase\/templates\/magic_link\.html"/);
+  assert.doesNotMatch(config.slice(config.indexOf("[auth.email]"), config.indexOf("[auth.sms]")), /enable_signup = false/);
+  assert.match(config, /double_confirm_changes = true/);
+  assert.match(inviteTemplate, /type=invite/);
   assert.match(companyPage, /OwnerRegistrationForm/);
   assert.match(companyPage, /FirstCompanyCompletionForm/);
-  assert.match(companyActions, /supabase\.auth\.signUp\(/);
-  assert.match(companyActions, /getAuthRedirectUrl\("confirm"\)/);
+  assert.match(companyActions, /signupClient\.auth\.signUp\(/);
   assert.match(companyActions, /!data\.session/);
+  assert.match(companyActions, /setRememberSessionPreference\(true\)/);
+  assert.doesNotMatch(companyActions, /emailRedirectTo|auth\.resend/);
   assert.match(companyActions, /email_confirmed_at/);
   assert.match(companyActions, /create_first_company_for_current_user/);
   assert.doesNotMatch(companyActions, /service_role|SUPABASE_SERVICE_ROLE_KEY|console\.(?:log|error).*formData/);

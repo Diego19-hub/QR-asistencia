@@ -17,6 +17,7 @@ test("owner registration validates and normalizes presentation identity without 
     legalName: "  Razón Social QA ",
     address: "  Domicilio QA  ",
     employerRegistrationNumber: "  RP-123  ",
+    taxpayerType: "legal_entity",
     rfc: " abc010203xyz ",
   });
   assert.equal(parsed.fullName, "Ana María Ortega");
@@ -31,8 +32,8 @@ test("owner registration validates and normalizes presentation identity without 
 });
 
 test("registration rejects invalid names, emails, password mismatch, short passwords and malformed RFC", () => {
-  const valid = { fullName: "Ana QA", email: "ana@example.invalid", password: "123456", confirmation: "123456", companyName: "Empresa QA", legalName: "Razón social QA", address: "Domicilio QA", employerRegistrationNumber: "RP-123", rfc: "abc010203xyz" };
-  const companyValid = { companyName: "Empresa QA", legalName: "Razón social QA", address: "Domicilio QA", employerRegistrationNumber: "RP-123", rfc: "abc010203xyz" };
+  const valid = { fullName: "Ana QA", email: "ana@example.invalid", password: "123456", confirmation: "123456", companyName: "Empresa QA", legalName: "Razón social QA", address: "Domicilio QA", employerRegistrationNumber: "RP-123", taxpayerType: "legal_entity", rfc: "abc010203xyz" };
+  const companyValid = { companyName: "Empresa QA", legalName: "Razón social QA", address: "Domicilio QA", employerRegistrationNumber: "RP-123", taxpayerType: "legal_entity", rfc: "abc010203xyz" };
   assert.equal(ownerRegistrationSchema.safeParse({ ...valid, fullName: "A" }).success, false);
   assert.equal(ownerRegistrationSchema.safeParse({ ...valid, email: "invalid" }).success, false);
   assert.equal(ownerRegistrationSchema.safeParse({ ...valid, password: "12345", confirmation: "12345" }).success, false);
@@ -48,6 +49,12 @@ test("registration rejects invalid names, emails, password mismatch, short passw
   assert.equal(companyDetailsSchema.safeParse({ ...companyValid, legalName: "x".repeat(241) }).success, false);
   assert.equal(companyDetailsSchema.safeParse({ ...companyValid, companyName: "" }).success, false);
   assert.equal(companyDetailsSchema.safeParse({ ...companyValid, rfc: "A$C010101AB1" }).success, false);
+  assert.equal(companyDetailsSchema.safeParse({ ...companyValid, rfc: "ABC010203XYZ" }).success, true);
+  assert.equal(companyDetailsSchema.safeParse({ ...companyValid, rfc: "ABCD010203XYZ1" }).success, false);
+  const physicalPerson = { ...companyValid, taxpayerType: "physical_person_business", rfc: "abcd010203xyz" };
+  assert.equal(companyDetailsSchema.safeParse(physicalPerson).data?.rfc, "ABCD010203XYZ");
+  assert.equal(companyDetailsSchema.safeParse({ ...physicalPerson, rfc: "abc010203xyz" }).success, false);
+  assert.equal(companyDetailsSchema.safeParse({ ...physicalPerson, rfc: "ABCD010203XY" }).success, false);
 });
 
 test("login links to first-company registration and no-membership login continues onboarding", async () => {
@@ -62,30 +69,41 @@ test("login links to first-company registration and no-membership login continue
   assert.match(registrationPage, /Crear otra empresa/);
 });
 
-test("Auth account creation is separate from company persistence until a session is verified", async () => {
-  const [actions, form, adminShell, companySettings, loginPage] = await Promise.all([
+test("first-company signup keeps an authenticated session for 30 days and persists company for that identity", async () => {
+  const [actions, form, adminShell, companySettings, cookiePreference, authConfig] = await Promise.all([
     readFile(new URL("src/app/(auth)/crear-empresa/actions.ts", root), "utf8"),
     readFile(new URL("src/app/(auth)/crear-empresa/registration-form.tsx", root), "utf8"),
     readFile(new URL("src/components/admin/admin-shell.tsx", root), "utf8"),
     readFile(new URL("src/components/admin/company-settings.tsx", root), "utf8"),
-    readFile(new URL("src/app/(auth)/login/page.tsx", root), "utf8"),
+    readFile(new URL("src/lib/supabase/session-cookie-preference.ts", root), "utf8"),
+    readFile(new URL("supabase/config.toml", root), "utf8"),
   ]);
-  assert.match(actions, /supabase\.auth\.signUp\(\{[\s\S]*?email: parsed\.data\.email,[\s\S]*?password: parsed\.data\.password/);
+  assert.match(actions, /signupClient\.auth\.signUp\(\{[\s\S]*?email: parsed\.data\.email,[\s\S]*?password: parsed\.data\.password/);
   assert.match(actions, /data: \{ full_name: parsed\.data\.fullName \}/);
-  assert.match(actions, /if \(!data\.session\)[\s\S]*?verification-pending/);
+  assert.match(actions, /if \(!data\.session\)[\s\S]*?Desactiva la confirmación de correo/);
+  assert.match(actions, /await setRememberSessionPreference\(true\);[\s\S]*?const signupClient = await createClient\(\);[\s\S]*?signupClient\.auth\.signUp/);
+  assert.match(actions, /await clearRememberSessionPreference\(\)/);
+  assert.doesNotMatch(actions, /emailRedirectTo|auth\.resend/);
   assert.match(actions, /create_first_company_for_current_user/);
   assert.match(actions, /p_address: details\.address/);
   assert.match(actions, /p_legal_name: details\.legalName/);
   assert.match(actions, /p_employer_registration_number: details\.employerRegistrationNumber/);
+  assert.match(actions, /p_taxpayer_type: details\.taxpayerType/);
   assert.doesNotMatch(actions, /user_id\s*:\s*parsed|p_user_id|role\s*:\s*["']owner["']/);
   assert.doesNotMatch(actions, /console\.(?:log|warn|error)|JSON\.stringify\(formData/);
-  assert.match(actions, /resendOwnerConfirmation/);
-  assert.match(actions, /auth\.resend\(\{ type: "signup", email \}\)/);
-  assert.match(actions, /Si el correo puede recibir una confirmación pendiente/);
-  assert.doesNotMatch(actions, /Ese correo ya tiene una cuenta/);
-  assert.match(form, /Reenviar confirmación/);
-  assert.match(loginPage, /Si acabas de registrarte, confirma primero tu correo/);
+  assert.doesNotMatch(actions, /resendOwnerConfirmation|auth\.resend/);
+  assert.doesNotMatch(actions, /emailRedirectTo/);
+  assert.match(form, /iniciarás sesión automáticamente/);
+  assert.match(form, /No necesitas confirmar tu correo/);
+  assert.match(form, /¿A nombre de quién opera el negocio\?/);
+  assert.match(form, /Persona física con actividad empresarial/);
+  assert.match(form, /Persona moral/);
+  assert.match(form, /no su vigencia ante el SAT/);
+  assert.match(cookiePreference, /REMEMBER_SESSION_MAX_AGE_SECONDS/);
+  assert.match(authConfig, /^jwt_expiry = 3600$/m);
   assert.match(form, /Razón social \*[\s\S]*?<input name="legalName"[^>]*required/);
   assert.match(adminShell, /Razón social \*<input name="legalName" required/);
+  assert.match(adminShell, /taxpayerType: form\.get\("taxpayerType"\)/);
+  assert.match(adminShell, /¿A nombre de quién opera el negocio\?/);
   assert.match(companySettings, /Razón social \*<input name="legalName" required/);
 });

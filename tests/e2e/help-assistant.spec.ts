@@ -26,7 +26,7 @@ test("Ayuda solo abre el chat y Reportar un problema abre y envía el formulario
   const chat = page.getByRole("dialog", { name: "Chatbot" });
   await expect(chat).toBeVisible();
   await expect(chat.getByText("Respuestas basadas en el manual")).toHaveCount(0);
-  await expect(chat.getByLabel("Pregunta")).toBeVisible();
+  await expect(chat.getByRole("textbox", { name: "Pregunta" })).toBeVisible();
   await expect(chat.getByText(/no incluyas nombres ni datos de empresa o trabajador/i)).toBeVisible();
   await expect(page.getByLabel("Descripción")).toHaveCount(0);
   const recommended = chat.getByRole("region", { name: "Preguntas recomendadas" });
@@ -38,8 +38,11 @@ test("Ayuda solo abre el chat y Reportar un problema abre y envía el formulario
   await expect(related.getByRole("button", { name: "¿Dónde consulto mi horario?" })).toBeVisible();
   await related.getByRole("button", { name: "¿Dónde consulto mi horario?" }).click();
   await expect(chat.getByText("Tú")).toHaveCount(2);
-  await chat.getByLabel("Pregunta").fill("administrar horarios");
-  await chat.getByLabel("Pregunta").press("Enter");
+  await expect(chat.getByText(/Según el manual, sigue estos pasos/)).toHaveCount(2);
+  const questionInput = chat.getByRole("textbox", { name: "Pregunta" });
+  await questionInput.fill("administrar horarios");
+  await expect(chat.getByRole("button", { name: "Enviar pregunta" })).toBeEnabled();
+  await questionInput.press("Enter");
   await expect(chat.getByText("Tú")).toHaveCount(3);
   expect(sentQuestions).toEqual(["¿Cómo inicio sesión?", "¿Dónde consulto mi horario?", "administrar horarios"]);
 
@@ -51,9 +54,9 @@ test("Ayuda solo abre el chat y Reportar un problema abre y envía el formulario
   await expect(chat.getByRole("button", { name: "Reportar un problema" })).toHaveCount(0);
 
   await chat.getByRole("button", { name: "Minimizar Chatbot" }).click();
-  await expect(chat.getByLabel("Pregunta")).toHaveCount(0);
+  await expect(chat.getByRole("textbox", { name: "Pregunta" })).toHaveCount(0);
   await chat.getByRole("button", { name: "Restaurar Chatbot" }).click();
-  await expect(chat.getByLabel("Pregunta")).toBeVisible();
+  await expect(chat.getByRole("textbox", { name: "Pregunta" })).toBeVisible();
 
   await helpButton.click();
   await expect(chat).toHaveCount(0);
@@ -61,7 +64,7 @@ test("Ayuda solo abre el chat y Reportar un problema abre y envía el formulario
   const reportDialog = page.getByRole("dialog", { name: "Reportar un problema" });
   await expect(reportDialog).toBeVisible();
   await expect(reportDialog.getByLabel("Descripción")).toBeVisible();
-  await expect(page.getByLabel("Pregunta")).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Pregunta" })).toHaveCount(0);
 
   let received: unknown;
   await page.route("**/api/help/report", async (route) => {
@@ -127,7 +130,7 @@ test("el chatbot muestra fallo de conexión y permite reintentar con Enter y lue
   await page.goto("/login");
   await page.getByRole("button", { name: "Ayuda" }).click();
   const chat = page.getByRole("dialog", { name: "Chatbot" });
-  const input = chat.getByLabel("Pregunta");
+  const input = chat.getByRole("textbox", { name: "Pregunta" });
   await input.fill("administrar horarios");
   await input.press("Enter");
   await expect(chat.getByRole("alert")).toContainText("No se pudo obtener una respuesta del servicio");
@@ -160,7 +163,7 @@ test("una pregunta fuera del manual muestra temas cercanos y permite probar uno"
   await page.goto("/login");
   await page.getByRole("button", { name: "Ayuda" }).click();
   const chat = page.getByRole("dialog", { name: "Chatbot" });
-  await chat.getByLabel("Pregunta").fill("¿Cómo configuro la nómina fiscal?");
+  await chat.getByRole("textbox", { name: "Pregunta" }).fill("¿Cómo configuro la nómina fiscal?");
   await chat.getByRole("button", { name: "Enviar pregunta" }).click();
   await expect(chat.getByText("No encontré una respuesta exacta en el manual.")).toBeVisible();
   await expect(chat.getByRole("status")).toContainText("Gemini no está configurado");

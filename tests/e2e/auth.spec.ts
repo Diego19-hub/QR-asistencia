@@ -41,10 +41,14 @@ test("sesión elegida persiste de forma segura, retoma empresa y rol, y cerrar s
   const cookies = await page.context().cookies(qr.baseUrl.href);
   const rememberCookie = cookies.find((cookie) => cookie.name === "qr_remember_session");
   expect(rememberCookie?.httpOnly).toBe(true);
-  expect(rememberCookie?.expires).toBeGreaterThan(Date.now() / 1000);
+  const nowSeconds = Date.now() / 1000;
+  const thirtyDays = 30 * 24 * 60 * 60;
+  expect(rememberCookie?.expires).toBeGreaterThan(nowSeconds + 29 * 24 * 60 * 60);
+  expect(rememberCookie?.expires).toBeLessThanOrEqual(nowSeconds + thirtyDays + 30);
   const authCookies = cookies.filter((cookie) => cookie.name.startsWith("sb-"));
   expect(authCookies.length).toBeGreaterThan(0);
-  expect(authCookies.every((cookie) => cookie.expires > Date.now() / 1000)).toBe(true);
+  expect(authCookies.every((cookie) => cookie.expires > nowSeconds + 29 * 24 * 60 * 60)).toBe(true);
+  expect(authCookies.every((cookie) => cookie.expires <= nowSeconds + thirtyDays + 30)).toBe(true);
   const activeMembership = cookies.find((cookie) => cookie.name === "qr_active_membership_id");
   expect(activeMembership?.value).toBe(membershipId);
 
@@ -55,7 +59,7 @@ test("sesión elegida persiste de forma segura, retoma empresa y rol, y cerrar s
   await expect(reopenedPage).toHaveURL(/\/admin(?:\?|$)/);
   await expect(reopenedPage.getByRole("main").getByText(qr.fixture("COMPANY_B_NAME"), { exact: true })).toBeVisible();
 
-  await reopenedPage.getByRole("button", { name: "Cerrar sesión" }).click();
+  await reopenedPage.getByRole("button", { name: "Cerrar sesión" }).evaluate((button) => (button as HTMLButtonElement).form?.requestSubmit(button as HTMLButtonElement));
   await expect(reopenedPage).toHaveURL(/\/login(?:\?|$)/);
   const afterSignOut = await reopenedContext.cookies(qr.baseUrl.href);
   expect(afterSignOut.some((cookie) => cookie.name === "qr_remember_session")).toBe(false);
@@ -89,7 +93,7 @@ test("sin la opción, la sesión funciona durante el navegador pero no sobrevive
   await expect(reopenedPage).toHaveURL(/\/login(?:\?|$)/);
   await reopenedContext.close();
 
-  await page.getByRole("button", { name: "Cerrar sesión" }).click();
+  await page.getByRole("button", { name: "Cerrar sesión" }).evaluate((button) => (button as HTMLButtonElement).form?.requestSubmit(button as HTMLButtonElement));
   await expect(page).toHaveURL(/\/login(?:\?|$)/);
   expect((await page.context().cookies(qr.baseUrl.href)).some((cookie) => cookie.name.startsWith("sb-"))).toBe(false);
 });

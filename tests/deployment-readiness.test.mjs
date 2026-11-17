@@ -52,11 +52,14 @@ test("Dokploy guide documents private GHCR, immutable references, and single-ins
   assert.match(guide, /llxyziffgtqnzlguxhyt/);
 });
 
-test("local Auth permits first-company signup while email confirmation remains independently configured", async () => {
+test("local Auth allows first-company signup without email confirmation and preserves email signups", async () => {
   const config = await readFile(new URL("../supabase/config.toml", import.meta.url), "utf8");
   assert.match(config, /\[auth\][\s\S]*?enable_signup = true/);
   assert.match(config, /\[auth\.email\][\s\S]*?enable_signup = true/);
   assert.match(config, /\[auth\.email\][\s\S]*?enable_confirmations = false/);
+  assert.match(config, /\[auth\.email\][\s\S]*?double_confirm_changes = true/);
+  assert.match(config, /\[auth\.email\.template\.invite\][\s\S]*?content_path = "\.\/supabase\/templates\/invite\.html"/);
+  assert.match(config, /\[auth\.email\.template\.magic_link\][\s\S]*?content_path = "\.\/supabase\/templates\/magic_link\.html"/);
 });
 
 test("Testing first-company bootstrap is hard-pinned and keeps the Production guard intact", async () => {

@@ -10,14 +10,19 @@ import {
 } from "./invitation-password.ts";
 
 export const companyDetailsSchema = z.object({
+  taxpayerType: z.enum(["physical_person_business", "legal_entity"]),
   companyName: z.string().trim().min(1).max(180),
   legalName: requiredCompanyLegalNameSchema,
   address: z.string().trim().min(1, "El domicilio es obligatorio.").max(500),
   employerRegistrationNumber: z.string().trim().min(1, "El registro patronal es obligatorio.").max(64),
-  rfc: z.preprocess((value) => typeof value === "string" ? value.trim().toUpperCase() : value, z.string().min(12).max(12)),
+  rfc: z.preprocess((value) => typeof value === "string" ? value.trim().toUpperCase() : value, z.string()),
 }).strict().superRefine((value, context) => {
-  if (!/^[A-Z&Ñ]{3}\d{6}[A-Z0-9]{3}$/.test(value.rfc)) {
-    context.addIssue({ code: "custom", path: ["rfc"], message: "Revisa el formato del RFC." });
+  const expectedLength = value.taxpayerType === "physical_person_business" ? 13 : 12;
+  const pattern = value.taxpayerType === "physical_person_business"
+    ? /^[A-Z&Ñ]{4}\d{6}[A-Z0-9]{3}$/
+    : /^[A-Z&Ñ]{3}\d{6}[A-Z0-9]{3}$/;
+  if (value.rfc.length !== expectedLength || !pattern.test(value.rfc)) {
+    context.addIssue({ code: "custom", path: ["rfc"], message: `El RFC debe tener ${expectedLength} caracteres y un formato válido.` });
   }
 });
 
@@ -40,9 +45,8 @@ export const ownerRegistrationSchema = z.object({
 export type CompanyDetails = z.infer<typeof companyDetailsSchema>;
 export type OwnerRegistration = z.infer<typeof ownerRegistrationSchema>;
 export type CompanyRegistrationActionState = {
-  status: "idle" | "error" | "verification-pending" | "email-registered" | "account-has-company";
+  status: "idle" | "error" | "account-has-company";
   message?: string;
-  email?: string;
 };
 
 export const COMPANY_REGISTRATION_PASSWORD_MIN_LENGTH = INVITATION_PASSWORD_MIN_LENGTH;
